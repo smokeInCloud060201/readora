@@ -1749,3 +1749,490 @@ body {
 .full-width {
   width: 100%;
 }
+
+/* ============================================================================
+   Phase 3 & 4 Figma Screens: Favorites (05), Archive (06), Comment Composer (10),
+   More Actions (16), Print Dialog (21), and Highlight Options (24)
+   ============================================================================ */
+
+.library-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.library-collection-tabs {
+  display: inline-flex;
+  background: var(--bg-button);
+  border-radius: 7px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.collection-tab-btn {
+  height: 30px;
+  padding: 0 11px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.collection-tab-btn.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.recent-card-shell {
+  position: relative;
+}
+
+.card-star-btn,
+.card-archive-btn {
+  position: absolute;
+  top: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(24, 28, 22, 0.55);
+  color: #f6f4ec;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.card-star-btn {
+  right: 10px;
+}
+
+.card-star-btn.active {
+  background: #f3d96b;
+  color: #2f2a12;
+  border-color: #d4b94c;
+}
+
+.card-archive-btn {
+  right: 44px;
+}
+
+/* Figma Frame 06: Archive List & Restore */
+.archive-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.archive-row-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.archive-row-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.archive-pdf-badge {
+  width: 44px;
+  height: 54px;
+  border-radius: 6px;
+  background: #f6f4ec;
+  border: 1px solid var(--border-color);
+  color: #84916f;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.archive-doc-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.archive-doc-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.archive-doc-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.archive-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.danger-text {
+  color: #a6574c;
+}
+
+.archive-info-banner {
+  margin-top: 16px;
+  padding: 14px 18px;
+  border-radius: 9px;
+  background: #eef2e9;
+  border: 1px solid #d7dfd0;
+  color: #5b6652;
+  font-size: 12px;
+}
+
+/* Figma Frame 10: Comment Composer Card */
+.comment-composer-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-composer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.comment-composer-page {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.comment-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comment-composer-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.add-comment-submit-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-primary);
+  color: #f6f8f3;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Figma Frame 16: Toolbar / More Actions Menu */
+.more-actions-wrapper {
+  position: relative;
+}
+
+.document-actions-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 248px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 12px 28px rgba(32, 35, 27, 0.22);
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.doc-action-menu-item {
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  text-align: left;
+}
+
+.doc-action-menu-item:hover {
+  background: var(--bg-button);
+}
+
+/* Figma Frame 24: Highlight Options Popover */
+.highlight-options-popover {
+  position: sticky;
+  bottom: 62px;
+  width: 254px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 12px 26px rgba(31, 34, 27, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 25;
+}
+
+.highlight-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.highlight-popover-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.highlight-pin-link {
+  border: none;
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.highlight-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.highlight-swatch-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.highlight-swatch-btn.selected {
+  border-color: #2f312b;
+  box-shadow: 0 0 0 2px #849a6b;
+}
+
+.highlight-popover-divider {
+  height: 1px;
+  background: var(--border-color);
+}
+
+.highlight-underline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.highlight-underline-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.focus-switch {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: none;
+  background: var(--bg-button);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.focus-switch.compact {
+  width: 34px;
+  height: 19px;
+}
+
+.focus-switch.on {
+  background: #60764b;
+  justify-content: flex-end;
+}
+
+.focus-switch-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+/* Figma Frame 21: Print Dialog (740x640) */
+.print-dialog-card {
+  width: 740px;
+  max-width: 95vw;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  padding: 24px 28px;
+  box-shadow: 0 22px 54px rgba(17, 19, 15, 0.34);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.print-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.print-dialog-title {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.print-dialog-body {
+  display: grid;
+  grid-template-columns: 290px 1fr;
+  gap: 24px;
+}
+
+.print-preview-box {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.print-preview-sheet {
+  width: 210px;
+  height: 280px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.print-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.print-preview-caption {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.print-settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.print-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.print-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.print-copies-box {
+  height: 36px;
+  padding: 0 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.print-copies-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.print-radio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.print-radio-row {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.print-radio-row.selected {
+  background: #eef2e8;
+  border-color: #93a77d;
+  color: #35412c;
+  font-weight: 600;
+}
+
+.print-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.print-dialog-actions {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+

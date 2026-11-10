@@ -4,6 +4,7 @@ import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
 import { OpenPasswordDialog } from "../features/reader/OpenPasswordDialog";
 import { PageViewport } from "../features/reader/PageViewport";
+import { PrintDialog } from "../features/reader/PrintDialog";
 import {
   ReaderToolbar,
   type SidebarTab,
@@ -12,7 +13,10 @@ import { StatusBar } from "../features/reader/StatusBar";
 import { SearchPanel } from "../features/search/SearchPanel";
 import { PreferencesDialog } from "../features/settings/PreferencesDialog";
 import { readoraApi } from "../lib/tauri/client";
-import { EmptyWorkspace } from "../shared/components/EmptyWorkspace";
+import {
+  EmptyWorkspace,
+  type LibraryCollectionView,
+} from "../shared/components/EmptyWorkspace";
 import {
   rotationToDegrees,
   type AppSettingsDto,
@@ -62,6 +66,9 @@ export const App: React.FC = () => {
   );
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [showPreferences, setShowPreferences] = useState<boolean>(false);
+  const [showPrintDialog, setShowPrintDialog] = useState<boolean>(false);
+  const [libraryCollection, setLibraryCollection] =
+    useState<LibraryCollectionView>("all");
 
   const refreshRecentsAndSettings = useCallback(async () => {
     try {
@@ -302,6 +309,49 @@ export const App: React.FC = () => {
     setStatusMessage("Copied current page text");
   };
 
+  const handleToggleFavorite = async (
+    documentId: string,
+    isFavorite: boolean,
+  ) => {
+    await readoraApi.setFavoriteDocument(documentId, isFavorite);
+    const recents = await readoraApi.listRecentDocuments(20);
+    setRecentDocs(recents);
+    setStatusMessage(
+      isFavorite ? "Added document to favorites" : "Removed from favorites",
+    );
+  };
+
+  const handleSetDocumentArchived = async (
+    documentId: string,
+    isArchived: boolean,
+  ) => {
+    await readoraApi.setDocumentArchived(documentId, isArchived);
+    if (isArchived && session?.descriptor.id === documentId) {
+      await readoraApi.closeDocument(documentId);
+      setSession(null);
+      setRenderedPage(null);
+      setPageText("");
+    }
+    const recents = await readoraApi.listRecentDocuments(20);
+    setRecentDocs(recents);
+    setStatusMessage(
+      isArchived ? "Moved document to archive" : "Restored document to library",
+    );
+  };
+
+  const handleDeleteRecentDocument = async (documentId: string) => {
+    await readoraApi.deleteRecentDocument(documentId);
+    const recents = await readoraApi.listRecentDocuments(20);
+    setRecentDocs(recents);
+    setStatusMessage("Removed document from library");
+  };
+
+  const currentDocIsFavorite = Boolean(
+    session &&
+      recentDocs.find((r) => r.document_id === session.descriptor.id)
+        ?.is_favorite,
+  );
+
   const showBookmarksPanel =
     activeSidebar === "bookmarks" || showRightPanel;
 
@@ -346,6 +396,30 @@ export const App: React.FC = () => {
         }
         onOpenPreferences={() => setShowPreferences(true)}
         onToggleTheme={() => void handleToggleTheme()}
+        isFavorite={currentDocIsFavorite}
+        onToggleFavorite={
+          session
+            ? () =>
+                void handleToggleFavorite(
+                  session.descriptor.id,
+                  !currentDocIsFavorite,
+                )
+            : undefined
+        }
+        onArchiveDocument={
+          session
+            ? () => void handleSetDocumentArchived(session.descriptor.id, true)
+            : undefined
+        }
+        onOpenPrint={session ? () => setShowPrintDialog(true) : undefined}
+        onOpenDocumentDetails={
+          session
+            ? () => {
+                setShowRightPanel(true);
+                setActiveSidebar("bookmarks");
+              }
+            : undefined
+        }
       />
 
       {errorBanner && (
@@ -385,22 +459,32 @@ export const App: React.FC = () => {
             <button
               type="button"
               className={`app-rail-btn ${
-                session && showBookmarksPanel ? "active" : ""
+                (session && showBookmarksPanel) ||
+                (!session && libraryCollection === "favorites")
+                  ? "active"
+                  : ""
               }`}
               onClick={() => {
                 if (session) {
                   handleToggleSidebar("bookmarks");
+                } else {
+                  setLibraryCollection((prev) =>
+                    prev === "favorites" ? "all" : "favorites",
+                  );
                 }
               }}
-              title="Notes & Bookmarks"
+              title="Notes & Favorites"
               aria-label="Notes and Bookmarks Rail"
             >
               ☆
             </button>
             <button
               type="button"
-              className={`app-rail-btn ${!session ? "active" : ""}`}
+              className={`app-rail-btn ${
+                !session && libraryCollection === "all" ? "active" : ""
+              }`}
               onClick={() => {
+                setLibraryCollection("all");
                 if (session) {
                   void handleCloseDocument();
                 }
@@ -486,11 +570,38 @@ export const App: React.FC = () => {
         ) : (
           <EmptyWorkspace
             recentDocuments={recentDocs}
+            activeCollection={libraryCollection}
+            onChangeCollection={setLibraryCollection}
             onOpenSample={() => void handleOpenSample()}
             onOpenRecent={(path) => void handleOpenPath(path)}
+            onToggleFavorite={(docId, nextFav) =>
+              void handleToggleFavorite(docId, nextFav)
+            }
+            onArchiveDocument={(docId) =>
+              void handleSetDocumentArchived(docId, true)
+            }
+            onRestoreArchived={(docId) =>
+              void handleSetDocumentArchived(docId, false)
+            }
+            onDeleteRecentDocument={(docId) =>
+              void handleDeleteRecentDocument(docId)
+            }
           />
         )}
       </div>
+
+      {showPrintDialog && session && (
+        <PrintDialog
+          descriptor={session.descriptor}
+          viewState={session.view_state}
+          renderedPage={renderedPage}
+          onClose={() => setShowPrintDialog(false)}
+          onConfirmPrint={(summary) => {
+            setShowPrintDialog(false);
+            setStatusMessage(summary);
+          }}
+        />
+      )}
 
       {pendingPasswordPath && (
         <OpenPasswordDialog

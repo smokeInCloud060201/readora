@@ -108,4 +108,84 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByTestId("app-shell")).toHaveClass("theme-dark");
     });
   });
+
+  it("supports Highlight Options popover, Print Dialog, More Actions menu, Favorites, and Archive restore", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Open Built-in Sample Guide"));
+    await waitFor(() => {
+      expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
+    });
+
+    // 1. Open Highlight Options popover (Figma Frame 24)
+    fireEvent.click(screen.getByRole("button", { name: "Highlight Options" }));
+    expect(
+      screen.getByRole("dialog", { name: "Highlight Options" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Highlight color Sage"));
+    fireEvent.click(screen.getByLabelText("Underline instead"));
+    fireEvent.click(screen.getByRole("button", { name: "Highlight Options" }));
+
+    // 2. Open Print Dialog (Figma Frame 21) and submit print job
+    fireEvent.click(screen.getByLabelText("Print Document"));
+    expect(
+      screen.getByRole("dialog", { name: "Print Document Dialog" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Increase copies"));
+    expect(screen.getByTestId("print-copies-value")).toHaveTextContent("2");
+    fireEvent.click(screen.getByText("Print"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Sent .*2 copies/i)).toBeInTheDocument();
+    });
+
+    // 3. Use More Document Actions menu (Figma Frame 16) to favorite & archive the document
+    fireEvent.click(screen.getByLabelText("More Document Actions"));
+    expect(
+      screen.getByRole("menu", { name: "Document Actions Menu" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Add to favorites"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Added document to favorites"),
+      ).toBeInTheDocument();
+    });
+
+    // Close document and verify Favorites collection (Figma Frame 05)
+    fireEvent.click(screen.getByLabelText("Close document"));
+    await waitFor(() => {
+      expect(screen.getByText("Your library")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /Favorites/i }));
+    expect(screen.getByText("Favorite documents")).toBeInTheDocument();
+    expect(
+      screen.getByText("Documents you want to keep close."),
+    ).toBeInTheDocument();
+
+    // Switch back to Library, archive a document, and restore it from Archive (Figma Frame 06)
+    fireEvent.click(screen.getByRole("tab", { name: "Library" }));
+    fireEvent.click(
+      screen.getByLabelText("Archive Readora-Welcome-Guide.pdf"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Moved document to archive"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /Archive/i }));
+    expect(screen.getByText("Archived documents")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByLabelText("Restore Readora-Welcome-Guide.pdf"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Restored document to library"),
+      ).toBeInTheDocument();
+    });
+  });
 });

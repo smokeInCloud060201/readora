@@ -75,18 +75,31 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
 
       {activeTab === "notes" ? (
         <div className="notes-tab-body">
-          <form onSubmit={handleSubmit} className="add-note-form">
+          <form
+            onSubmit={handleSubmit}
+            className="comment-composer-card"
+            aria-label="Add Comment Composer"
+          >
+            <div className="comment-composer-header">
+              <span>□ &nbsp; New comment</span>
+              <span className="comment-composer-page">
+                Page {currentPage + 1}
+              </span>
+            </div>
             <input
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder={`+ Add note or bookmark on page ${currentPage + 1}...`}
+              placeholder={`Write a comment on page ${currentPage + 1}…`}
               aria-label="New bookmark label"
               className="focus-input full-width"
             />
-            <button type="submit" className="add-note-btn">
-              Save Bookmark on Page {currentPage + 1}
-            </button>
+            <div className="comment-composer-footer">
+              <span className="comment-composer-hint">Enter to save</span>
+              <button type="submit" className="add-comment-submit-btn">
+                Save Bookmark on Page {currentPage + 1}
+              </button>
+            </div>
           </form>
 
           <p className="notes-section-eyebrow">

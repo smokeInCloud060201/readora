@@ -284,6 +284,30 @@ class BrowserFallbackBridge {
     return structuredClone(this.recents);
   }
 
+  setFavoriteDocument(
+    documentId: string,
+    isFavorite: boolean,
+  ): RecentDocumentDto | null {
+    const rec = this.recents.find((r) => r.document_id === documentId);
+    if (!rec) return null;
+    rec.is_favorite = isFavorite;
+    return structuredClone(rec);
+  }
+
+  setDocumentArchived(
+    documentId: string,
+    isArchived: boolean,
+  ): RecentDocumentDto | null {
+    const rec = this.recents.find((r) => r.document_id === documentId);
+    if (!rec) return null;
+    rec.is_archived = isArchived;
+    return structuredClone(rec);
+  }
+
+  deleteRecentDocument(documentId: string): void {
+    this.recents = this.recents.filter((r) => r.document_id !== documentId);
+  }
+
   closeDocument(documentId: string): void {
     this.sessions.delete(documentId);
   }
@@ -293,9 +317,7 @@ class BrowserFallbackBridge {
   }
 
   updateSettings(patch: SettingsPatchDto): AppSettingsDto {
-    if (patch.theme !== undefined) {
-      this.settings.theme = patch.theme;
-    }
+    if (patch.theme !== undefined) this.settings.theme = patch.theme;
     if (patch.default_layout !== undefined) {
       this.settings.default_layout = patch.default_layout;
     }
@@ -315,6 +337,9 @@ class BrowserFallbackBridge {
   }
 
   private upsertRecent(filePath: string, session: DocumentSessionDto): void {
+    const prev = this.recents.find(
+      (r) => r.document_id === session.descriptor.id,
+    );
     const entry: RecentDocumentDto = {
       document_id: session.descriptor.id,
       file_path: filePath,
@@ -324,6 +349,8 @@ class BrowserFallbackBridge {
       last_zoom: session.view_state.zoom,
       last_rotation: session.view_state.rotation,
       last_opened_unix_ms: Date.now(),
+      is_favorite: prev?.is_favorite ?? false,
+      is_archived: prev?.is_archived ?? false,
     };
     this.recents = [
       entry,
@@ -441,6 +468,43 @@ export const readoraApi = {
       return invoke<RecentDocumentDto[]>("recent_documents_list", { limit });
     }
     return fallbackBridge.listRecents();
+  },
+
+  async setFavoriteDocument(
+    documentId: string,
+    isFavorite: boolean,
+  ): Promise<RecentDocumentDto | null> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<RecentDocumentDto | null>("recent_document_set_favorite", {
+        documentId,
+        isFavorite,
+      });
+    }
+    return fallbackBridge.setFavoriteDocument(documentId, isFavorite);
+  },
+
+  async setDocumentArchived(
+    documentId: string,
+    isArchived: boolean,
+  ): Promise<RecentDocumentDto | null> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<RecentDocumentDto | null>("recent_document_set_archived", {
+        documentId,
+        isArchived,
+      });
+    }
+    return fallbackBridge.setDocumentArchived(documentId, isArchived);
+  },
+
+  async deleteRecentDocument(documentId: string): Promise<void> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      await invoke<void>("recent_document_delete", { documentId });
+      return;
+    }
+    fallbackBridge.deleteRecentDocument(documentId);
   },
 
   async upsertBookmark(

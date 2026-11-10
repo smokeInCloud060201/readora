@@ -116,6 +116,8 @@ export interface RecentDocumentDto {
   last_zoom: number;
   last_rotation: Rotation;
   last_opened_unix_ms: number;
+  is_favorite?: boolean;
+  is_archived?: boolean;
 }
 
 export interface UpsertBookmarkCommandDto {

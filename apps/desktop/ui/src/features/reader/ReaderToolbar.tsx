@@ -37,6 +37,11 @@ interface ReaderToolbarProps {
   onSetRenderMode: (mode: RenderMode) => void;
   onOpenPreferences: () => void;
   onToggleTheme?: () => void;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
+  onArchiveDocument?: () => void;
+  onOpenPrint?: () => void;
+  onOpenDocumentDetails?: () => void;
 }
 
 function formatFileSize(bytes?: number | null): string {
@@ -71,10 +76,16 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onSetRenderMode,
   onOpenPreferences,
   onToggleTheme,
+  isFavorite = false,
+  onToggleFavorite,
+  onArchiveDocument,
+  onOpenPrint,
+  onOpenDocumentDetails,
 }) => {
   const [pathInput, setPathInput] = useState("");
   const [pageInput, setPageInput] = useState("");
   const [showZoomMenu, setShowZoomMenu] = useState(false);
+  const [showMoreActionsMenu, setShowMoreActionsMenu] = useState(false);
 
   const handleOpenFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -463,6 +474,126 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 ▤
               </button>
             )}
+
+            {onOpenPrint && (
+              <button
+                type="button"
+                className="focus-icon-btn"
+                onClick={onOpenPrint}
+                aria-label="Print Document"
+                title="Print Document"
+              >
+                ⎙
+              </button>
+            )}
+
+            {/* Figma Frame 16: Toolbar / More Actions Menu */}
+            <div className="more-actions-wrapper">
+              <button
+                type="button"
+                className={`focus-icon-btn ${
+                  showMoreActionsMenu ? "active" : ""
+                }`}
+                onClick={() => setShowMoreActionsMenu((prev) => !prev)}
+                aria-label="More Document Actions"
+                title="More Document Actions"
+              >
+                ⋯
+              </button>
+
+              {showMoreActionsMenu && (
+                <div
+                  className="document-actions-menu"
+                  role="menu"
+                  aria-label="Document Actions Menu"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="doc-action-menu-item"
+                    onClick={() => {
+                      onOpenDocumentDetails?.();
+                      setShowMoreActionsMenu(false);
+                    }}
+                  >
+                    <span>Document properties…</span>
+                  </button>
+                  {onOpenPrint && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="doc-action-menu-item"
+                      onClick={() => {
+                        onOpenPrint();
+                        setShowMoreActionsMenu(false);
+                      }}
+                    >
+                      <span>Print document…</span>
+                      <span className="zoom-shortcut">⌘P</span>
+                    </button>
+                  )}
+                  <div className="zoom-menu-divider" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="doc-action-menu-item"
+                    onClick={() => {
+                      onRotateCw();
+                      setShowMoreActionsMenu(false);
+                    }}
+                  >
+                    <span>Rotate clockwise</span>
+                    <span className="zoom-shortcut">⌘]</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="doc-action-menu-item"
+                    onClick={() => {
+                      onRotateCcw();
+                      setShowMoreActionsMenu(false);
+                    }}
+                  >
+                    <span>Rotate counterclockwise</span>
+                    <span className="zoom-shortcut">⌘[</span>
+                  </button>
+                  <div className="zoom-menu-divider" />
+                  {onToggleFavorite && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="doc-action-menu-item"
+                      onClick={() => {
+                        onToggleFavorite();
+                        setShowMoreActionsMenu(false);
+                      }}
+                    >
+                      <span>
+                        {isFavorite
+                          ? "Remove from favorites"
+                          : "Add to favorites"}
+                      </span>
+                      <span className="zoom-shortcut">
+                        {isFavorite ? "★" : "☆"}
+                      </span>
+                    </button>
+                  )}
+                  {onArchiveDocument && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="doc-action-menu-item"
+                      onClick={() => {
+                        onArchiveDocument();
+                        setShowMoreActionsMenu(false);
+                      }}
+                    >
+                      <span>Move to archive</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
