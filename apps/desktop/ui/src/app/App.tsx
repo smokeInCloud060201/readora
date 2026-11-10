@@ -1,0 +1,525 @@
+import React, { useCallback, useEffect, useState } from "react";
+import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
+import { OutlinePanel } from "../features/navigation/OutlinePanel";
+import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
+import { OpenPasswordDialog } from "../features/reader/OpenPasswordDialog";
+import { PageViewport } from "../features/reader/PageViewport";
+import {
+  ReaderToolbar,
+  type SidebarTab,
+} from "../features/reader/ReaderToolbar";
+import { StatusBar } from "../features/reader/StatusBar";
+import { SearchPanel } from "../features/search/SearchPanel";
+import { PreferencesDialog } from "../features/settings/PreferencesDialog";
+import { readoraApi } from "../lib/tauri/client";
+import { EmptyWorkspace } from "../shared/components/EmptyWorkspace";
+import {
+  rotationToDegrees,
+  type AppSettingsDto,
+  type CommandErrorDto,
+  type DocumentSessionDto,
+  type NavigationActionDto,
+  type RecentDocumentDto,
+  type RenderedPageResultDto,
+  type SearchHitDto,
+  type SettingsPatchDto,
+  type ViewStateDto,
+} from "../types/ipc";
+
+function isCommandError(err: unknown): err is CommandErrorDto {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    "message" in err
+  );
+}
+
+export const App: React.FC = () => {
+  const [session, setSession] = useState<DocumentSessionDto | null>(null);
+  const [renderedPage, setRenderedPage] =
+    useState<RenderedPageResultDto | null>(null);
+  const [pageText, setPageText] = useState<string>("");
+  const [isRendering, setIsRendering] = useState<boolean>(false);
+  const [recentDocs, setRecentDocs] = useState<RecentDocumentDto[]>([]);
+  const [settings, setSettings] = useState<AppSettingsDto>({
+    theme: "system",
+    default_layout: "single_page",
+    default_fit_mode: "fit_width",
+    default_zoom: 1.0,
+    render_cache_budget_bytes: 64 * 1024 * 1024,
+    prefetch_window: 1,
+  });
+
+  const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
+  const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
+  const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  const [pendingPasswordPath, setPendingPasswordPath] = useState<string | null>(
+    null,
+  );
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [showPreferences, setShowPreferences] = useState<boolean>(false);
+
+  const refreshRecentsAndSettings = useCallback(async () => {
+    try {
+      const [recents, loadedSettings] = await Promise.all([
+        readoraApi.listRecentDocuments(20),
+        readoraApi.getSettings(),
+      ]);
+      setRecentDocs(recents);
+      setSettings(loadedSettings);
+    } catch {
+      // Ignore startup load errors when initializing empty state
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshRecentsAndSettings();
+  }, [refreshRecentsAndSettings]);
+
+  const loadVisiblePageAndPrefetch = useCallback(
+    async (docId: string, viewState: ViewStateDto, prefetchWindow: number) => {
+      setIsRendering(true);
+      try {
+        const rotationDegrees = rotationToDegrees(viewState.rotation);
+        const [renderResult, extractedText] = await Promise.all([
+          readoraApi.renderPage({
+            document_id: docId,
+            page_index: viewState.current_page,
+            scale: viewState.zoom,
+            rotation_degrees: rotationDegrees,
+            render_mode: viewState.render_mode,
+            generation: null,
+          }),
+          readoraApi.extractPageText(docId, viewState.current_page),
+        ]);
+        setRenderedPage(renderResult);
+        setPageText(extractedText);
+
+        // Trigger background prefetch for adjacent pages within configured window
+        for (let offset = 1; offset <= prefetchWindow; offset += 1) {
+          const nextIdx = viewState.current_page + offset;
+          if (nextIdx < viewState.page_count) {
+            void readoraApi.renderPage({
+              document_id: docId,
+              page_index: nextIdx,
+              scale: viewState.zoom,
+              rotation_degrees: rotationDegrees,
+              render_mode: viewState.render_mode,
+              generation: renderResult.generation,
+            });
+          }
+        }
+      } catch (err) {
+        if (isCommandError(err) && err.code === "cancelled") {
+          return;
+        }
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Failed to render PDF page",
+        );
+      } finally {
+        setIsRendering(false);
+      }
+    },
+    [],
+  );
+
+  const handleOpenPath = useCallback(
+    async (path: string, password: string | null = null) => {
+      setErrorBanner(null);
+      try {
+        const opened = await readoraApi.openDocument({ path, password });
+        setSession(opened);
+        setPendingPasswordPath(null);
+        setPasswordError(null);
+        setSearchHits([]);
+        await loadVisiblePageAndPrefetch(
+          opened.descriptor.id,
+          opened.view_state,
+          settings.prefetch_window,
+        );
+        const recents = await readoraApi.listRecentDocuments(20);
+        setRecentDocs(recents);
+      } catch (err) {
+        if (isCommandError(err)) {
+          if (err.code === "password_required") {
+            setPendingPasswordPath(path);
+            setPasswordError(null);
+            return;
+          }
+          if (err.code === "incorrect_password") {
+            setPendingPasswordPath(path);
+            setPasswordError(err.message);
+            return;
+          }
+          setErrorBanner(err.message);
+        } else {
+          setErrorBanner("Failed to open PDF document");
+        }
+      }
+    },
+    [loadVisiblePageAndPrefetch, settings.prefetch_window],
+  );
+
+  const handleOpenSample = useCallback(async () => {
+    setErrorBanner(null);
+    try {
+      const opened = await readoraApi.openSampleDocument();
+      setSession(opened);
+      setSearchHits([]);
+      await loadVisiblePageAndPrefetch(
+        opened.descriptor.id,
+        opened.view_state,
+        settings.prefetch_window,
+      );
+      const recents = await readoraApi.listRecentDocuments(20);
+      setRecentDocs(recents);
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to open sample PDF",
+      );
+    }
+  }, [loadVisiblePageAndPrefetch, settings.prefetch_window]);
+
+  const handleCloseDocument = useCallback(async () => {
+    if (!session) return;
+    await readoraApi.closeDocument(session.descriptor.id);
+    setSession(null);
+    setRenderedPage(null);
+    setPageText("");
+    setSearchHits([]);
+    const recents = await readoraApi.listRecentDocuments(20);
+    setRecentDocs(recents);
+  }, [session]);
+
+  const dispatchNavigation = useCallback(
+    async (action: NavigationActionDto) => {
+      if (!session) return;
+      try {
+        const updatedView = await readoraApi.navigate(
+          session.descriptor.id,
+          action,
+        );
+        setSession((prev) =>
+          prev ? { ...prev, view_state: updatedView } : null,
+        );
+        await loadVisiblePageAndPrefetch(
+          session.descriptor.id,
+          updatedView,
+          settings.prefetch_window,
+        );
+      } catch (err) {
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Navigation update failed",
+        );
+      }
+    },
+    [loadVisiblePageAndPrefetch, session, settings.prefetch_window],
+  );
+
+  const handleToggleSidebar = (tab: Exclude<SidebarTab, null>) => {
+    if (tab === "bookmarks") {
+      setShowRightPanel(false);
+    }
+    setActiveSidebar((prev) => (prev === tab ? null : tab));
+  };
+
+  const handleAddBookmark = async (label: string) => {
+    if (!session) return;
+    try {
+      const created = await readoraApi.upsertBookmark({
+        document_id: session.descriptor.id,
+        page_index: session.view_state.current_page,
+        label,
+      });
+      setSession((prev) => {
+        if (!prev) return null;
+        const filtered = prev.bookmarks.filter(
+          (b) => b.page_index !== created.page_index,
+        );
+        const nextBookmarks = [...filtered, created].sort(
+          (a, b) => a.page_index - b.page_index,
+        );
+        return { ...prev, bookmarks: nextBookmarks };
+      });
+      setStatusMessage(`Saved bookmark "${created.label}"`);
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to save bookmark",
+      );
+    }
+  };
+
+  const handleDeleteBookmark = async (bookmarkId: string) => {
+    if (!session) return;
+    await readoraApi.deleteBookmark(bookmarkId);
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            bookmarks: prev.bookmarks.filter((b) => b.id !== bookmarkId),
+          }
+        : null,
+    );
+  };
+
+  const handleSearch = async (query: string, caseSensitive: boolean) => {
+    if (!session) return;
+    const hits = await readoraApi.searchDocument({
+      document_id: session.descriptor.id,
+      query,
+      case_sensitive: caseSensitive,
+      max_hits: 100,
+    });
+    setSearchHits(hits);
+    setStatusMessage(`Found ${hits.length} match(es)`);
+  };
+
+  const handleSavePreferences = async (patch: SettingsPatchDto) => {
+    const updated = await readoraApi.updateSettings(patch);
+    setSettings(updated);
+    setShowPreferences(false);
+    setStatusMessage("Preferences saved");
+  };
+
+  const handleToggleTheme = async () => {
+    const nextTheme = settings.theme === "dark" ? "light" : "dark";
+    const updated = await readoraApi.updateSettings({ theme: nextTheme });
+    setSettings(updated);
+  };
+
+  const handleCopyText = async () => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(pageText);
+      } catch {
+        // Ignore clipboard permission restrictions in headless test environments
+      }
+    }
+    setStatusMessage("Copied current page text");
+  };
+
+  const showBookmarksPanel =
+    activeSidebar === "bookmarks" || showRightPanel;
+
+  return (
+    <div
+      className={`app-shell theme-${settings.theme}`}
+      data-testid="app-shell"
+    >
+      <ReaderToolbar
+        fileName={session?.descriptor.file_name ?? null}
+        fileSizeBytes={session?.descriptor.file_size_bytes ?? null}
+        viewState={session?.view_state ?? null}
+        activeSidebar={activeSidebar}
+        showRightPanel={showBookmarksPanel}
+        onToggleSidebar={handleToggleSidebar}
+        onToggleRightPanel={() => setShowRightPanel((prev) => !prev)}
+        onOpenPathSubmit={(p) => void handleOpenPath(p)}
+        onOpenSample={() => void handleOpenSample()}
+        onCloseDocument={() => void handleCloseDocument()}
+        onPrevPage={() => void dispatchNavigation({ kind: "previous_page" })}
+        onNextPage={() => void dispatchNavigation({ kind: "next_page" })}
+        onGoToPage={(p) =>
+          void dispatchNavigation({ kind: "go_to_page", value: p })
+        }
+        onZoomIn={() => void dispatchNavigation({ kind: "step_zoom_in" })}
+        onZoomOut={() => void dispatchNavigation({ kind: "step_zoom_out" })}
+        onSetZoom={(z) =>
+          void dispatchNavigation({ kind: "set_zoom", value: z })
+        }
+        onSetFitMode={(m) =>
+          void dispatchNavigation({ kind: "set_fit_mode", value: m })
+        }
+        onRotateCw={() => void dispatchNavigation({ kind: "rotate_clockwise" })}
+        onRotateCcw={() =>
+          void dispatchNavigation({ kind: "rotate_counter_clockwise" })
+        }
+        onSetLayoutMode={(m) =>
+          void dispatchNavigation({ kind: "set_layout_mode", value: m })
+        }
+        onSetRenderMode={(m) =>
+          void dispatchNavigation({ kind: "set_render_mode", value: m })
+        }
+        onOpenPreferences={() => setShowPreferences(true)}
+        onToggleTheme={() => void handleToggleTheme()}
+      />
+
+      {errorBanner && (
+        <div className="error-banner" role="alert">
+          <span>{errorBanner}</span>
+          <button
+            type="button"
+            className="dismiss-btn"
+            onClick={() => setErrorBanner(null)}
+            aria-label="Dismiss error"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      <div className="app-body-frame">
+        {/* Left 58px App Rail (Figma Frame 01/02/03) */}
+        <nav className="app-rail" aria-label="Application Navigation Rail">
+          <div className="app-rail-top">
+            <div className="app-rail-logo" title="Focus Reader · Readora">
+              F
+            </div>
+            <button
+              type="button"
+              className={`app-rail-btn ${session ? "active" : ""}`}
+              onClick={() => {
+                if (!session) {
+                  void handleOpenSample();
+                }
+              }}
+              title="Reader / Documents"
+              aria-label="Reader Workspace"
+            >
+              □
+            </button>
+            <button
+              type="button"
+              className={`app-rail-btn ${
+                session && showBookmarksPanel ? "active" : ""
+              }`}
+              onClick={() => {
+                if (session) {
+                  handleToggleSidebar("bookmarks");
+                }
+              }}
+              title="Notes & Bookmarks"
+              aria-label="Notes and Bookmarks Rail"
+            >
+              ☆
+            </button>
+            <button
+              type="button"
+              className={`app-rail-btn ${!session ? "active" : ""}`}
+              onClick={() => {
+                if (session) {
+                  void handleCloseDocument();
+                }
+              }}
+              title="Library Home"
+              aria-label="Library Home"
+            >
+              ⌂
+            </button>
+          </div>
+
+          <div className="app-rail-bottom">
+            <div className="app-rail-avatar" title="Local Reader Profile">
+              MK
+            </div>
+          </div>
+        </nav>
+
+        {session ? (
+          <div className="reader-workspace">
+            {activeSidebar === "thumbnails" && (
+              <ThumbnailsPanel
+                pageCount={session.descriptor.page_count}
+                currentPage={session.view_state.current_page}
+                onSelectPage={(p) =>
+                  void dispatchNavigation({ kind: "go_to_page", value: p })
+                }
+                onSwitchToOutline={() => setActiveSidebar("outline")}
+              />
+            )}
+            {activeSidebar === "outline" && (
+              <OutlinePanel
+                outline={session.outline}
+                currentPage={session.view_state.current_page}
+                onSelectPage={(p) =>
+                  void dispatchNavigation({ kind: "go_to_page", value: p })
+                }
+                onSwitchToPages={() => setActiveSidebar("thumbnails")}
+              />
+            )}
+
+            <div className="canvas-stage-wrapper">
+              {activeSidebar === "search" && (
+                <SearchPanel
+                  hits={searchHits}
+                  onSearch={(q, cs) => void handleSearch(q, cs)}
+                  onSelectHit={(p) =>
+                    void dispatchNavigation({ kind: "go_to_page", value: p })
+                  }
+                  onClose={() => setActiveSidebar("thumbnails")}
+                />
+              )}
+
+              <PageViewport
+                viewState={session.view_state}
+                renderedPage={renderedPage}
+                pageText={pageText}
+                isLoading={isRendering}
+                onCopyText={() => void handleCopyText()}
+                onQuickAddNote={() => setActiveSidebar("bookmarks")}
+              />
+            </div>
+
+            {showBookmarksPanel && (
+              <BookmarksPanel
+                bookmarks={session.bookmarks}
+                currentPage={session.view_state.current_page}
+                descriptor={session.descriptor}
+                onAddBookmark={(label) => void handleAddBookmark(label)}
+                onDeleteBookmark={(id) => void handleDeleteBookmark(id)}
+                onSelectPage={(p) =>
+                  void dispatchNavigation({ kind: "go_to_page", value: p })
+                }
+                onClosePanel={() => {
+                  setShowRightPanel(false);
+                  if (activeSidebar === "bookmarks") {
+                    setActiveSidebar("thumbnails");
+                  }
+                }}
+              />
+            )}
+          </div>
+        ) : (
+          <EmptyWorkspace
+            recentDocuments={recentDocs}
+            onOpenSample={() => void handleOpenSample()}
+            onOpenRecent={(path) => void handleOpenPath(path)}
+          />
+        )}
+      </div>
+
+      {pendingPasswordPath && (
+        <OpenPasswordDialog
+          pendingPath={pendingPasswordPath}
+          errorMessage={passwordError}
+          onSubmitPassword={(pw) =>
+            void handleOpenPath(pendingPasswordPath, pw)
+          }
+          onCancel={() => {
+            setPendingPasswordPath(null);
+            setPasswordError(null);
+          }}
+        />
+      )}
+
+      {showPreferences && (
+        <PreferencesDialog
+          settings={settings}
+          onSave={(patch) => void handleSavePreferences(patch)}
+          onClose={() => setShowPreferences(false)}
+        />
+      )}
+
+      <StatusBar
+        descriptor={session?.descriptor ?? null}
+        viewState={session?.view_state ?? null}
+        renderedPage={renderedPage}
+        statusMessage={statusMessage}
+      />
+    </div>
+  );
+};
