@@ -1,0 +1,21 @@
+[package]
+name = "app-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app-application = { workspace = true }
+app-domain = { workspace = true }
+app-infrastructure = { workspace = true }
+pdf-engine = { workspace = true }
+pdfium-adapter = { workspace = true }
+platform = { workspace = true }
+serde = { workspace = true }
+storage = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

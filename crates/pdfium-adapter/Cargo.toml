@@ -1,0 +1,18 @@
+[package]
+name = "pdfium-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app-domain = { workspace = true }
+crc32fast = { workspace = true }
+flate2 = { workspace = true }
+pdf-engine = { workspace = true }
+pdfium-render = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
