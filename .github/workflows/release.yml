@@ -87,6 +87,23 @@ jobs:
             chmod +x "${APP_DIR}/MacOS/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${APP_DIR}/Resources/ui/"
             cp assets/icons/icon.png "${APP_DIR}/Resources/icon.png"
+
+            ICONSET_DIR="dist-macos/AppIcon.iconset"
+            mkdir -p "${ICONSET_DIR}"
+            sips -z 16 16     assets/icons/icon.png --out "${ICONSET_DIR}/icon_16x16.png" >/dev/null
+            sips -z 32 32     assets/icons/icon.png --out "${ICONSET_DIR}/icon_16x16@2x.png" >/dev/null
+            sips -z 32 32     assets/icons/icon.png --out "${ICONSET_DIR}/icon_32x32.png" >/dev/null
+            sips -z 64 64     assets/icons/icon.png --out "${ICONSET_DIR}/icon_32x32@2x.png" >/dev/null
+            sips -z 128 128   assets/icons/icon.png --out "${ICONSET_DIR}/icon_128x128.png" >/dev/null
+            sips -z 256 256   assets/icons/icon.png --out "${ICONSET_DIR}/icon_128x128@2x.png" >/dev/null
+            sips -z 256 256   assets/icons/icon.png --out "${ICONSET_DIR}/icon_256x256.png" >/dev/null
+            sips -z 512 512   assets/icons/icon.png --out "${ICONSET_DIR}/icon_256x256@2x.png" >/dev/null
+            sips -z 512 512   assets/icons/icon.png --out "${ICONSET_DIR}/icon_512x512.png" >/dev/null
+            sips -z 1024 1024 assets/icons/icon.png --out "${ICONSET_DIR}/icon_512x512@2x.png" >/dev/null
+            iconutil -c icns "${ICONSET_DIR}" -o "${APP_DIR}/Resources/AppIcon.icns"
+            cp "${APP_DIR}/Resources/AppIcon.icns" "dist-macos/.VolumeIcon.icns"
+            rm -rf "${ICONSET_DIR}"
+
             cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${APP_DIR}/Resources/"
             cp apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh "${APP_DIR}/Resources/uninstall-cleanup.sh"
             chmod +x "${APP_DIR}/Resources/uninstall-cleanup.sh"
@@ -99,6 +116,10 @@ jobs:
             <string>Readora</string>
             <key>CFBundleExecutable</key>
             <string>readora-desktop</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIconName</key>
+            <string>AppIcon</string>
             <key>CFBundleIdentifier</key>
             <string>com.readora.desktop</string>
             <key>CFBundleName</key>
@@ -116,18 +137,55 @@ jobs:
           </dict>
           </plist>
           PLIST
+
+            xattr -cr "dist-macos/Readora.app"
+            codesign --force --deep --sign - --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+            codesign --verify --deep --strict --verbose=2 "dist-macos/Readora.app"
+
+            ln -s /Applications "dist-macos/Applications"
+            cat > "dist-macos/Install & Open Readora.command" <<'INSTALLER'
+          #!/bin/bash
+          set -euo pipefail
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          TARGET_APP="/Applications/Readora.app"
+          if [[ ! -w "/Applications" ]]; then
+            mkdir -p "${HOME}/Applications"
+            TARGET_APP="${HOME}/Applications/Readora.app"
+          fi
+          rm -rf "${TARGET_APP}"
+          cp -R "${SCRIPT_DIR}/Readora.app" "${TARGET_APP}"
+          xattr -cr "${TARGET_APP}" || true
+          open "${TARGET_APP}"
+          INSTALLER
+            chmod +x "dist-macos/Install & Open Readora.command"
+            if command -v SetFile >/dev/null 2>&1; then
+              SetFile -a C "dist-macos" || true
+            fi
+
             PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.dmg"
             hdiutil create -volname "Readora" -srcfolder dist-macos -ov -format UDZO "${PRIMARY_ASSET}"
             tar -czf "release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.app.tar.gz" -C dist-macos Readora.app
 
           elif [[ "${MATRIX_PLATFORM}" == "ubuntu-latest" ]]; then
             DEB_ROOT="dist-linux/readora-deb"
-            mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps"
+            mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps" "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps" "${DEB_ROOT}/usr/share/applications"
             cp target/release/readora-desktop "${DEB_ROOT}/usr/bin/readora-desktop"
             chmod 0755 "${DEB_ROOT}/usr/bin/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${DEB_ROOT}/usr/share/readora/ui/"
             cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${DEB_ROOT}/usr/share/readora/"
             cp assets/icons/32x32.png "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps/readora.png"
+            cp assets/icons/icon.png "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps/readora.png"
+            cat > "${DEB_ROOT}/usr/share/applications/readora.desktop" <<DESKTOP
+          [Desktop Entry]
+          Name=Readora
+          Comment=Local-first open-source PDF reader
+          Exec=/usr/bin/readora-desktop
+          Icon=readora
+          Terminal=false
+          Type=Application
+          Categories=Office;Viewer;
+          MimeType=application/pdf;
+          DESKTOP
             cp apps/desktop/src-tauri/installer/linux/postrm "${DEB_ROOT}/DEBIAN/postrm"
             chmod 0755 "${DEB_ROOT}/DEBIAN/postrm"
             cat > "${DEB_ROOT}/DEBIAN/control" <<CONTROL
