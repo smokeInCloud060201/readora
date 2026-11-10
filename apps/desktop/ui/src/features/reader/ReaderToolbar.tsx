@@ -22,8 +22,6 @@ interface ReaderToolbarProps {
   showRightPanel?: boolean;
   onToggleSidebar: (tab: Exclude<SidebarTab, null>) => void;
   onToggleRightPanel?: () => void;
-  onOpenPathSubmit: (path: string) => void;
-  onOpenSample: () => void;
   onCloseDocument: () => void;
   onPrevPage: () => void;
   onNextPage: () => void;
@@ -37,6 +35,7 @@ interface ReaderToolbarProps {
   onSetLayoutMode: (mode: LayoutMode) => void;
   onSetRenderMode: (mode: RenderMode) => void;
   onOpenPreferences: () => void;
+  onOpenAbout?: () => void;
   onToggleTheme?: () => void;
   isFavorite?: boolean;
   onToggleFavorite?: () => void;
@@ -67,8 +66,6 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   showRightPanel = true,
   onToggleSidebar,
   onToggleRightPanel,
-  onOpenPathSubmit,
-  onOpenSample,
   onCloseDocument,
   onPrevPage,
   onNextPage,
@@ -82,6 +79,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onSetLayoutMode,
   onSetRenderMode,
   onOpenPreferences,
+  onOpenAbout,
   onToggleTheme,
   isFavorite = false,
   onToggleFavorite,
@@ -95,21 +93,13 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   hasUpdateAvailable = false,
   onOpenUpdateDialog,
 }) => {
-  const [pathInput, setPathInput] = useState("");
   const [pageInput, setPageInput] = useState("");
+  const [isEditingPage, setIsEditingPage] = useState(false);
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const [showMoreActionsMenu, setShowMoreActionsMenu] = useState(false);
   const [activeAppMenu, setActiveAppMenu] = useState<
     "file" | "edit" | "view" | "window" | "help" | null
   >(null);
-
-  const handleOpenFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pathInput.trim()) {
-      onOpenPathSubmit(pathInput.trim());
-      setPathInput("");
-    }
-  };
 
   const handlePageSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,6 +112,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
     ) {
       onGoToPage(parsed - 1);
       setPageInput("");
+      setIsEditingPage(false);
     }
   };
 
@@ -178,11 +169,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   role="menuitem"
                   className="doc-action-menu-item"
                   onClick={() => {
-                    onOpenSample();
+                    onCloseDocument();
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Open Sample Guide</span>
+                  <span>Open Recent</span>
                   <span className="zoom-shortcut">›</span>
                 </button>
                 <div className="zoom-menu-divider" />
@@ -196,7 +187,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Close document</span>
+                  <span>Close Document</span>
                   <span className="zoom-shortcut">⌘W</span>
                 </button>
                 <button
@@ -209,7 +200,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Export annotations…</span>
+                  <span>Export Annotations…</span>
                   <span className="zoom-shortcut">⇧⌘S</span>
                 </button>
                 <div className="zoom-menu-divider" />
@@ -223,7 +214,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Document properties…</span>
+                  <span>Document Properties…</span>
+                  <span className="zoom-shortcut">⌘I</span>
                 </button>
                 <button
                   type="button"
@@ -357,6 +349,18 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   className="doc-action-menu-item"
                   disabled={!viewState}
                   onClick={() => {
+                    onToggleSidebar("outline");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Show Document Outline</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
                     onToggleRightPanel?.();
                     setActiveAppMenu(null);
                   }}
@@ -375,7 +379,10 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Single Page</span>
+                  <span>
+                    {viewState?.layout_mode === "single_page" ? "✓ " : ""}Single
+                    Page
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -387,7 +394,10 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Continuous Scroll</span>
+                  <span>
+                    {viewState?.layout_mode === "continuous" ? "✓ " : ""}
+                    Continuous Scroll
+                  </span>
                 </button>
                 <div className="zoom-menu-divider" />
                 <button
@@ -429,6 +439,52 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   <span>Actual Size</span>
                   <span className="zoom-shortcut">⌘0</span>
                 </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetRenderMode("standard");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>
+                    {viewState?.render_mode === "standard" ? "✓ " : ""}Standard
+                    Color
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetRenderMode("grayscale");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>
+                    {viewState?.render_mode === "grayscale" ? "✓ " : ""}
+                    Grayscale
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetRenderMode("dark_inversion");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>
+                    {viewState?.render_mode === "dark_inversion" ? "✓ " : ""}
+                    Night Inversion
+                  </span>
+                </button>
               </div>
             )}
           </div>
@@ -454,6 +510,18 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 role="menu"
                 aria-label="Window Menu"
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onCloseDocument();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Show Library</span>
+                  <span className="zoom-shortcut">⇧⌘L</span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -517,11 +585,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   role="menuitem"
                   className="doc-action-menu-item"
                   onClick={() => {
-                    onOpenSample();
+                    onOpenAbout?.();
                     setActiveAppMenu(null);
                   }}
                 >
-                  <span>Focus Reader Help Guide</span>
+                  <span>About Focus Reader</span>
                 </button>
                 <div className="zoom-menu-divider" />
                 <button
@@ -540,22 +608,53 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
           </div>
         </div>
 
-        <span className="desktop-menu-clock">Local-First · Open Source</span>
+        <span className="desktop-menu-clock">Tue 9:41 AM</span>
       </div>
 
-      {/* Window Title Bar (Figma Frame 01/02/03) */}
-      <div className="window-title-bar">
-        <div className="window-title-left">
-          <div className="traffic-lights" aria-hidden="true">
+      {/* Window Title Bar (Figma Frame 01/02/03/27: 2:8, 1440x46) */}
+      <div className="window-title-bar" data-node-id="2:8">
+        <div className="window-title-left" data-node-id="2:9">
+          <div
+            className="traffic-lights"
+            aria-hidden="true"
+            data-node-id="2:10"
+          >
             <span className="traffic-dot close" />
             <span className="traffic-dot minimize" />
             <span className="traffic-dot maximize" />
           </div>
 
+          <div className="window-history-nav" role="group" aria-label="History">
+            <button
+              type="button"
+              className="focus-icon-btn window-nav-btn"
+              onClick={viewState ? onPrevPage : undefined}
+              disabled={!viewState || viewState.current_page <= 0}
+              aria-label="Navigate Back"
+              data-node-id="2:11"
+            >
+              <FocusIcon name="chevron-left" size={15} />
+            </button>
+            <button
+              type="button"
+              className="focus-icon-btn window-nav-btn"
+              onClick={viewState ? onNextPage : undefined}
+              disabled={
+                !viewState || viewState.current_page + 1 >= viewState.page_count
+              }
+              aria-label="Navigate Forward"
+              data-node-id="2:13"
+            >
+              <FocusIcon name="chevron-right" size={15} />
+            </button>
+          </div>
+
           {viewState && fileName ? (
-            <div className="document-tab">
-              <div className="pdf-badge">PDF</div>
-              <div className="document-tab-info">
+            <div className="document-tab" data-node-id="2:15">
+              <div className="pdf-badge" data-node-id="2:16">
+                PDF
+              </div>
+              <div className="document-tab-info" data-node-id="2:18">
                 <span className="document-tab-title" title={fileName}>
                   {fileName}
                 </span>
@@ -574,33 +673,17 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               </button>
             </div>
           ) : (
-            <span className="window-app-title">Focus Reader · Library</span>
+            <div className="document-tab library-tab" data-node-id="2:173">
+              <div className="pdf-badge">PDF</div>
+              <div className="document-tab-info">
+                <span className="document-tab-title">Library</span>
+                <span className="document-tab-size">All documents</span>
+              </div>
+            </div>
           )}
         </div>
 
-        <div className="window-title-right">
-          <form onSubmit={handleOpenFormSubmit} className="open-path-form">
-            <input
-              type="text"
-              value={pathInput}
-              onChange={(e) => setPathInput(e.target.value)}
-              placeholder="Local PDF path..."
-              aria-label="Local PDF file path"
-              className="focus-input compact"
-            />
-            <button type="submit" className="focus-btn secondary compact">
-              Open Path
-            </button>
-          </form>
-
-          <button
-            type="button"
-            className="focus-btn primary compact"
-            onClick={onOpenSample}
-          >
-            Open Sample PDF
-          </button>
-
+        <div className="window-title-right" data-node-id="2:22">
           {hasUpdateAvailable && onOpenUpdateDialog && (
             <button
               type="button"
@@ -620,7 +703,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
           )}
 
           {viewState && (
-            <span className="saved-indicator" aria-live="polite">
+            <span
+              className="saved-indicator"
+              aria-live="polite"
+              data-node-id="2:23"
+            >
               <FocusIcon name="check" size={13} />
               <span>Saved</span>
             </span>
@@ -633,6 +720,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={onToggleTheme}
               aria-label="Toggle theme"
               title="Toggle theme"
+              data-node-id="2:26"
             >
               <FocusIcon name="moon" size={16} />
             </button>
@@ -644,19 +732,22 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             onClick={onOpenPreferences}
             aria-label="Preferences"
             title="Preferences"
+            data-node-id="2:28"
           >
             <FocusIcon name="settings" size={16} />
           </button>
         </div>
       </div>
 
-      {/* Reader Action Toolbar (50px height, visible when a document is open) */}
+      {/* Reader Action Toolbar (Figma Frame 01: 2:37, 1382x50, visible when a document is open) */}
       {viewState && (
-        <div className="reader-action-bar">
+        <div className="reader-action-bar" data-node-id="2:37">
+          {/* Left Group (2:38): Sidebar toggle & Find */}
           <div
-            className="toolbar-group"
+            className="toolbar-group toolbar-group-left"
             role="group"
-            aria-label="Sidebar Panels"
+            aria-label="Sidebar and Search"
+            data-node-id="2:38"
           >
             <button
               type="button"
@@ -672,51 +763,30 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               }
               title="Toggle Page Sidebar"
               aria-label="Toggle Page Sidebar"
+              data-node-id="2:39"
             >
               <FocusIcon name="panel-left" size={16} />
             </button>
             <button
               type="button"
-              className={`focus-btn compact ${
-                activeSidebar === "thumbnails" ? "active" : ""
-              }`}
-              onClick={() => onToggleSidebar("thumbnails")}
-            >
-              Thumbnails
-            </button>
-            <button
-              type="button"
-              className={`focus-btn compact ${
-                activeSidebar === "outline" ? "active" : ""
-              }`}
-              onClick={() => onToggleSidebar("outline")}
-            >
-              Outline
-            </button>
-            <button
-              type="button"
-              className={`focus-btn compact ${
-                activeSidebar === "bookmarks" ? "active" : ""
-              }`}
-              onClick={() => onToggleSidebar("bookmarks")}
-            >
-              Bookmarks
-            </button>
-            <button
-              type="button"
-              className={`focus-btn compact ${
+              className={`focus-icon-btn ${
                 activeSidebar === "search" ? "active" : ""
               }`}
               onClick={() => onToggleSidebar("search")}
+              title="Find in Document"
+              aria-label="Find in Document"
+              data-node-id="2:41"
             >
-              Find
+              <FocusIcon name="search" size={16} />
             </button>
           </div>
 
+          {/* Center Group (2:42): Page navigation + Zoom controls */}
           <div
-            className="toolbar-group"
+            className="toolbar-group toolbar-group-center"
             role="group"
-            aria-label="Page Navigation"
+            aria-label="Page and Zoom Controls"
+            data-node-id="2:42"
           >
             <button
               type="button"
@@ -724,50 +794,70 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={onPrevPage}
               disabled={viewState.current_page <= 0}
               aria-label="Previous Page"
+              data-node-id="2:43"
             >
               <FocusIcon name="chevron-left" size={16} />
             </button>
-            <div className="page-field-pill" aria-live="polite">
-              <span className="sr-only">
-                Page {viewState.current_page + 1} of {viewState.page_count}
-              </span>
-              <span aria-hidden="true">
-                {viewState.current_page + 1} / {viewState.page_count}
-              </span>
-            </div>
+
+            {isEditingPage ? (
+              <form onSubmit={handlePageSubmit} className="goto-page-form">
+                <input
+                  type="number"
+                  min={1}
+                  max={viewState.page_count}
+                  value={pageInput}
+                  onChange={(e) => setPageInput(e.target.value)}
+                  onBlur={() => setIsEditingPage(false)}
+                  placeholder={`${viewState.current_page + 1} / ${viewState.page_count}`}
+                  aria-label="Jump to page number"
+                  className="focus-input page-num-input"
+                  autoFocus
+                />
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="page-field-pill"
+                aria-live="polite"
+                onClick={() => {
+                  setPageInput(String(viewState.current_page + 1));
+                  setIsEditingPage(true);
+                }}
+                title="Click to jump to a page"
+                data-node-id="2:45"
+              >
+                <span className="sr-only">
+                  Page {viewState.current_page + 1} of {viewState.page_count}
+                </span>
+                <span aria-hidden="true">
+                  {viewState.current_page + 1} / {viewState.page_count}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               className="focus-icon-btn"
               onClick={onNextPage}
               disabled={viewState.current_page + 1 >= viewState.page_count}
               aria-label="Next Page"
+              data-node-id="2:47"
             >
               <FocusIcon name="chevron-right" size={16} />
             </button>
-            <form onSubmit={handlePageSubmit} className="goto-page-form">
-              <input
-                type="number"
-                min={1}
-                max={viewState.page_count}
-                value={pageInput}
-                onChange={(e) => setPageInput(e.target.value)}
-                placeholder="Go #"
-                aria-label="Jump to page number"
-                className="focus-input page-num-input"
-              />
-            </form>
-          </div>
 
-          <div
-            className="toolbar-group zoom-toolbar-group"
-            role="group"
-            aria-label="Zoom and Rotation"
-          >
+            <span
+              className="toolbar-vertical-divider"
+              aria-hidden="true"
+              data-node-id="2:48"
+            />
+
             <button
               type="button"
               className="focus-icon-btn"
               onClick={onZoomOut}
               aria-label="Zoom Out"
+              data-node-id="2:49"
             >
               <FocusIcon name="zoom-out" size={16} />
             </button>
@@ -779,6 +869,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 data-testid="zoom-indicator"
                 onClick={() => setShowZoomMenu((prev) => !prev)}
                 aria-label="Zoom presets"
+                data-node-id="2:51"
               >
                 <span>{zoomPercent}%</span>
                 <FocusIcon name="chevron-down" size={12} />
@@ -789,6 +880,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   className="zoom-dropdown-menu"
                   role="menu"
                   aria-label="Zoom Menu"
+                  data-node-id="6:1223"
                 >
                   <button
                     type="button"
@@ -854,82 +946,29 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               className="focus-icon-btn"
               onClick={onZoomIn}
               aria-label="Zoom In"
+              data-node-id="2:53"
             >
               <FocusIcon name="zoom-in" size={16} />
             </button>
+          </div>
 
-            <select
-              aria-label="Fit Mode"
-              value={viewState.fit_mode}
-              onChange={(e) => onSetFitMode(e.target.value as FitMode)}
-              className="focus-select"
-            >
-              <option value="fit_width">Fit Width</option>
-              <option value="fit_page">Fit Page</option>
-              <option value="manual">Manual Zoom</option>
-            </select>
-
-            <button
-              type="button"
-              className="focus-icon-btn"
-              onClick={onRotateCcw}
-              aria-label="Rotate Counter-Clockwise"
-              title="Rotate Counter-Clockwise"
-            >
-              <FocusIcon name="arrow-left" size={16} />
-            </button>
-            <button
-              type="button"
-              className="focus-icon-btn"
-              onClick={onRotateCw}
-              aria-label="Rotate Clockwise"
-              title="Rotate Clockwise"
-            >
-              <FocusIcon name="arrow-right" size={16} />
-            </button>
-
-            <select
-              aria-label="Layout Mode"
-              value={viewState.layout_mode}
-              onChange={(e) => onSetLayoutMode(e.target.value as LayoutMode)}
-              className="focus-select"
-            >
-              <option value="single_page">Single Page</option>
-              <option value="continuous">Continuous</option>
-            </select>
-
-            <select
-              aria-label="Color Render Mode"
-              value={viewState.render_mode}
-              onChange={(e) => onSetRenderMode(e.target.value as RenderMode)}
-              className="focus-select"
-            >
-              <option value="standard">Standard Color</option>
-              <option value="grayscale">Grayscale</option>
-              <option value="dark_inversion">Night Inversion</option>
-            </select>
-
-            {onToggleRightPanel && (
-              <button
-                type="button"
-                className={`focus-icon-btn ${showRightPanel ? "active" : ""}`}
-                onClick={onToggleRightPanel}
-                aria-label="Toggle Notes and Details Panel"
-                title="Toggle Notes and Details Panel"
-              >
-                <FocusIcon name="panel-right" size={16} />
-              </button>
-            )}
-
+          {/* Right Group (2:54): Export, Print, Share, More Actions, Notes Panel */}
+          <div
+            className="toolbar-group toolbar-group-right"
+            role="group"
+            aria-label="Document Actions"
+            data-node-id="2:54"
+          >
             {onOpenShare && (
               <button
                 type="button"
                 className="focus-icon-btn"
                 onClick={onOpenShare}
-                aria-label="Share Document"
-                title="Share or Export Document"
+                aria-label="Export Annotations"
+                title="Export Annotations"
+                data-node-id="2:55"
               >
-                <FocusIcon name="share" size={16} />
+                <FocusIcon name="download" size={16} />
               </button>
             )}
 
@@ -940,12 +979,26 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 onClick={onOpenPrint}
                 aria-label="Print Document"
                 title="Print Document"
+                data-node-id="2:57"
               >
                 <FocusIcon name="print" size={16} />
               </button>
             )}
 
-            {/* Figma Frame 16: Toolbar / More Actions Menu */}
+            {onOpenShare && (
+              <button
+                type="button"
+                className="focus-icon-btn"
+                onClick={onOpenShare}
+                aria-label="Share Document"
+                title="Share Document"
+                data-node-id="2:59"
+              >
+                <FocusIcon name="share" size={16} />
+              </button>
+            )}
+
+            {/* Figma Frame 16: Toolbar / More Actions Menu (6:1050) */}
             <div className="more-actions-wrapper">
               <button
                 type="button"
@@ -955,6 +1008,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 onClick={() => setShowMoreActionsMenu((prev) => !prev)}
                 aria-label="More Document Actions"
                 title="More Document Actions"
+                data-node-id="2:61"
               >
                 <FocusIcon name="more" size={16} />
               </button>
@@ -964,6 +1018,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   className="document-actions-menu"
                   role="menu"
                   aria-label="Document Actions Menu"
+                  data-node-id="6:1050"
                 >
                   <button
                     type="button"
@@ -1056,6 +1111,19 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 </div>
               )}
             </div>
+
+            {onToggleRightPanel && (
+              <button
+                type="button"
+                className={`focus-icon-btn ${showRightPanel ? "active" : ""}`}
+                onClick={onToggleRightPanel}
+                aria-label="Toggle Notes and Details Panel"
+                title="Toggle Notes and Details Panel"
+                data-node-id="2:63"
+              >
+                <FocusIcon name="panel-right" size={16} />
+              </button>
+            )}
           </div>
         </div>
       )}

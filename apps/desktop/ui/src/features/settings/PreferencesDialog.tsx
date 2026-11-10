@@ -66,6 +66,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState(false);
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
   const [shortcutFilter, setShortcutFilter] = useState("");
+  const [platformPreview, setPlatformPreview] = useState<
+    "macos" | "windows" | "linux"
+  >("macos");
 
   useEffect(() => {
     void readoraApi.getSystemDiagnostics().then(setDiagnostics);
@@ -331,14 +334,18 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
               </div>
             </div>
           ) : (
-            <div className="preferences-fields-grid">
-              <div className="theme-preview-cards">
+            <div className="preferences-fields-grid" data-node-id="3:177">
+              <p className="eyebrow-label" data-node-id="3:182">
+                COLOR THEME
+              </p>
+              <div className="theme-preview-cards" data-node-id="3:183">
                 <button
                   type="button"
                   className={`theme-preview-card light ${
                     theme === "light" ? "selected" : ""
                   }`}
                   onClick={() => setTheme("light")}
+                  data-node-id="3:184"
                 >
                   <div className="theme-preview-swatch light-swatch" />
                   <span className="theme-preview-title">Light</span>
@@ -352,6 +359,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     theme === "dark" ? "selected" : ""
                   }`}
                   onClick={() => setTheme("dark")}
+                  data-node-id="3:189"
                 >
                   <div className="theme-preview-swatch dark-swatch" />
                   <span className="theme-preview-title">Dark</span>
@@ -360,6 +368,41 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   </span>
                 </button>
               </div>
+
+              <p className="eyebrow-label" data-node-id="3:207">
+                PLATFORM PREVIEW
+              </p>
+              <div
+                className="platform-preview-tabs"
+                role="radiogroup"
+                aria-label="Platform preview"
+                data-node-id="3:208"
+              >
+                {(
+                  [
+                    { id: "macos", label: "macOS" },
+                    { id: "windows", label: "Windows" },
+                    { id: "linux", label: "Linux" },
+                  ] as const
+                ).map((plat) => (
+                  <button
+                    key={plat.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={platformPreview === plat.id}
+                    className={`platform-tab-btn ${
+                      platformPreview === plat.id ? "active" : ""
+                    }`}
+                    onClick={() => setPlatformPreview(plat.id)}
+                  >
+                    {plat.label}
+                  </button>
+                ))}
+              </div>
+              <p className="platform-preview-note" data-node-id="3:217">
+                Window controls and keyboard shortcuts adapt automatically to
+                your operating system.
+              </p>
 
               <label className="form-field-row">
                 <span>Theme</span>

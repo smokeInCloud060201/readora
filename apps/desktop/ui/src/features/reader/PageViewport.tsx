@@ -65,14 +65,14 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       className="document-canvas-viewport"
       aria-label="Document Page Viewport"
     >
-      <div className="pdf-page-sheet">
+      <div className="pdf-page-sheet" data-node-id="2:130">
         <div className="pdf-sheet-running-header">
-          <span className="pdf-sheet-kicker">
-            READORA · 0{Math.min(9, viewState.current_page + 1)}
+          <span className="pdf-sheet-kicker" data-node-id="2:131">
+            FIELD NOTES · 0{Math.min(9, viewState.current_page + 1)}
           </span>
-          <span className="pdf-sheet-meta">
-            Page {viewState.current_page + 1} / {viewState.page_count} ·{" "}
-            {Math.round(viewState.zoom * 100)}% · {rotationDeg}°
+          <span className="pdf-sheet-meta" data-node-id="2:132">
+            CHAPTER I — QUIET INTERFACES · {Math.round(viewState.zoom * 100)}% ·{" "}
+            {rotationDeg}°
           </span>
         </div>
 
@@ -107,8 +107,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
         </section>
 
         <div className="pdf-sheet-running-footer">
-          <span>FOCUS READER WORKSPACE</span>
-          <span>{viewState.current_page + 1}</span>
+          <span data-node-id="2:147">FIELD NOTES ON FOCUS</span>
+          <span data-node-id="2:148">{viewState.current_page + 1}</span>
         </div>
       </div>
 
@@ -118,6 +118,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           className="highlight-options-popover"
           role="dialog"
           aria-label="Highlight Options"
+          data-node-id="7:943"
         >
           <div className="highlight-popover-header">
             <span className="highlight-popover-label">Highlight color</span>
@@ -193,20 +194,27 @@ export const PageViewport: React.FC<PageViewportProps> = ({
         </div>
       )}
 
-      {/* Bottom Floating Annotation & Selection Tools Bar (Figma Frame 01 & 24: 246x45) */}
+      {/* Bottom Floating Annotation & Selection Tools Bar (Figma Frame 01 & 24: 2:149, 246x45) */}
       <div
         className="floating-annotation-tools"
         role="toolbar"
         aria-label="Page Reading Tools"
+        data-node-id="2:149"
       >
         <button
           type="button"
-          className={`focus-icon-btn ${!showHighlightPopover ? "active" : ""}`}
-          onClick={() => setShowHighlightPopover(false)}
+          className={`focus-icon-btn ${
+            !showHighlightPopover && !underlineInstead ? "active" : ""
+          }`}
+          onClick={() => {
+            setShowHighlightPopover(false);
+            setUnderlineInstead(false);
+          }}
           title="Select cursor"
           aria-label="Select cursor"
+          data-node-id="2:150"
         >
-          <FocusIcon name="pen" size={16} />
+          <FocusIcon name="arrow-right" size={15} />
         </button>
         <button
           type="button"
@@ -214,6 +222,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           onClick={onCopyText}
           title="Copy Page Text"
           aria-label="Copy Page Text"
+          data-node-id="2:152"
         >
           <FocusIcon name="text" size={16} />
         </button>
@@ -223,15 +232,36 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           onClick={() => setShowHighlightPopover((prev) => !prev)}
           title="Highlight Options"
           aria-label="Highlight Options"
+          data-node-id="2:154"
         >
           <FocusIcon name="highlight" size={16} />
         </button>
         <button
           type="button"
+          className={`focus-icon-btn ${underlineInstead ? "active" : ""}`}
+          onClick={() => {
+            setUnderlineInstead((prev) => !prev);
+            setShowHighlightPopover(true);
+          }}
+          title="Underline Selection"
+          aria-label="Underline Selection"
+          data-node-id="2:156"
+        >
+          <FocusIcon name="pen" size={16} />
+        </button>
+        <button
+          type="button"
           className="focus-icon-btn"
-          onClick={onCopyText}
-          title="Copy Selection"
-          aria-label="Copy Selection"
+          onClick={() => {
+            if (onQuickAddNote) {
+              onQuickAddNote();
+            } else {
+              onCopyText();
+            }
+          }}
+          title="Add Comment"
+          aria-label="Add Comment"
+          data-node-id="2:158"
         >
           <FocusIcon name="comment" size={16} />
         </button>

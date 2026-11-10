@@ -207,19 +207,33 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
-/* Reader Action Bar (50px height) */
+.window-history-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.window-nav-btn {
+  width: 30px;
+  height: 30px;
+  background: transparent;
+}
+
+/* Reader Action Bar (50px height, Figma Frame 01: 2:37) */
 .reader-action-bar {
   min-height: 50px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border-color);
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 14px 6px 70px;
-  gap: 8px;
+  padding: 6px 18px 6px 74px;
+  gap: 12px;
 }
 
 .toolbar-group {
@@ -228,7 +242,34 @@ body {
   gap: 6px;
 }
 
-.open-path-form,
+.toolbar-vertical-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-color);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.page-field-pill {
+  height: 32px;
+  min-width: 72px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-field-pill:hover {
+  background: var(--bg-button-active);
+}
+
 .goto-page-form {
   display: flex;
   align-items: center;
@@ -1085,20 +1126,50 @@ body {
   color: var(--text-primary);
 }
 
-/* Library Workspace & Empty State (Figma Frame 02 & 22) */
+/* Library Workspace, 50px Library Toolbar & Empty State (Figma Frame 02, 05, 06, 22) */
 .library-workspace {
   flex: 1;
   background: var(--bg-library);
   overflow-y: auto;
-  padding: 36px 56px;
+  display: flex;
+  flex-direction: column;
+}
+
+.library-toolbar {
+  height: 50px;
+  min-height: 50px;
+  padding: 0 24px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.library-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.library-import-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .library-container {
-  max-width: 1180px;
+  width: 100%;
+  max-width: 1242px;
   margin: 0 auto;
+  padding: 36px 56px 56px;
   display: flex;
   flex-direction: column;
   gap: 28px;
+  flex: 1;
 }
 
 .library-header {
@@ -1121,16 +1192,13 @@ body {
   font-size: 34px;
   font-weight: 500;
   color: var(--text-primary);
-}
-
-.library-header-controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
 .library-search-box {
-  height: 36px;
+  height: 32px;
+  width: 340px;
+  max-width: 42vw;
   padding: 0 12px;
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
@@ -1146,50 +1214,28 @@ body {
   color: var(--text-primary);
   font-size: 12px;
   outline: none;
-  width: 190px;
+  width: 100%;
 }
 
-/* Continue Reading Hero Banner (#35402f, Figma Frame 02) */
+/* Continue Reading Hero Banner (#35402f, Figma Frame 02: 2:193, 1242x220) */
 .continue-reading-banner {
   background: #35402f;
   color: #eef1e7;
-  border-radius: 10px;
-  padding: 20px 24px;
+  border-radius: 12px;
+  padding: 28px 34px;
+  min-height: 220px;
   display: flex;
   align-items: center;
-  gap: 24px;
-}
-
-.continue-cover-thumb {
-  width: 82px;
-  height: 104px;
-  background: #485640;
-  border-radius: 6px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
   justify-content: space-between;
-  flex-shrink: 0;
-}
-
-.continue-cover-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #f3efe4;
-}
-
-.continue-cover-dot {
-  width: 16px;
-  height: 16px;
-  border-radius: 8px;
-  background: #a4b792;
+  gap: 32px;
+  cursor: pointer;
 }
 
 .continue-banner-body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .continue-eyebrow {
@@ -1200,48 +1246,77 @@ body {
 }
 
 .continue-doc-title {
-  font-size: 20px;
-  font-weight: 600;
-  color: #eef1e7;
+  font-size: 26px;
+  font-weight: 500;
+  color: #f3efe6;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
-.continue-doc-meta {
-  font-size: 11px;
+.continue-doc-subtitle {
+  font-size: 12px;
   color: #cfd6c6;
 }
 
-.continue-progress-Row {
-  margin-top: 6px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
 .continue-progress-track {
-  flex: 1;
-  max-width: 340px;
-  height: 7px;
+  width: 250px;
+  max-width: 100%;
+  height: 3px;
   background: #526149;
-  border-radius: 4px;
+  border-radius: 2px;
   overflow: hidden;
+  margin-top: 8px;
 }
 
 .continue-progress-fill {
   height: 100%;
   background: #b6c99d;
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
-.continue-resume-btn {
-  height: 36px;
-  padding: 0 18px;
-  background: #eef1e7;
-  color: #2f3b29;
-  border: none;
-  border-radius: 7px;
+.continue-doc-meta {
   font-size: 11px;
-  font-weight: 700;
+  color: #cfd6c6;
+  margin-top: 2px;
+}
+
+.continue-page-preview {
+  width: 145px;
+  height: 190px;
+  background: #fbf8f1;
+  color: #2c3127;
+  border: none;
+  border-radius: 6px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  text-align: left;
   cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: 0 12px 26px rgba(17, 21, 15, 0.28);
+}
+
+.continue-preview-num {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #7c8c68;
+}
+
+.continue-preview-title {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #292d24;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.continue-preview-accent {
+  width: 42px;
+  height: 3px;
+  border-radius: 2px;
+  background: #7c8c68;
 }
 
 .section-heading-row {
@@ -1252,8 +1327,9 @@ body {
 }
 
 .section-title {
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 500;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
 .section-subtitle {
@@ -1261,26 +1337,25 @@ body {
   color: var(--text-muted);
 }
 
-/* Recent Documents Card Grid (Figma Frame 02) */
+/* Recent Documents Card Grid (Figma Frame 02: 2:205, 246x330 cards) */
 .recent-cards-grid {
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 24px;
 }
 
 .recent-doc-card {
   width: 100%;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-  padding: 14px;
+  background: transparent;
+  border: none;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   cursor: pointer;
   text-align: left;
-  transition: transform 0.12s ease;
+  transition: transform 0.14s ease;
 }
 
 .recent-doc-card:hover {
@@ -1288,28 +1363,36 @@ body {
 }
 
 .recent-card-cover {
-  height: 150px;
-  border-radius: 5px;
-  padding: 14px;
+  height: 245px;
+  border-radius: 8px;
+  padding: 20px;
   color: #f3efe4;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  box-shadow: 0 8px 20px rgba(32, 35, 27, 0.12);
 }
 
-.recent-card-badge {
-  align-self: flex-start;
+.recent-card-edition {
   font-size: 8px;
   font-weight: 700;
-  padding: 3px 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.28);
+  letter-spacing: 0.08em;
+  color: rgba(243, 239, 228, 0.72);
 }
 
 .recent-card-cover-text {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 1.25;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+}
+
+.recent-card-corner-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(243, 239, 228, 0.35);
+  background: rgba(243, 239, 228, 0.12);
 }
 
 .recent-card-info {
@@ -1319,20 +1402,20 @@ body {
 }
 
 .recent-doc-name {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
 .recent-doc-meta {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
 .recent-card-progress-track {
   margin-top: 4px;
-  height: 4px;
-  background: #e1e2db;
+  height: 2px;
+  background: #dcded6;
   border-radius: 2px;
   overflow: hidden;
 }
@@ -1342,48 +1425,49 @@ body {
   background: var(--accent-indicator);
 }
 
-/* Empty Library State (Figma Frame 22) */
+/* Empty Library State (Figma Frame 22: 7:664) */
 .library-empty-state {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: 13px;
-  padding: 48px 32px;
+  flex: 1;
+  min-height: 440px;
+  padding: 56px 32px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
   gap: 14px;
 }
 
 .empty-illustration {
   position: relative;
-  width: 96px;
-  height: 92px;
+  width: 132px;
+  height: 150px;
   margin-bottom: 6px;
 }
 
 .empty-page-card {
   position: absolute;
-  width: 58px;
-  height: 74px;
-  border-radius: 6px;
+  width: 82px;
+  height: 104px;
+  border-radius: 7px;
   border: 1px solid #cfd2c7;
 }
 
 .empty-page-card.back {
-  left: 10px;
-  top: 10px;
+  left: 16px;
+  top: 24px;
   background: #dfe4d7;
 }
 
 .empty-page-card.front {
-  left: 26px;
-  top: 4px;
+  left: 34px;
+  top: 14px;
   background: #fcfbf7;
-  padding: 14px 10px;
+  padding: 20px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  box-shadow: 0 8px 18px rgba(32, 35, 27, 0.08);
 }
 
 .empty-line {
@@ -1403,13 +1487,14 @@ body {
 }
 
 .empty-state-title {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 500;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
 .empty-state-copy {
-  max-width: 440px;
-  font-size: 12px;
+  max-width: 420px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text-secondary);
 }
@@ -1418,6 +1503,12 @@ body {
   margin-top: 6px;
   display: flex;
   gap: 10px;
+}
+
+.empty-state-drop-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 /* Modals: Import PDF Dialog (Frame 07) & Preferences (Frame 04/18) */
@@ -2340,9 +2431,138 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Figma Frame 07: Import PDF Dialog (560x420) */
+/* Figma Frame 07: Import PDF Dialog (5:260, 430x382) */
 .import-pdf-dialog-shell {
-  width: 560px;
+  position: relative;
+  width: 430px;
+  max-width: 92vw;
+  min-height: 382px;
+  background: var(--bg-toolbar);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  box-shadow: 0 25px 65px rgba(19, 21, 15, 0.3);
+  padding: 36px 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+
+.import-pdf-dialog-shell.dragging {
+  border-color: var(--accent-sage);
+  box-shadow: 0 0 0 3px rgba(74, 93, 59, 0.22);
+}
+
+.import-close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.import-pdf-badge-box {
+  width: 70px;
+  height: 82px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+  box-shadow: 0 6px 14px rgba(32, 35, 27, 0.08);
+}
+
+.import-pdf-badge-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #9e554c;
+}
+
+.import-pdf-title {
+  font-size: 24px;
+  font-weight: 500;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.import-pdf-subtitle {
+  max-width: 310px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.import-pdf-form {
+  width: 100%;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.import-pdf-path-input {
+  width: 100%;
+  text-align: center;
+}
+
+.import-pdf-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.import-choose-btn {
+  min-width: 158px;
+  height: 36px;
+}
+
+.import-pdf-footnote {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Figma Frame 04: Platform Preview Tabs (3:208) */
+.platform-preview-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  background: var(--bg-button);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.platform-tab-btn {
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.platform-tab-btn.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.platform-preview-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
 /* Figma Frame 18 & 19: Preferences General & Shortcuts */
@@ -2361,12 +2581,15 @@ body {
   font-size: 12px;
   font-weight: 700;
   color: var(--text-primary);
+  display: block;
 }
 
+.preferences-toggle-sub,
 .preferences-toggle-desc {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
+  display: block;
 }
 
 .shortcuts-search-box {
@@ -2381,9 +2604,19 @@ body {
   margin-bottom: 6px;
 }
 
-/* Figma Frame 20: Share / Export Dialog (560x420) */
+/* Figma Frame 20: Share / Export Dialog (7:351, 490x410) */
 .share-dialog-shell {
-  width: 560px;
+  width: 490px;
+  max-width: 92vw;
+  background: var(--bg-toolbar);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  box-shadow: 0 25px 65px rgba(19, 21, 15, 0.3);
+  padding: 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .share-link-box {

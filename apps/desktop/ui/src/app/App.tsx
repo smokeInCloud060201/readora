@@ -192,30 +192,6 @@ export const App: React.FC = () => {
     [loadVisiblePageAndPrefetch, settings.prefetch_window],
   );
 
-  const handleOpenSample = useCallback(async () => {
-    setErrorBanner(null);
-    try {
-      const opened = await readoraApi.openSampleDocument();
-      setSession(opened);
-      setSearchHits([]);
-      await loadVisiblePageAndPrefetch(
-        opened.descriptor.id,
-        opened.view_state,
-        settings.prefetch_window,
-      );
-      const [recents, loadedAnnotations] = await Promise.all([
-        readoraApi.listRecentDocuments(20),
-        readoraApi.listAnnotations(opened.descriptor.id),
-      ]);
-      setRecentDocs(recents);
-      setAnnotations(loadedAnnotations);
-    } catch (err) {
-      setErrorBanner(
-        isCommandError(err) ? err.message : "Failed to open sample PDF",
-      );
-    }
-  }, [loadVisiblePageAndPrefetch, settings.prefetch_window]);
-
   const handleCloseDocument = useCallback(async () => {
     if (!session) return;
     await readoraApi.closeDocument(session.descriptor.id);
@@ -457,8 +433,6 @@ export const App: React.FC = () => {
         showRightPanel={showBookmarksPanel}
         onToggleSidebar={handleToggleSidebar}
         onToggleRightPanel={() => setShowRightPanel((prev) => !prev)}
-        onOpenPathSubmit={(p) => void handleOpenPath(p)}
-        onOpenSample={() => void handleOpenSample()}
         onCloseDocument={() => void handleCloseDocument()}
         onPrevPage={() => void dispatchNavigation({ kind: "previous_page" })}
         onNextPage={() => void dispatchNavigation({ kind: "next_page" })}
@@ -489,6 +463,10 @@ export const App: React.FC = () => {
         }}
         onOpenShortcuts={() => {
           setPreferencesSection("shortcuts");
+          setShowPreferences(true);
+        }}
+        onOpenAbout={() => {
+          setPreferencesSection("about");
           setShowPreferences(true);
         }}
         onOpenImportDialog={() => setShowImportDialog(true)}
@@ -549,7 +527,12 @@ export const App: React.FC = () => {
               className={`app-rail-btn ${session ? "active" : ""}`}
               onClick={() => {
                 if (!session) {
-                  void handleOpenSample();
+                  const firstActive = recentDocs.find((d) => !d.is_archived);
+                  if (firstActive) {
+                    void handleOpenPath(firstActive.file_path);
+                  } else {
+                    setShowImportDialog(true);
+                  }
                 }
               }}
               title="Reader / Documents"
@@ -679,7 +662,7 @@ export const App: React.FC = () => {
             recentDocuments={recentDocs}
             activeCollection={libraryCollection}
             onChangeCollection={setLibraryCollection}
-            onOpenSample={() => void handleOpenSample()}
+            onOpenImportDialog={() => setShowImportDialog(true)}
             onOpenRecent={(path) => void handleOpenPath(path)}
             onToggleFavorite={(docId, nextFav) =>
               void handleToggleFavorite(docId, nextFav)
@@ -715,10 +698,6 @@ export const App: React.FC = () => {
           onImportPath={(p) => {
             setShowImportDialog(false);
             void handleOpenPath(p);
-          }}
-          onOpenSample={() => {
-            setShowImportDialog(false);
-            void handleOpenSample();
           }}
           onClose={() => setShowImportDialog(false)}
         />

@@ -3,13 +3,21 @@ import { describe, expect, it } from "vitest";
 import { App } from "./App";
 
 describe("Readora Desktop Reader UI Vertical Slice", () => {
-  it("opens sample PDF, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
+  it("imports a PDF via Figma Import PDF Dialog, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
     render(<App />);
 
-    // 1. Verify empty welcome state and open the sample PDF guide
-    expect(screen.getByText("Readora PDF Reader")).toBeInTheDocument();
+    // 1. Verify Figma Empty Library state (Frame 22) and open Import PDF Dialog (Frame 07)
     expect(screen.getByText("Your library")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Open Built-in Sample Guide"));
+    expect(screen.getByText("Start your reading library")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Import your first PDF"));
+
+    expect(
+      screen.getByRole("dialog", { name: "Import PDF Dialog" }),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
+      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
@@ -20,9 +28,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     await waitFor(() => {
       expect(screen.getByText("Page 2 of 5")).toBeInTheDocument();
     });
-    expect(
-      screen.getByText(/Hexagonal Architecture/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Hexagonal Architecture/i)).toBeInTheDocument();
 
     // 3. Step zoom in and verify zoom indicator updates to 125%
     fireEvent.click(screen.getByLabelText("Zoom In"));
@@ -30,8 +36,8 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByTestId("zoom-indicator")).toHaveTextContent("125%");
     });
 
-    // 4. Add a bookmark on page 2 and inspect Document Details tab
-    fireEvent.click(screen.getByText("Bookmarks"));
+    // 4. Open Notes & Details panel (Figma Frame 01/09) and add a bookmark on page 2
+    fireEvent.click(screen.getByLabelText("Toggle Notes and Details Panel"));
     const bmInput = screen.getByLabelText("New bookmark label");
     fireEvent.change(bmInput, { target: { value: "Architecture Ports" } });
     fireEvent.click(screen.getByText("Save Bookmark on Page 2"));
@@ -44,7 +50,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(screen.getByLabelText("Document Details")).toBeInTheDocument();
 
     // 5. Search in document for "SQLite" and jump to matching page 4
-    fireEvent.click(screen.getByText("Find"));
+    fireEvent.click(screen.getByLabelText("Find in Document"));
     const searchInput = screen.getByLabelText("Search query");
     fireEvent.change(searchInput, { target: { value: "SQLite" } });
     fireEvent.click(screen.getByText("Search"));
@@ -62,12 +68,10 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     fireEvent.click(screen.getByLabelText("Close document"));
     await waitFor(() => {
       expect(screen.getByText("CONTINUE READING")).toBeInTheDocument();
-      expect(
-        screen.getByText(/Resume at page 4 of 5/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText("5 pages · Page 4")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText(/Resume at page 4 of 5/i));
+    fireEvent.click(screen.getByText("5 pages · Page 4"));
     await waitFor(() => {
       expect(screen.getByText("Page 4 of 5")).toBeInTheDocument();
     });
@@ -76,14 +80,17 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
   it("prompts for password when opening an encrypted PDF path and supports preferences theme toggle", async () => {
     render(<App />);
 
-    const pathInput = screen.getByLabelText("Local PDF file path");
+    fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
+    const pathInput = screen.getByLabelText("PDF file path to import");
     fireEvent.change(pathInput, {
       target: { value: "/vault/encrypted-contract.pdf" },
     });
-    fireEvent.click(screen.getByText("Open Path"));
+    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: "Password Required" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("dialog", { name: "Password Required" }),
+      ).toBeInTheDocument();
     });
 
     const pwInput = screen.getByLabelText("Document password");
@@ -112,7 +119,11 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
   it("supports Highlight Options popover, Print Dialog, More Actions menu, Favorites, and Archive restore", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Open Built-in Sample Guide"));
+    fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
+    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
+      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
     await waitFor(() => {
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
@@ -131,10 +142,8 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
 
     // Verify saved annotation appears in Bookmarks / Notes panel
-    fireEvent.click(screen.getByText("Bookmarks"));
-    expect(
-      screen.getByText(/underline · Page \d+/i),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Toggle Notes and Details Panel"));
+    expect(screen.getByText(/underline · Page \d+/i)).toBeInTheDocument();
 
     // 2. Open Print Dialog (Figma Frame 21) and submit print job
     fireEvent.click(screen.getByLabelText("Print Document"));
@@ -169,7 +178,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
 
     fireEvent.click(screen.getByRole("tab", { name: /Favorites/i }));
-    expect(screen.getByText("Favorite documents")).toBeInTheDocument();
+    expect(screen.getByText("Starred documents")).toBeInTheDocument();
     expect(
       screen.getByText("Documents you want to keep close."),
     ).toBeInTheDocument();
@@ -177,7 +186,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     // Switch back to Library, archive a document, and restore it from Archive (Figma Frame 06)
     fireEvent.click(screen.getByRole("tab", { name: "Library" }));
     fireEvent.click(
-      screen.getByLabelText("Archive Readora-Welcome-Guide.pdf"),
+      screen.getByLabelText("Archive Field-Notes-On-Focus.pdf"),
     );
 
     await waitFor(() => {
@@ -187,9 +196,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
 
     fireEvent.click(screen.getByRole("tab", { name: /Archive/i }));
-    expect(screen.getByText("Archived documents")).toBeInTheDocument();
+    expect(screen.getByText("Archive")).toBeInTheDocument();
     fireEvent.click(
-      screen.getByLabelText("Restore Readora-Welcome-Guide.pdf"),
+      screen.getByLabelText("Restore Field-Notes-On-Focus.pdf"),
     );
 
     await waitFor(() => {
@@ -210,16 +219,17 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(
       screen.getByRole("dialog", { name: "Import PDF Dialog" }),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open Sample Guide" }),
-    );
+    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
+      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
 
     // 2. Inspect Form & Signature status in Document Details (Phase 5 non-misleading language)
-    fireEvent.click(screen.getByText("Bookmarks"));
+    fireEvent.click(screen.getByLabelText("Toggle Notes and Details Panel"));
     fireEvent.click(screen.getByText("Details"));
     expect(screen.getByText("Signatures")).toBeInTheDocument();
     expect(screen.getByText("No digital signature fields")).toBeInTheDocument();
@@ -234,7 +244,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Exported Readora-Welcome-Guide-annotations\.md/i),
+        screen.getByText(/Exported Field-Notes-On-Focus-annotations\.md/i),
       ).toBeInTheDocument();
     });
 
