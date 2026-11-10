@@ -148,21 +148,6 @@ jobs:
             codesign --verify --deep --strict --verbose=2 "dist-macos/Readora.app"
 
             ln -s /Applications "dist-macos/Applications"
-            cat > "dist-macos/Install & Open Readora.command" <<'INSTALLER'
-          #!/bin/bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          TARGET_APP="/Applications/Readora.app"
-          if [[ ! -w "/Applications" ]]; then
-            mkdir -p "${HOME}/Applications"
-            TARGET_APP="${HOME}/Applications/Readora.app"
-          fi
-          rm -rf "${TARGET_APP}"
-          cp -R "${SCRIPT_DIR}/Readora.app" "${TARGET_APP}"
-          xattr -cr "${TARGET_APP}" || true
-          open "${TARGET_APP}"
-          INSTALLER
-            chmod +x "dist-macos/Install & Open Readora.command"
             if command -v SetFile >/dev/null 2>&1; then
               SetFile -a C "dist-macos" || true
             fi
