@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
 import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
+import { ImportPdfDialog } from "../features/reader/ImportPdfDialog";
 import { OpenPasswordDialog } from "../features/reader/OpenPasswordDialog";
 import { PageViewport } from "../features/reader/PageViewport";
 import { PrintDialog } from "../features/reader/PrintDialog";
@@ -9,9 +10,13 @@ import {
   ReaderToolbar,
   type SidebarTab,
 } from "../features/reader/ReaderToolbar";
+import { ShareDialog } from "../features/reader/ShareDialog";
 import { StatusBar } from "../features/reader/StatusBar";
 import { SearchPanel } from "../features/search/SearchPanel";
-import { PreferencesDialog } from "../features/settings/PreferencesDialog";
+import {
+  PreferencesDialog,
+  type PreferencesSection,
+} from "../features/settings/PreferencesDialog";
 import { readoraApi } from "../lib/tauri/client";
 import {
   EmptyWorkspace,
@@ -70,7 +75,11 @@ export const App: React.FC = () => {
   );
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [showPreferences, setShowPreferences] = useState<boolean>(false);
+  const [preferencesSection, setPreferencesSection] =
+    useState<PreferencesSection>("appearance");
   const [showPrintDialog, setShowPrintDialog] = useState<boolean>(false);
+  const [showImportDialog, setShowImportDialog] = useState<boolean>(false);
+  const [showShareDialog, setShowShareDialog] = useState<boolean>(false);
   const [libraryCollection, setLibraryCollection] =
     useState<LibraryCollectionView>("all");
 
@@ -392,6 +401,36 @@ export const App: React.FC = () => {
     setStatusMessage("Removed document from library");
   };
 
+  const handleExportAnnotations = async (includeAnnotations: boolean) => {
+    if (!session) return;
+    try {
+      const bundle = await readoraApi.exportAnnotations(
+        session.descriptor.id,
+        includeAnnotations,
+        null,
+      );
+      setShowShareDialog(false);
+      setStatusMessage(
+        `Exported ${bundle.file_name} (${bundle.annotation_count} annotations)`,
+      );
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to export annotations",
+      );
+    }
+  };
+
+  const handleCopyShareLink = async (shareUri: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(shareUri);
+      } catch {
+        // Ignore clipboard permission errors in test environment
+      }
+    }
+    setStatusMessage(`Copied link ${shareUri}`);
+  };
+
   const currentDocIsFavorite = Boolean(
     session &&
       recentDocs.find((r) => r.document_id === session.descriptor.id)
@@ -440,7 +479,17 @@ export const App: React.FC = () => {
         onSetRenderMode={(m) =>
           void dispatchNavigation({ kind: "set_render_mode", value: m })
         }
-        onOpenPreferences={() => setShowPreferences(true)}
+        onOpenPreferences={() => {
+          setPreferencesSection("appearance");
+          setShowPreferences(true);
+        }}
+        onOpenShortcuts={() => {
+          setPreferencesSection("shortcuts");
+          setShowPreferences(true);
+        }}
+        onOpenImportDialog={() => setShowImportDialog(true)}
+        onOpenShare={session ? () => setShowShareDialog(true) : undefined}
+        onCopyPageText={() => void handleCopyText()}
         onToggleTheme={() => void handleToggleTheme()}
         isFavorite={currentDocIsFavorite}
         onToggleFavorite={
@@ -655,6 +704,29 @@ export const App: React.FC = () => {
         />
       )}
 
+      {showImportDialog && (
+        <ImportPdfDialog
+          onImportPath={(p) => {
+            setShowImportDialog(false);
+            void handleOpenPath(p);
+          }}
+          onOpenSample={() => {
+            setShowImportDialog(false);
+            void handleOpenSample();
+          }}
+          onClose={() => setShowImportDialog(false)}
+        />
+      )}
+
+      {showShareDialog && session && (
+        <ShareDialog
+          descriptor={session.descriptor}
+          onExportAnnotations={(inc) => void handleExportAnnotations(inc)}
+          onCopyShareLink={(uri) => void handleCopyShareLink(uri)}
+          onClose={() => setShowShareDialog(false)}
+        />
+      )}
+
       {pendingPasswordPath && (
         <OpenPasswordDialog
           pendingPath={pendingPasswordPath}
@@ -672,6 +744,7 @@ export const App: React.FC = () => {
       {showPreferences && (
         <PreferencesDialog
           settings={settings}
+          initialSection={preferencesSection}
           onSave={(patch) => void handleSavePreferences(patch)}
           onClose={() => setShowPreferences(false)}
         />

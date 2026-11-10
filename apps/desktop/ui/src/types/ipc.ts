@@ -8,6 +8,15 @@ export type LayoutMode = "single_page" | "continuous";
 export type RenderMode = "standard" | "grayscale" | "dark_inversion";
 export type ThemePreference = "system" | "light" | "dark";
 
+export type FormSupportStatus =
+  | "none"
+  | "acro_form_read_only"
+  | "unsupported_xfa";
+
+export type SignaturePresenceStatus =
+  | "no_signatures"
+  | "signature_present_unverified";
+
 export interface DocumentMetadataDto {
   title: string | null;
   author: string | null;
@@ -15,6 +24,10 @@ export interface DocumentMetadataDto {
   creator: string | null;
   pdf_version: string;
   is_encrypted: boolean;
+  form_support?: FormSupportStatus;
+  form_field_count?: number;
+  signature_status?: SignaturePresenceStatus;
+  signature_field_count?: number;
 }
 
 export interface DocumentDescriptorDto {
@@ -146,6 +159,15 @@ export interface UpsertAnnotationCommandDto {
   color_hex: string;
   quote_text: string;
   note_text: string;
+}
+
+export interface ExportAnnotationsBundleDto {
+  file_name: string;
+  share_uri: string;
+  annotation_count: number;
+  bookmark_count: number;
+  markdown_content: string;
+  saved_path: string | null;
 }
 
 export interface AppSettingsDto {

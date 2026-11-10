@@ -11,9 +11,9 @@ pub mod ports;
 pub mod use_cases;
 
 pub use dto::{
-    DocumentSessionDto, NavigationAction, OpenDocumentRequest, RenderPageCommand,
-    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertAnnotationCommand,
-    UpsertBookmarkCommand,
+    DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest,
+    RenderPageCommand, RenderedPageResultDto, SearchRequestDto, SettingsPatchDto,
+    UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};
@@ -24,8 +24,9 @@ pub use ports::storage::{
     AnnotationRepository, BookmarkRepository, RecentDocumentRepository, SettingsRepository,
 };
 pub use use_cases::bookmarks::{
-    execute_delete_annotation, execute_delete_bookmark, execute_list_annotations,
-    execute_list_bookmarks, execute_upsert_annotation, execute_upsert_bookmark,
+    execute_delete_annotation, execute_delete_bookmark, execute_export_annotations_bundle,
+    execute_list_annotations, execute_list_bookmarks, execute_upsert_annotation,
+    execute_upsert_bookmark,
 };
 pub use use_cases::navigate_view::execute_navigation_action;
 pub use use_cases::open_document::{OpenedDocumentSession, execute_open_document};
@@ -125,6 +126,7 @@ mod tests {
                         creator: None,
                         pdf_version: "1.7".to_owned(),
                         is_encrypted: false,
+                        ..DocumentMetadata::default()
                     },
                 },
             }))

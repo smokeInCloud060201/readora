@@ -13,6 +13,7 @@ import {
   type BookmarkDto,
   type CommandErrorDto,
   type DocumentSessionDto,
+  type ExportAnnotationsBundleDto,
   type FitMode,
   type NavigationActionDto,
   type OpenDocumentRequestDto,
@@ -372,6 +373,50 @@ class BrowserFallbackBridge {
     return structuredClone(this.settings);
   }
 
+  exportAnnotations(
+    documentId: string,
+    includeAnnotations: boolean,
+    destinationPath: string | null = null,
+  ): ExportAnnotationsBundleDto {
+    const session = this.sessions.get(documentId);
+    const recent = this.recents.find((r) => r.document_id === documentId);
+    const fileName =
+      session?.descriptor.file_name ?? recent?.display_name ?? "Document.pdf";
+    const stem = fileName.replace(/\.pdf$/i, "");
+    const bookmarks = session?.bookmarks ?? [];
+    const annotations = includeAnnotations
+      ? (this.annotations.get(documentId) ?? [])
+      : [];
+
+    const lines = [
+      `# ${fileName} — Reading Notes & Annotations`,
+      "",
+      `- **Document ID:** \`${documentId}\``,
+      `- **Bookmarks:** ${bookmarks.length}`,
+      `- **Annotations:** ${annotations.length}`,
+    ];
+    for (const ann of annotations) {
+      lines.push(
+        `\n### Page ${ann.page_index + 1} · ${ann.kind} (${ann.color_hex})`,
+      );
+      if (ann.quote_text) {
+        lines.push(`> “${ann.quote_text}”`);
+      }
+      if (ann.note_text) {
+        lines.push(ann.note_text);
+      }
+    }
+
+    return {
+      file_name: `${stem}-annotations.md`,
+      share_uri: `readora://document/${documentId}`,
+      annotation_count: annotations.length,
+      bookmark_count: bookmarks.length,
+      markdown_content: lines.join("\n"),
+      saved_path: destinationPath,
+    };
+  }
+
   private upsertRecent(filePath: string, session: DocumentSessionDto): void {
     const prev = this.recents.find(
       (r) => r.document_id === session.descriptor.id,
@@ -585,6 +630,26 @@ export const readoraApi = {
       return invoke<boolean>("annotation_delete", { annotationId });
     }
     return fallbackBridge.deleteAnnotation(annotationId);
+  },
+
+  async exportAnnotations(
+    documentId: string,
+    includeAnnotations: boolean,
+    destinationPath: string | null = null,
+  ): Promise<ExportAnnotationsBundleDto> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<ExportAnnotationsBundleDto>("annotation_export", {
+        documentId,
+        includeAnnotations,
+        destinationPath,
+      });
+    }
+    return fallbackBridge.exportAnnotations(
+      documentId,
+      includeAnnotations,
+      destinationPath,
+    );
   },
 
   async getSettings(): Promise<AppSettingsDto> {

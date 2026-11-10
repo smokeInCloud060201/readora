@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
     AnnotationRepository, ApplicationError, BookmarkRepository, DocumentSessionDto,
-    NavigationAction, OpenDocumentRequest, PlatformPort, RecentDocumentRepository, RenderCachePort,
-    RenderCancellationPort, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
-    SettingsPatchDto, SettingsRepository, UpsertAnnotationCommand, UpsertBookmarkCommand,
-    execute_delete_annotation, execute_delete_bookmark, execute_get_settings,
+    ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest, PlatformPort,
+    RecentDocumentRepository, RenderCachePort, RenderCancellationPort, RenderPageCommand,
+    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SettingsRepository,
+    UpsertAnnotationCommand, UpsertBookmarkCommand, execute_delete_annotation,
+    execute_delete_bookmark, execute_export_annotations_bundle, execute_get_settings,
     execute_list_annotations, execute_list_bookmarks, execute_navigation_action,
     execute_open_document, execute_render_page, execute_search_document, execute_update_settings,
     execute_upsert_annotation, execute_upsert_bookmark,
@@ -331,6 +332,36 @@ impl AppCore {
     pub fn delete_annotation(&self, annotation_id: &str) -> Result<bool, ApplicationError> {
         let storage_ref: &dyn AnnotationRepository = self.storage.as_ref();
         execute_delete_annotation(annotation_id, storage_ref)
+    }
+
+    /// Exports bookmarks and annotations for `document_id` into a Markdown bundle, optionally
+    /// writing it atomically to `destination_path`.
+    pub fn export_annotations(
+        &self,
+        document_id: &str,
+        include_annotations: bool,
+        destination_path: Option<&str>,
+    ) -> Result<ExportAnnotationsBundleDto, ApplicationError> {
+        let doc_id = DocumentId::new(document_id)?;
+        let title = if let Ok(entry) = self.lookup_session(&doc_id) {
+            entry.descriptor.file_name.clone()
+        } else if let Some(recent) = self.storage.get(&doc_id)? {
+            recent.display_name
+        } else {
+            return Err(ApplicationError::DocumentNotOpen(document_id.to_owned()));
+        };
+
+        let bookmark_repo: &dyn BookmarkRepository = self.storage.as_ref();
+        let annotation_repo: &dyn AnnotationRepository = self.storage.as_ref();
+        execute_export_annotations_bundle(
+            document_id,
+            &title,
+            include_annotations,
+            destination_path,
+            bookmark_repo,
+            annotation_repo,
+            self.platform.as_ref(),
+        )
     }
 
     /// Returns the current application settings.

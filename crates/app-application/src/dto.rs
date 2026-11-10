@@ -144,6 +144,23 @@ pub struct UpsertAnnotationCommand {
     pub note_text: String,
 }
 
+/// Exported annotations and bookmarks bundle for a document (Phase 5 Share / Export workflow).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportAnnotationsBundleDto {
+    /// Sanitized export filename (e.g. `Readora-Welcome-Guide-annotations.md`).
+    pub file_name: String,
+    /// Local Readora deep link URI (`readora://document/<id>`).
+    pub share_uri: String,
+    /// Number of exported annotations.
+    pub annotation_count: usize,
+    /// Number of exported bookmarks.
+    pub bookmark_count: usize,
+    /// Formatted Markdown export content.
+    pub markdown_content: String,
+    /// Optional local file path where the bundle was atomically written.
+    pub saved_path: Option<String>,
+}
+
 /// Partial update patch for application settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SettingsPatchDto {

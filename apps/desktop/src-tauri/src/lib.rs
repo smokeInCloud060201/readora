@@ -72,6 +72,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(handler.annotation_list(&doc_id).unwrap().len(), 1);
+
+        let exported = handler.annotation_export(&doc_id, true, None).unwrap();
+        assert_eq!(exported.annotation_count, 1);
+        assert!(exported.markdown_content.contains("Hexagonal Architecture"));
+
         assert!(handler.annotation_delete(ann.id.as_str()).unwrap());
 
         let recents = handler.recent_documents_list(10).unwrap();

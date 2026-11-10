@@ -8,20 +8,35 @@ import {
   type ThemePreference,
 } from "../../types/ipc";
 
+export type PreferencesSection = "general" | "appearance" | "shortcuts";
+
 interface PreferencesDialogProps {
   settings: AppSettingsDto;
+  initialSection?: PreferencesSection;
   onSave: (patch: SettingsPatchDto) => void;
   onClose: () => void;
 }
 
+const SHORTCUT_ITEMS: readonly { label: string; keys: string }[] = [
+  { label: "Open document", keys: "⌘  O" },
+  { label: "Search document", keys: "⌘  F" },
+  { label: "Toggle page sidebar", keys: "⌘  \\" },
+  { label: "Toggle notes panel", keys: "⇧  ⌘  \\" },
+  { label: "Zoom in / out", keys: "⌘  + / −" },
+  { label: "Add comment", keys: "⌥  ⌘  M" },
+  { label: "Fit Page / Fit Width", keys: "⌘  1 / ⌘  2" },
+  { label: "Print document", keys: "⌘  P" },
+];
+
 export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   settings,
+  initialSection = "appearance",
   onSave,
   onClose,
 }) => {
   const [activeSection, setActiveSection] = useState<
     "general" | "appearance" | "shortcuts"
-  >("appearance");
+  >(initialSection);
   const [theme, setTheme] = useState<ThemePreference>(settings.theme);
   const [defaultLayout, setDefaultLayout] = useState<LayoutMode>(
     settings.default_layout,
@@ -36,6 +51,13 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     settings.prefetch_window,
   );
 
+  // Figma Frame 18: General Preferences local toggles
+  const [reopenOnLaunch, setReopenOnLaunch] = useState(true);
+  const [rememberPagePosition, setRememberPagePosition] = useState(true);
+  const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState(false);
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
+  const [shortcutFilter, setShortcutFilter] = useState("");
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSave({
@@ -48,6 +70,13 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     });
   };
 
+  const filteredShortcuts = SHORTCUT_ITEMS.filter(
+    (item) =>
+      !shortcutFilter.trim() ||
+      item.label.toLowerCase().includes(shortcutFilter.trim().toLowerCase()) ||
+      item.keys.toLowerCase().includes(shortcutFilter.trim().toLowerCase()),
+  );
+
   return (
     <div
       className="modal-backdrop"
@@ -56,11 +85,8 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       aria-label="Reader Preferences"
     >
       <div className="preferences-dialog-shell">
-        {/* Left 190px Settings Navigation (Figma Frame 04 / 18) */}
-        <nav
-          className="preferences-nav"
-          aria-label="Preferences Sections"
-        >
+        {/* Left 190px Settings Navigation (Figma Frame 04 / 18 / 19) */}
+        <nav className="preferences-nav" aria-label="Preferences Sections">
           <div className="preferences-brand">
             <div className="preferences-logo">F</div>
             <span className="preferences-brand-title">Preferences</span>
@@ -109,7 +135,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   ? "General"
                   : activeSection === "appearance"
                     ? "Platform & Appearance"
-                    : "Keyboard Shortcuts"}
+                    : "Keyboard shortcuts"}
               </h2>
             </div>
             <button
@@ -124,23 +150,111 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
 
           <div className="preferences-divider" />
 
-          {activeSection === "shortcuts" ? (
-            <div className="shortcuts-list">
-              <div className="shortcut-row">
-                <span>Next / Previous Page</span>
-                <kbd>→ / ←</kbd>
+          {activeSection === "general" ? (
+            <div className="preferences-fields-grid">
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Reopen documents on launch
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Continue where you stopped reading.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={reopenOnLaunch}
+                  onChange={(e) => setReopenOnLaunch(e.target.checked)}
+                  aria-label="Reopen documents on launch"
+                />
+              </label>
+
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Remember page position
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Save reading progress for every document.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={rememberPagePosition}
+                  onChange={(e) => setRememberPagePosition(e.target.checked)}
+                  aria-label="Remember page position"
+                />
+              </label>
+
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Confirm before deleting
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Ask before moving files to the archive.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={confirmBeforeDeleting}
+                  onChange={(e) => setConfirmBeforeDeleting(e.target.checked)}
+                  aria-label="Confirm before deleting"
+                />
+              </label>
+
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Automatically check for updates
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Keep Focus Reader current.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={autoCheckUpdates}
+                  onChange={(e) => setAutoCheckUpdates(e.target.checked)}
+                  aria-label="Automatically check for updates"
+                />
+              </label>
+
+              <label className="form-field-row">
+                <span>Default zoom</span>
+                <select
+                  aria-label="General Default Zoom"
+                  value={defaultFitMode}
+                  onChange={(e) => setDefaultFitMode(e.target.value as FitMode)}
+                  className="focus-select"
+                >
+                  <option value="fit_page">Fit page</option>
+                  <option value="fit_width">Fit width</option>
+                  <option value="manual">100% (Actual size)</option>
+                </select>
+              </label>
+            </div>
+          ) : activeSection === "shortcuts" ? (
+            <div className="shortcuts-pane">
+              <div className="shortcuts-search-box">
+                <FocusIcon name="search" size={14} />
+                <input
+                  type="text"
+                  value={shortcutFilter}
+                  onChange={(e) => setShortcutFilter(e.target.value)}
+                  placeholder="Search shortcuts…"
+                  aria-label="Search shortcuts"
+                  className="shortcuts-search-input"
+                />
               </div>
-              <div className="shortcut-row">
-                <span>Zoom In / Out</span>
-                <kbd>⌘+ / ⌘−</kbd>
-              </div>
-              <div className="shortcut-row">
-                <span>Fit Page / Fit Width</span>
-                <kbd>⌘1 / ⌘2</kbd>
-              </div>
-              <div className="shortcut-row">
-                <span>Find in Document</span>
-                <kbd>⌘F</kbd>
+              <p className="eyebrow-label">GENERAL</p>
+              <div className="shortcuts-list">
+                {filteredShortcuts.map((item) => (
+                  <div key={item.label} className="shortcut-row">
+                    <span>{item.label}</span>
+                    <kbd>{item.keys}</kbd>
+                  </div>
+                ))}
               </div>
             </div>
           ) : (

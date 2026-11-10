@@ -6,6 +6,33 @@ use crate::error::DomainError;
 use crate::value_objects::document_id::DocumentId;
 use crate::value_objects::page_index::PageIndex;
 
+/// Interactive form support status detected for a PDF document (Phase 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FormSupportStatus {
+    /// No interactive form dictionary (`/AcroForm` or `/XFA`) detected.
+    #[default]
+    None,
+    /// Standard PDF AcroForm fields detected (supported in read-only inspection mode).
+    AcroFormReadOnly,
+    /// Dynamic/XML XFA form detected (explicitly unsupported for security and portability).
+    UnsupportedXfa,
+}
+
+/// Digital signature presence status (Phase 5).
+///
+/// Per security and roadmap rules, signature field presence is never described as
+/// cryptographically trusted without full certificate-chain and revocation verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SignaturePresenceStatus {
+    /// No signature fields (`/FT /Sig` or `/Type /Sig`) detected in the document.
+    #[default]
+    NoSignatures,
+    /// One or more signature fields exist, but cryptographic trust/revocation is not verified.
+    SignaturePresentUnverified,
+}
+
 /// Untrusted metadata extracted from a PDF document header/info dictionary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
@@ -21,6 +48,49 @@ pub struct DocumentMetadata {
     pub pdf_version: String,
     /// Whether the document is encrypted.
     pub is_encrypted: bool,
+    /// Detected interactive form support status.
+    #[serde(default)]
+    pub form_support: FormSupportStatus,
+    /// Number of interactive form fields detected.
+    #[serde(default)]
+    pub form_field_count: u32,
+    /// Detected digital signature presence status.
+    #[serde(default)]
+    pub signature_status: SignaturePresenceStatus,
+    /// Number of signature fields detected.
+    #[serde(default)]
+    pub signature_field_count: u32,
+}
+
+impl DocumentMetadata {
+    /// Returns an explicit, non-misleading human-readable summary of digital signature status.
+    #[must_use]
+    pub fn signature_status_summary(&self) -> String {
+        match self.signature_status {
+            SignaturePresenceStatus::NoSignatures => {
+                "No digital signature fields detected".to_owned()
+            }
+            SignaturePresenceStatus::SignaturePresentUnverified => format!(
+                "{} signature field(s) present (cryptographic certificate trust not verified)",
+                self.signature_field_count.max(1)
+            ),
+        }
+    }
+
+    /// Returns an explicit summary of interactive form support for this document.
+    #[must_use]
+    pub fn form_status_summary(&self) -> String {
+        match self.form_support {
+            FormSupportStatus::None => "No interactive forms".to_owned(),
+            FormSupportStatus::AcroFormReadOnly => format!(
+                "AcroForm detected ({} field(s), read-only display)",
+                self.form_field_count.max(1)
+            ),
+            FormSupportStatus::UnsupportedXfa => {
+                "Unsupported XFA form detected (disabled for security)".to_owned()
+            }
+        }
+    }
 }
 
 /// Summary descriptor for an opened PDF document.

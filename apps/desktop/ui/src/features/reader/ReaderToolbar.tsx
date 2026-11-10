@@ -43,6 +43,10 @@ interface ReaderToolbarProps {
   onArchiveDocument?: () => void;
   onOpenPrint?: () => void;
   onOpenDocumentDetails?: () => void;
+  onOpenImportDialog?: () => void;
+  onOpenShare?: () => void;
+  onOpenShortcuts?: () => void;
+  onCopyPageText?: () => void;
 }
 
 function formatFileSize(bytes?: number | null): string {
@@ -82,11 +86,18 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onArchiveDocument,
   onOpenPrint,
   onOpenDocumentDetails,
+  onOpenImportDialog,
+  onOpenShare,
+  onOpenShortcuts,
+  onCopyPageText,
 }) => {
   const [pathInput, setPathInput] = useState("");
   const [pageInput, setPageInput] = useState("");
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const [showMoreActionsMenu, setShowMoreActionsMenu] = useState(false);
+  const [activeAppMenu, setActiveAppMenu] = useState<
+    "file" | "edit" | "view" | "window" | "help" | null
+  >(null);
 
   const handleOpenFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,6 +129,404 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
       role="toolbar"
       aria-label="PDF Reader Toolbar"
     >
+      {/* Desktop Application Menu Bar (Figma Frames 11–15: File, Edit, View, Window, Help) */}
+      <div
+        className="desktop-menu-bar"
+        role="menubar"
+        aria-label="Application Menu Bar"
+      >
+        <div className="desktop-menu-left">
+          <span className="desktop-menu-brand">● &nbsp; Focus Reader</span>
+
+          <div className="desktop-menu-item-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className={`desktop-menu-trigger ${
+                activeAppMenu === "file" ? "active" : ""
+              }`}
+              onClick={() =>
+                setActiveAppMenu((prev) => (prev === "file" ? null : "file"))
+              }
+            >
+              File
+            </button>
+            {activeAppMenu === "file" && (
+              <div
+                className="desktop-dropdown-menu"
+                role="menu"
+                aria-label="File Menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenImportDialog?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Open PDF…</span>
+                  <span className="zoom-shortcut">⌘O</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenSample();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Open Sample Guide</span>
+                  <span className="zoom-shortcut">›</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onCloseDocument();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Close document</span>
+                  <span className="zoom-shortcut">⌘W</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onOpenShare?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Export annotations…</span>
+                  <span className="zoom-shortcut">⇧⌘S</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onOpenDocumentDetails?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Document properties…</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onOpenPrint?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Print…</span>
+                  <span className="zoom-shortcut">⌘P</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenPreferences();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Preferences…</span>
+                  <span className="zoom-shortcut">⌘,</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="desktop-menu-item-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className={`desktop-menu-trigger ${
+                activeAppMenu === "edit" ? "active" : ""
+              }`}
+              onClick={() =>
+                setActiveAppMenu((prev) => (prev === "edit" ? null : "edit"))
+              }
+            >
+              Edit
+            </button>
+            {activeAppMenu === "edit" && (
+              <div
+                className="desktop-dropdown-menu"
+                role="menu"
+                aria-label="Edit Menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onCopyPageText?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Copy</span>
+                  <span className="zoom-shortcut">⌘C</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onToggleSidebar("search");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Find in Document…</span>
+                  <span className="zoom-shortcut">⌘F</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onToggleSidebar("bookmarks");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Add Comment</span>
+                  <span className="zoom-shortcut">⌥⌘M</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="desktop-menu-item-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className={`desktop-menu-trigger ${
+                activeAppMenu === "view" ? "active" : ""
+              }`}
+              onClick={() =>
+                setActiveAppMenu((prev) => (prev === "view" ? null : "view"))
+              }
+            >
+              View
+            </button>
+            {activeAppMenu === "view" && (
+              <div
+                className="desktop-dropdown-menu"
+                role="menu"
+                aria-label="View Menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onToggleSidebar("thumbnails");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Show Page Sidebar</span>
+                  <span className="zoom-shortcut">⌘\</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onToggleRightPanel?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Show Notes Panel</span>
+                  <span className="zoom-shortcut">⇧⌘\</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetLayoutMode("single_page");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Single Page</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetLayoutMode("continuous");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Continuous Scroll</span>
+                </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetFitMode("fit_width");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Fit Width</span>
+                  <span className="zoom-shortcut">⌘2</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetFitMode("fit_page");
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Fit Page</span>
+                  <span className="zoom-shortcut">⌘1</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  disabled={!viewState}
+                  onClick={() => {
+                    onSetZoom?.(1.0);
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Actual Size</span>
+                  <span className="zoom-shortcut">⌘0</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="desktop-menu-item-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className={`desktop-menu-trigger ${
+                activeAppMenu === "window" ? "active" : ""
+              }`}
+              onClick={() =>
+                setActiveAppMenu((prev) =>
+                  prev === "window" ? null : "window",
+                )
+              }
+            >
+              Window
+            </button>
+            {activeAppMenu === "window" && (
+              <div
+                className="desktop-dropdown-menu"
+                role="menu"
+                aria-label="Window Menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onToggleTheme?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Toggle Light / Dark Theme</span>
+                </button>
+                {fileName && (
+                  <>
+                    <div className="zoom-menu-divider" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="doc-action-menu-item"
+                      onClick={() => setActiveAppMenu(null)}
+                    >
+                      <span>✓ &nbsp; {fileName}</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="desktop-menu-item-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className={`desktop-menu-trigger ${
+                activeAppMenu === "help" ? "active" : ""
+              }`}
+              onClick={() =>
+                setActiveAppMenu((prev) => (prev === "help" ? null : "help"))
+              }
+            >
+              Help
+            </button>
+            {activeAppMenu === "help" && (
+              <div
+                className="desktop-dropdown-menu"
+                role="menu"
+                aria-label="Help Menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenShortcuts?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Keyboard Shortcuts</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenSample();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Focus Reader Help Guide</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <span className="desktop-menu-clock">Local-First · Open Source</span>
+      </div>
+
       {/* Window Title Bar (Figma Frame 01/02/03) */}
       <div className="window-title-bar">
         <div className="window-title-left">
@@ -475,6 +884,18 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 title="Toggle Notes and Details Panel"
               >
                 <FocusIcon name="panel-right" size={16} />
+              </button>
+            )}
+
+            {onOpenShare && (
+              <button
+                type="button"
+                className="focus-icon-btn"
+                onClick={onOpenShare}
+                aria-label="Share Document"
+                title="Share or Export Document"
+              >
+                <FocusIcon name="share" size={16} />
               </button>
             )}
 

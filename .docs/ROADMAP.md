@@ -460,13 +460,13 @@ for every feature included in the release.
 
 **Exit criteria**
 
--   [ ] Each advanced feature has an explicit support decision.
--   [ ] Supported forms behave correctly in tested documents.
--   [ ] Signature UI uses precise and non-misleading status language.
--   [ ] Document operations have recovery and integrity tests.
--   [ ] OCR is included only after runtime, language, and licensing
+-   [x] Each advanced feature has an explicit support decision.
+-   [x] Supported forms behave correctly in tested documents.
+-   [x] Signature UI uses precise and non-misleading status language.
+-   [x] Document operations have recovery and integrity tests.
+-   [x] OCR is included only after runtime, language, and licensing
     decisions.
--   [ ] Unsupported features fail clearly rather than appearing to work.
+-   [x] Unsupported features fail clearly rather than appearing to work.
 
 ------------------------------------------------------------------------
 
@@ -680,8 +680,8 @@ complexity, and the amount of release hardening required.
 
 ## 8. Immediate Next Steps
 
-1.  Evaluate Phase 5 advanced capabilities (interactive PDF forms, signature presence inspection, and document split/merge).
-2.  Prepare cross-platform packaging pipelines for Phase 6 (DMG, MSI/NSIS, AppImage/DEB).
+1.  Prepare cross-platform packaging pipelines for Phase 6 (DMG, MSI/NSIS, AppImage/DEB, SBOM, and third-party license notices).
+2.  Validate clean install, upgrade, and uninstall workflows on macOS, Windows, and Linux.
 3.  Maintain zero-regression coverage across `app-domain`, `app-application`, `storage`, `pdfium-adapter`, and React UI.
 
 ## 9. Weekly Roadmap Review Template
@@ -710,11 +710,12 @@ integration                                     `pdfium-adapter` + tests
 features                                        bookmarks & annotations
                                                 (`0001`–`0003` migrations)
 
-5 --- Advanced          Not started             Planned next
-capabilities            
+5 --- Advanced          Complete                Form/signature inspection,
+capabilities                                    atomic annotation export,
+                                                all 25 Figma frames
 
 6 --- Packaging &       Not started             Open-source distribution
-distribution readiness  
+distribution readiness                          (Planned next)
 
 7 --- Production        Not started             Open-source v1.0 release
 release                 

@@ -13,7 +13,8 @@ pub use error::DomainError;
 pub use model::annotation::{Annotation, AnnotationId, AnnotationKind, MAX_ANNOTATION_TEXT_LEN};
 pub use model::bookmark::{Bookmark, BookmarkId, MAX_BOOKMARK_LABEL_LEN};
 pub use model::document::{
-    DocumentDescriptor, DocumentMetadata, OutlineNode, SearchHit, sanitize_display_name,
+    DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchHit,
+    SignaturePresenceStatus, sanitize_display_name,
 };
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{

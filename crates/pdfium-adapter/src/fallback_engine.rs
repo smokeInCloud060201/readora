@@ -1,7 +1,10 @@
 //! Pure-Rust PDF parser and synthetic page renderer used when the native PDFium
 //! shared library (`libpdfium`) is not installed on the host machine.
 
-use app_domain::{DocumentMetadata, OutlineNode, PageDimensions, PageIndex, Rotation, SearchHit};
+use app_domain::{
+    DocumentMetadata, FormSupportStatus, OutlineNode, PageDimensions, PageIndex, Rotation,
+    SearchHit, SignaturePresenceStatus,
+};
 use pdf_engine::{
     EngineDocumentInfo, OpenDocumentOptions, PageGeometry, PdfDocument, PdfEngineError,
     RenderPageRequest, RenderedPage,
@@ -89,6 +92,9 @@ impl FallbackPdfDocument {
         let page_dimensions = parse_media_box(&full_text).unwrap_or(PageDimensions::US_LETTER);
         let intrinsic_rotation = parse_rotation(&full_text);
 
+        let (form_support, form_field_count, signature_status, signature_field_count) =
+            inspect_advanced_pdf_capabilities(&full_text);
+
         let metadata = DocumentMetadata {
             title: extract_pdf_string_value(&full_text, "/Title"),
             author: extract_pdf_string_value(&full_text, "/Author"),
@@ -96,6 +102,10 @@ impl FallbackPdfDocument {
             creator: extract_pdf_string_value(&full_text, "/Creator"),
             pdf_version,
             is_encrypted,
+            form_support,
+            form_field_count,
+            signature_status,
+            signature_field_count,
         };
 
         let page_texts = extract_texts_per_page(&full_text, page_count);
@@ -458,4 +468,45 @@ fn extract_outline_nodes(text: &str, page_count: u32) -> Vec<OutlineNode> {
         }
     }
     nodes
+}
+
+/// Inspects raw PDF dictionary markers for interactive forms (`/AcroForm`, `/XFA`)
+/// and digital signature fields (`/FT /Sig`, `/Type /Sig`).
+#[must_use]
+pub fn inspect_advanced_pdf_capabilities(
+    text: &str,
+) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
+    let has_xfa = text.contains("/XFA");
+    let has_acroform = text.contains("/AcroForm");
+    let tx_fields = text.matches("/FT /Tx").count()
+        + text.matches("/FT /Btn").count()
+        + text.matches("/FT /Ch").count();
+    let sig_fields = text.matches("/FT /Sig").count() + text.matches("/Type /Sig").count();
+
+    let form_field_count = u32::try_from(tx_fields).unwrap_or(0);
+    let form_support = if has_xfa {
+        FormSupportStatus::UnsupportedXfa
+    } else if has_acroform || form_field_count > 0 {
+        FormSupportStatus::AcroFormReadOnly
+    } else {
+        FormSupportStatus::None
+    };
+
+    let signature_field_count = u32::try_from(sig_fields).unwrap_or(0);
+    let signature_status = if signature_field_count > 0 {
+        SignaturePresenceStatus::SignaturePresentUnverified
+    } else {
+        SignaturePresenceStatus::NoSignatures
+    };
+
+    (
+        form_support,
+        if form_support == FormSupportStatus::AcroFormReadOnly {
+            form_field_count.max(1)
+        } else {
+            form_field_count
+        },
+        signature_status,
+        signature_field_count,
+    )
 }

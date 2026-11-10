@@ -1,9 +1,9 @@
 //! Typed IPC command handlers bridging the desktop frontend to `AppCore`.
 
 use app_application::{
-    ApplicationError, DocumentSessionDto, NavigationAction, OpenDocumentRequest, RenderPageCommand,
-    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertAnnotationCommand,
-    UpsertBookmarkCommand,
+    ApplicationError, DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction,
+    OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
+    SettingsPatchDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 use app_core::AppCore;
 use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
@@ -186,6 +186,18 @@ impl DesktopCommandHandler {
     /// Handles `annotation_delete`.
     pub fn annotation_delete(&self, annotation_id: &str) -> Result<bool, CommandErrorDto> {
         Ok(self.core.delete_annotation(annotation_id)?)
+    }
+
+    /// Handles `annotation_export`.
+    pub fn annotation_export(
+        &self,
+        document_id: &str,
+        include_annotations: bool,
+        destination_path: Option<&str>,
+    ) -> Result<ExportAnnotationsBundleDto, CommandErrorDto> {
+        Ok(self
+            .core
+            .export_annotations(document_id, include_annotations, destination_path)?)
     }
 
     /// Handles `settings_get`.

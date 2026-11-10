@@ -260,6 +260,25 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                   : "Standard Local"}
               </dd>
             </div>
+            <div className="details-meta-row">
+              <dt>Signatures</dt>
+              <dd>
+                {descriptor?.metadata.signature_status ===
+                "signature_present_unverified"
+                  ? "Signature field present (certificate trust not verified)"
+                  : "No digital signature fields"}
+              </dd>
+            </div>
+            <div className="details-meta-row">
+              <dt>Forms</dt>
+              <dd>
+                {descriptor?.metadata.form_support === "unsupported_xfa"
+                  ? "Unsupported XFA form (disabled)"
+                  : descriptor?.metadata.form_support === "acro_form_read_only"
+                    ? "AcroForm (read-only)"
+                    : "No interactive forms"}
+              </dd>
+            </div>
           </dl>
         </div>
       )}

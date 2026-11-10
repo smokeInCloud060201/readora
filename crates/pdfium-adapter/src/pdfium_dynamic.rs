@@ -10,6 +10,7 @@ use pdf_engine::{
 };
 use pdfium_render::prelude::*;
 
+use crate::fallback_engine::inspect_advanced_pdf_capabilities;
 use crate::png_encoder::{apply_render_mode_rgba, encode_rgba_to_png};
 
 /// Attempts to locate and bind to a native PDFium shared library.
@@ -88,6 +89,10 @@ impl DynamicPdfiumDocument {
                 ));
             }
 
+            let raw_text = String::from_utf8_lossy(&bytes);
+            let (form_support, form_field_count, signature_status, signature_field_count) =
+                inspect_advanced_pdf_capabilities(&raw_text);
+
             let version_str = format!("{:?}", doc.version());
             let metadata = DocumentMetadata {
                 title: doc
@@ -108,6 +113,10 @@ impl DynamicPdfiumDocument {
                     .map(|t| t.value().to_owned()),
                 pdf_version: version_str,
                 is_encrypted: options.password.is_some(),
+                form_support,
+                form_field_count,
+                signature_status,
+                signature_field_count,
             };
             (page_count, metadata)
         };

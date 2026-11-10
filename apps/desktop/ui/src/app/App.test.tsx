@@ -198,4 +198,54 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("supports Application Menu Bar (11-15), Import PDF Dialog (07), Share/Export Dialog (20), Preferences General/Shortcuts (18-19), and Form/Signature inspection", async () => {
+    render(<App />);
+
+    // 1. Open File menu (Figma Frame 11) and launch Import PDF Dialog (Figma Frame 07)
+    fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
+    expect(screen.getByRole("menu", { name: "File Menu" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Open PDF…"));
+
+    expect(
+      screen.getByRole("dialog", { name: "Import PDF Dialog" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Sample Guide" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
+    });
+
+    // 2. Inspect Form & Signature status in Document Details (Phase 5 non-misleading language)
+    fireEvent.click(screen.getByText("Bookmarks"));
+    fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Signatures")).toBeInTheDocument();
+    expect(screen.getByText("No digital signature fields")).toBeInTheDocument();
+    expect(screen.getByText("Forms")).toBeInTheDocument();
+
+    // 3. Open Share Dialog (Figma Frame 20) and export annotations bundle
+    fireEvent.click(screen.getByLabelText("Share Document"));
+    expect(
+      screen.getByRole("dialog", { name: "Share Document Dialog" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Export annotated PDF"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Exported Readora-Welcome-Guide-annotations\.md/i),
+      ).toBeInTheDocument();
+    });
+
+    // 4. Open Preferences General & Shortcuts tabs (Figma Frames 18 & 19)
+    fireEvent.click(screen.getByLabelText("Preferences"));
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    expect(screen.getByText("Reopen documents on launch")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+    const shortcutSearch = screen.getByLabelText("Search shortcuts");
+    fireEvent.change(shortcutSearch, { target: { value: "comment" } });
+    expect(screen.getByText("Add comment")).toBeInTheDocument();
+  });
 });

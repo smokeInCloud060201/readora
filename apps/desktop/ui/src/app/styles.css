@@ -2262,4 +2262,135 @@ body {
   gap: 5px;
 }
 
+/* ============================================================================
+   Phase 5 Figma Screens: Menu Bar (11-15), Import PDF Dialog (07),
+   Preferences General & Shortcuts (18-19), and Share Dialog (20)
+   ============================================================================ */
+
+.desktop-menu-bar {
+  height: 29px;
+  padding: 0 14px;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.desktop-menu-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.desktop-menu-brand {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-right: 4px;
+}
+
+.desktop-menu-item-wrapper {
+  position: relative;
+}
+
+.desktop-menu-trigger {
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.desktop-menu-trigger:hover,
+.desktop-menu-trigger.active {
+  background: var(--bg-button);
+  color: var(--text-primary);
+}
+
+.desktop-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 248px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 12px 28px rgba(32, 35, 27, 0.22);
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.desktop-menu-clock {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.menu-shortcut {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Figma Frame 07: Import PDF Dialog (560x420) */
+.import-pdf-dialog-shell {
+  width: 560px;
+}
+
+/* Figma Frame 18 & 19: Preferences General & Shortcuts */
+.preferences-toggle-item {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.preferences-toggle-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.preferences-toggle-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.shortcuts-search-box {
+  height: 36px;
+  padding: 0 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* Figma Frame 20: Share / Export Dialog (560x420) */
+.share-dialog-shell {
+  width: 560px;
+}
+
+.share-link-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+
 

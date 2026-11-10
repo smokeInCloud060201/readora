@@ -233,4 +233,53 @@ mod tests {
         assert_eq!(unlocked.info().page_count, 1);
         assert!(unlocked.info().metadata.is_encrypted);
     }
+
+    #[test]
+    fn adapter_inspects_forms_and_signatures_explicitly() {
+        use app_domain::{FormSupportStatus, SignaturePresenceStatus};
+
+        let adapter = PdfiumEngineAdapter::new_with_fallback(None);
+        let mut signed_acroform_pdf = String::from(
+            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R] >> /Title (Signed Form) >>\nendobj\n",
+        );
+        signed_acroform_pdf
+            .push_str("2 0 obj\n<< /Type /Pages /Count 1 /MediaBox [0 0 612 792] >>\nendobj\n");
+        signed_acroform_pdf
+            .push_str("4 0 obj\n<< /FT /Tx /T (FullName) /V (Ada Lovelace) >>\nendobj\n");
+        signed_acroform_pdf.push_str("5 0 obj\n<< /FT /Sig /Type /Sig >>\nendobj\n");
+        signed_acroform_pdf.push_str(
+            "10 0 obj\n<< /Type /Page >>\nstream\nBT (Form Page) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        );
+
+        let doc = adapter
+            .open_bytes(
+                signed_acroform_pdf.as_bytes(),
+                &OpenDocumentOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            doc.info().metadata.form_support,
+            FormSupportStatus::AcroFormReadOnly
+        );
+        assert_eq!(doc.info().metadata.form_field_count, 1);
+        assert_eq!(
+            doc.info().metadata.signature_status,
+            SignaturePresenceStatus::SignaturePresentUnverified
+        );
+        assert!(
+            doc.info()
+                .metadata
+                .signature_status_summary()
+                .contains("cryptographic certificate trust not verified")
+        );
+
+        let xfa_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA (stream) >> >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let xfa_doc = adapter
+            .open_bytes(xfa_pdf, &OpenDocumentOptions::default())
+            .unwrap();
+        assert_eq!(
+            xfa_doc.info().metadata.form_support,
+            FormSupportStatus::UnsupportedXfa
+        );
+    }
 }
