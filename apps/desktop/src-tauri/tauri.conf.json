@@ -39,6 +39,7 @@
       "../../../sbom.cdx.json"
     ],
     "icon": [
+      "../../../assets/icons/32x32.png",
       "../../../assets/icons/icon.png"
     ],
     "macOS": {

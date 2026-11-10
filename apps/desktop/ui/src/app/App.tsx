@@ -24,6 +24,7 @@ import {
   type LibraryCollectionView,
 } from "../shared/components/EmptyWorkspace";
 import { FocusIcon } from "../shared/components/FocusIcon";
+import { ReadoraLogo } from "../shared/components/ReadoraLogo";
 import {
   rotationToDegrees,
   type AnnotationDto,
@@ -541,7 +542,7 @@ export const App: React.FC = () => {
         <nav className="app-rail" aria-label="Application Navigation Rail">
           <div className="app-rail-top">
             <div className="app-rail-logo" title="Focus Reader · Readora">
-              F
+              <ReadoraLogo size={22} />
             </div>
             <button
               type="button"

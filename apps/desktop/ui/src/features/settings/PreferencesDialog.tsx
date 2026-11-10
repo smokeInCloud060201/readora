@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
 import {
   type AppSettingsDto,
   type FitMode,
@@ -100,7 +101,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
         {/* Left 190px Settings Navigation (Figma Frame 04 / 18 / 19) */}
         <nav className="preferences-nav" aria-label="Preferences Sections">
           <div className="preferences-brand">
-            <div className="preferences-logo">F</div>
+            <div className="preferences-logo">
+              <ReadoraLogo size={18} />
+            </div>
             <span className="preferences-brand-title">Preferences</span>
           </div>
 
