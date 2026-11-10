@@ -12,8 +12,8 @@ impl RecentDocumentRepository for SqliteStorage {
         conn.execute(
             "INSERT INTO recent_documents (
                 document_id, file_path, display_name, last_page, page_count,
-                zoom_pct, rotation_deg, last_opened_unix_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(document_id) DO UPDATE SET
                 file_path = excluded.file_path,
                 display_name = excluded.display_name,
@@ -31,6 +31,8 @@ impl RecentDocumentRepository for SqliteStorage {
                 record.last_zoom.percentage(),
                 record.last_rotation.degrees(),
                 record.last_opened_unix_ms,
+                i32::from(record.is_favorite),
+                i32::from(record.is_archived),
             ],
         )
         .map_err(|e| ApplicationError::Storage(format!("failed to upsert recent document: {e}")))?;
@@ -42,9 +44,9 @@ impl RecentDocumentRepository for SqliteStorage {
         let mut stmt = conn
             .prepare(
                 "SELECT document_id, file_path, display_name, last_page, page_count,
-                        zoom_pct, rotation_deg, last_opened_unix_ms
-                 FROM recent_documents
-                 WHERE document_id = ?1",
+                        zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived
+                  FROM recent_documents
+                  WHERE document_id = ?1",
             )
             .map_err(|e| ApplicationError::Storage(format!("prepare recent lookup failed: {e}")))?;
 
@@ -68,10 +70,10 @@ impl RecentDocumentRepository for SqliteStorage {
         let mut stmt = conn
             .prepare(
                 "SELECT document_id, file_path, display_name, last_page, page_count,
-                        zoom_pct, rotation_deg, last_opened_unix_ms
-                 FROM recent_documents
-                 ORDER BY last_opened_unix_ms DESC
-                 LIMIT ?1",
+                        zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived
+                  FROM recent_documents
+                  ORDER BY last_opened_unix_ms DESC
+                  LIMIT ?1",
             )
             .map_err(|e| ApplicationError::Storage(format!("prepare recent list failed: {e}")))?;
 
@@ -87,6 +89,42 @@ impl RecentDocumentRepository for SqliteStorage {
             results.push(map_recent_row(row)?);
         }
         Ok(results)
+    }
+
+    fn set_favorite(
+        &self,
+        document_id: &DocumentId,
+        is_favorite: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError> {
+        {
+            let conn = self.lock_connection()?;
+            conn.execute(
+                "UPDATE recent_documents SET is_favorite = ?1 WHERE document_id = ?2",
+                params![i32::from(is_favorite), document_id.as_str()],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("update favorite status failed: {e}"))
+            })?;
+        }
+        self.get(document_id)
+    }
+
+    fn set_archived(
+        &self,
+        document_id: &DocumentId,
+        is_archived: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError> {
+        {
+            let conn = self.lock_connection()?;
+            conn.execute(
+                "UPDATE recent_documents SET is_archived = ?1 WHERE document_id = ?2",
+                params![i32::from(is_archived), document_id.as_str()],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("update archived status failed: {e}"))
+            })?;
+        }
+        self.get(document_id)
     }
 
     fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError> {
@@ -125,6 +163,12 @@ fn map_recent_row(row: &rusqlite::Row<'_>) -> Result<RecentDocument, Application
     let last_opened_unix_ms: i64 = row
         .get(7)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
+    let is_favorite_int: i32 = row
+        .get(8)
+        .map_err(|e| ApplicationError::Storage(e.to_string()))?;
+    let is_archived_int: i32 = row
+        .get(9)
+        .map_err(|e| ApplicationError::Storage(e.to_string()))?;
 
     let document_id = DocumentId::new(raw_id)?;
     let last_zoom = ZoomLevel::from_percentage(zoom_pct).unwrap_or_default();
@@ -139,5 +183,7 @@ fn map_recent_row(row: &rusqlite::Row<'_>) -> Result<RecentDocument, Application
         last_zoom,
         last_rotation,
         last_opened_unix_ms,
+        is_favorite: is_favorite_int != 0,
+        is_archived: is_archived_int != 0,
     })
 }

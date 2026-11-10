@@ -192,6 +192,34 @@ mod tests {
             Ok(self.recents.lock().unwrap().values().cloned().collect())
         }
 
+        fn set_favorite(
+            &self,
+            document_id: &DocumentId,
+            is_favorite: bool,
+        ) -> Result<Option<RecentDocument>, ApplicationError> {
+            let mut guard = self.recents.lock().unwrap();
+            if let Some(entry) = guard.get_mut(document_id) {
+                entry.is_favorite = is_favorite;
+                Ok(Some(entry.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn set_archived(
+            &self,
+            document_id: &DocumentId,
+            is_archived: bool,
+        ) -> Result<Option<RecentDocument>, ApplicationError> {
+            let mut guard = self.recents.lock().unwrap();
+            if let Some(entry) = guard.get_mut(document_id) {
+                entry.is_archived = is_archived;
+                Ok(Some(entry.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
         fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError> {
             self.recents.lock().unwrap().remove(document_id);
             Ok(())

@@ -28,6 +28,12 @@ pub struct RecentDocument {
     pub last_rotation: Rotation,
     /// Timestamp when the document was last opened/updated (Unix milliseconds).
     pub last_opened_unix_ms: i64,
+    /// Whether the user has starred this document into Favorites.
+    #[serde(default)]
+    pub is_favorite: bool,
+    /// Whether the user has moved this document to the Archive.
+    #[serde(default)]
+    pub is_archived: bool,
 }
 
 impl RecentDocument {
@@ -54,6 +60,8 @@ impl RecentDocument {
             last_zoom: view_state.zoom,
             last_rotation: view_state.rotation,
             last_opened_unix_ms,
+            is_favorite: false,
+            is_archived: false,
         }
     }
 }

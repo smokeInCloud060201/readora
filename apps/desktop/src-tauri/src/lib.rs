@@ -62,6 +62,18 @@ mod tests {
         let recents = handler.recent_documents_list(10).unwrap();
         assert_eq!(recents.len(), 1);
 
+        let fav = handler
+            .recent_document_set_favorite(&doc_id, true)
+            .unwrap()
+            .unwrap();
+        assert!(fav.is_favorite);
+
+        let arch = handler
+            .recent_document_set_archived(&doc_id, true)
+            .unwrap()
+            .unwrap();
+        assert!(arch.is_archived);
+
         handler.document_close(&doc_id).unwrap();
     }
 }

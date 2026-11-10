@@ -128,6 +128,29 @@ impl DesktopCommandHandler {
         Ok(self.core.list_recent_documents(limit)?)
     }
 
+    /// Handles `recent_document_set_favorite`.
+    pub fn recent_document_set_favorite(
+        &self,
+        document_id: &str,
+        is_favorite: bool,
+    ) -> Result<Option<RecentDocument>, CommandErrorDto> {
+        Ok(self.core.set_favorite_document(document_id, is_favorite)?)
+    }
+
+    /// Handles `recent_document_set_archived`.
+    pub fn recent_document_set_archived(
+        &self,
+        document_id: &str,
+        is_archived: bool,
+    ) -> Result<Option<RecentDocument>, CommandErrorDto> {
+        Ok(self.core.set_document_archived(document_id, is_archived)?)
+    }
+
+    /// Handles `recent_document_delete`.
+    pub fn recent_document_delete(&self, document_id: &str) -> Result<(), CommandErrorDto> {
+        Ok(self.core.delete_recent_document(document_id)?)
+    }
+
     /// Handles `bookmark_upsert`.
     pub fn bookmark_upsert(
         &self,

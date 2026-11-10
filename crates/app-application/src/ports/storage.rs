@@ -15,6 +15,20 @@ pub trait RecentDocumentRepository: Send + Sync {
     /// Lists up to `limit` recent documents ordered by `last_opened_unix_ms` descending.
     fn list(&self, limit: usize) -> Result<Vec<RecentDocument>, ApplicationError>;
 
+    /// Updates the favorite status of a recent document entry.
+    fn set_favorite(
+        &self,
+        document_id: &DocumentId,
+        is_favorite: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError>;
+
+    /// Updates the archived status of a recent document entry.
+    fn set_archived(
+        &self,
+        document_id: &DocumentId,
+        is_archived: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError>;
+
     /// Removes a recent document entry by ID.
     fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError>;
 }

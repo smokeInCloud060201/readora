@@ -8,11 +8,13 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use app_application::ApplicationError;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub mod repositories;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_0002: &str =
+    include_str!("../migrations/0002_library_collections_and_annotations.sql");
 
 /// Thread-safe SQLite storage adapter implementing `RecentDocumentRepository`,
 /// `BookmarkRepository`, and `SettingsRepository`.
@@ -65,6 +67,29 @@ impl SqliteStorage {
         .map_err(|e| {
             ApplicationError::Storage(format!("failed to record schema migration 1: {e}"))
         })?;
+
+        let has_m2: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 2",
+                params![],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ApplicationError::Storage(format!("failed to query migration 2: {e}")))?;
+
+        if has_m2.is_none() {
+            tx.execute_batch(MIGRATION_0002).map_err(|e| {
+                ApplicationError::Storage(format!("failed to apply migration 0002: {e}"))
+            })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_unix_ms) VALUES (2, 0)",
+                params![],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to record schema migration 2: {e}"))
+            })?;
+        }
+
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit migration transaction: {e}"))
         })?;
@@ -106,7 +131,15 @@ mod tests {
         let loaded_recent = storage.get(&doc_id).unwrap().unwrap();
         assert_eq!(loaded_recent.last_page.zero_based(), 7);
         assert_eq!(loaded_recent.display_name, "test.pdf");
+        assert!(!loaded_recent.is_favorite);
+        assert!(!loaded_recent.is_archived);
         assert_eq!(storage.list(10).unwrap().len(), 1);
+
+        // Favorite and Archive flags persist across updates
+        let fav = storage.set_favorite(&doc_id, true).unwrap().unwrap();
+        assert!(fav.is_favorite);
+        let arch = storage.set_archived(&doc_id, true).unwrap().unwrap();
+        assert!(arch.is_archived);
 
         // Bookmark upsert on same (document_id, page_index) updates label in place
         let bm1 = Bookmark::new(

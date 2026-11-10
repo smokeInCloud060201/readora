@@ -243,6 +243,32 @@ impl AppCore {
         self.storage.list(limit)
     }
 
+    /// Sets the favorite flag on a recent document record.
+    pub fn set_favorite_document(
+        &self,
+        document_id: &str,
+        is_favorite: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError> {
+        let doc_id = DocumentId::new(document_id)?;
+        self.storage.set_favorite(&doc_id, is_favorite)
+    }
+
+    /// Sets the archived flag on a recent document record.
+    pub fn set_document_archived(
+        &self,
+        document_id: &str,
+        is_archived: bool,
+    ) -> Result<Option<RecentDocument>, ApplicationError> {
+        let doc_id = DocumentId::new(document_id)?;
+        self.storage.set_archived(&doc_id, is_archived)
+    }
+
+    /// Permanently removes a document entry from recent/archived library records.
+    pub fn delete_recent_document(&self, document_id: &str) -> Result<(), ApplicationError> {
+        let doc_id = DocumentId::new(document_id)?;
+        self.storage.remove(&doc_id)
+    }
+
     /// Creates or updates a user bookmark on a page.
     pub fn upsert_bookmark(
         &self,
