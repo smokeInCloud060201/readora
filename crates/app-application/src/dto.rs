@@ -211,3 +211,26 @@ pub struct SystemDiagnosticsDto {
     /// Third-party open-source component inventory (SBOM summary).
     pub third_party_notices: Vec<ThirdPartyNoticeDto>,
 }
+
+/// Summary of an application-scoped data and cache cleanup (for uninstall or local reset).
+///
+/// Only files and directories created by Readora (`readora.sqlite*`, Readora cache entries,
+/// and Readora temporary files) are ever removed; user PDF documents and unrelated files
+/// on the filesystem are strictly untouched.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppCleanupReportDto {
+    /// Number of SQLite database files removed (`readora.sqlite`, `-wal`, `-shm`, `-journal`).
+    pub removed_database_files: usize,
+    /// Number of application cache entries removed from the Readora cache directory.
+    pub removed_cache_entries: usize,
+    /// Number of Readora temporary/staging files removed.
+    pub removed_temp_entries: usize,
+    /// Whether the empty Readora application data directory itself was removed.
+    pub data_dir_removed: bool,
+    /// Whether the empty Readora cache directory itself was removed.
+    pub cache_dir_removed: bool,
+    /// Privacy-redacted data directory that was cleaned.
+    pub redacted_data_dir: String,
+    /// Privacy-redacted cache directory that was cleaned.
+    pub redacted_cache_dir: String,
+}

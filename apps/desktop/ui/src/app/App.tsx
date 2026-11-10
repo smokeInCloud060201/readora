@@ -424,6 +424,22 @@ export const App: React.FC = () => {
     setStatusMessage("Preferences saved");
   };
 
+  const handleCleanupAppData = async () => {
+    const report = await readoraApi.cleanupApplicationData();
+    const freshSettings = await readoraApi.getSettings();
+    setSession(null);
+    setRenderedPage(null);
+    setPageText("");
+    setSearchHits([]);
+    setAnnotations([]);
+    setRecentDocs([]);
+    setSettings(freshSettings);
+    setShowPreferences(false);
+    setStatusMessage(
+      `Cleaned up Readora database (${report.removed_database_files} files) and cache (${report.removed_cache_entries} entries) — PDF files on disk untouched`,
+    );
+  };
+
   const handleToggleTheme = async () => {
     const nextTheme = settings.theme === "dark" ? "light" : "dark";
     const updated = await readoraApi.updateSettings({ theme: nextTheme });
@@ -876,6 +892,7 @@ export const App: React.FC = () => {
           settings={settings}
           initialSection={preferencesSection}
           onSave={(patch) => void handleSavePreferences(patch)}
+          onCleanupAppData={() => void handleCleanupAppData()}
           onClose={() => setShowPreferences(false)}
         />
       )}

@@ -1,9 +1,10 @@
 //! Typed IPC command handlers bridging the desktop frontend to `AppCore`.
 
 use app_application::{
-    ApplicationError, DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction,
-    OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
-    SettingsPatchDto, SystemDiagnosticsDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    AppCleanupReportDto, ApplicationError, DocumentSessionDto, ExportAnnotationsBundleDto,
+    NavigationAction, OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto,
+    SearchRequestDto, SettingsPatchDto, SystemDiagnosticsDto, UpsertAnnotationCommand,
+    UpsertBookmarkCommand,
 };
 use app_core::AppCore;
 use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
@@ -213,5 +214,10 @@ impl DesktopCommandHandler {
     /// Handles `system_diagnostics`.
     pub fn system_diagnostics(&self) -> Result<SystemDiagnosticsDto, CommandErrorDto> {
         Ok(self.core.system_diagnostics()?)
+    }
+
+    /// Handles `app_cleanup_data` (removes only Readora-created database, cache, and temp files).
+    pub fn app_cleanup_data(&self) -> Result<AppCleanupReportDto, CommandErrorDto> {
+        Ok(self.core.cleanup_application_data()?)
     }
 }

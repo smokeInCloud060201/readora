@@ -21,6 +21,7 @@ interface PreferencesDialogProps {
   settings: AppSettingsDto;
   initialSection?: PreferencesSection;
   onSave: (patch: SettingsPatchDto) => void;
+  onCleanupAppData?: () => void;
   onClose: () => void;
 }
 
@@ -39,6 +40,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   settings,
   initialSection = "appearance",
   onSave,
+  onCleanupAppData,
   onClose,
 }) => {
   const [activeSection, setActiveSection] =
@@ -284,6 +286,28 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   <option value="manual">100% (Actual size)</option>
                 </select>
               </label>
+
+              {onCleanupAppData && (
+                <div className="preferences-toggle-item">
+                  <div>
+                    <span className="preferences-toggle-title">
+                      Clean up application data &amp; cache
+                    </span>
+                    <span className="preferences-toggle-sub">
+                      Removes only Readora’s SQLite database and render cache.
+                      Your PDF files on disk are never deleted.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="focus-btn secondary danger-text"
+                    onClick={onCleanupAppData}
+                    aria-label="Clean up application data and cache"
+                  >
+                    Clean up app data
+                  </button>
+                </div>
+              )}
             </div>
           ) : activeSection === "shortcuts" ? (
             <div className="shortcuts-pane">

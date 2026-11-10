@@ -11,15 +11,16 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
-    AnnotationRepository, ApplicationError, BookmarkRepository, DocumentSessionDto,
-    ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest, PlatformPort,
-    RecentDocumentRepository, RenderCachePort, RenderCancellationPort, RenderPageCommand,
-    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SettingsRepository,
-    SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
-    execute_delete_annotation, execute_delete_bookmark, execute_export_annotations_bundle,
-    execute_get_settings, execute_list_annotations, execute_list_bookmarks,
-    execute_navigation_action, execute_open_document, execute_render_page, execute_search_document,
-    execute_update_settings, execute_upsert_annotation, execute_upsert_bookmark,
+    AnnotationRepository, AppCleanupReportDto, ApplicationError, BookmarkRepository,
+    DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest,
+    PlatformPort, RecentDocumentRepository, RenderCachePort, RenderCancellationPort,
+    RenderPageCommand, RenderedPageResultDto, SearchRequestDto, SettingsPatchDto,
+    SettingsRepository, SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand,
+    UpsertBookmarkCommand, execute_delete_annotation, execute_delete_bookmark,
+    execute_export_annotations_bundle, execute_get_settings, execute_list_annotations,
+    execute_list_bookmarks, execute_navigation_action, execute_open_document, execute_render_page,
+    execute_search_document, execute_update_settings, execute_upsert_annotation,
+    execute_upsert_bookmark,
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
@@ -421,6 +422,40 @@ impl AppCore {
                 },
             ],
         })
+    }
+
+    /// Cleans up all Readora-created application data (SQLite database tables/files, render cache,
+    /// and temporary sample files) for uninstall preparation or complete local state reset.
+    ///
+    /// Never modifies or deletes user PDF documents or unrelated files on disk.
+    pub fn cleanup_application_data(&self) -> Result<AppCleanupReportDto, ApplicationError> {
+        let open_ids: Vec<DocumentId> = {
+            let guard = self.sessions.read().map_err(|_| {
+                ApplicationError::Platform("session registry lock poisoned".to_owned())
+            })?;
+            guard.keys().cloned().collect()
+        };
+
+        for doc_id in &open_ids {
+            self.cancellation.clear_document(doc_id);
+            self.render_cache.invalidate_document(doc_id);
+        }
+
+        {
+            let mut guard = self.sessions.write().map_err(|_| {
+                ApplicationError::Platform("session registry lock poisoned".to_owned())
+            })?;
+            guard.clear();
+        }
+
+        self.storage.reset_all_application_tables()?;
+        NativePlatformAdapter::cleanup_default_app_artifacts()
+    }
+
+    /// Performs OS-level uninstall cleanup of Readora's default data and cache directories
+    /// without opening a database connection first.
+    pub fn cleanup_default_app_artifacts() -> Result<AppCleanupReportDto, ApplicationError> {
+        NativePlatformAdapter::cleanup_default_app_artifacts()
     }
 
     /// Writes a multi-page sample PDF into `target_dir` and returns its path so the user can

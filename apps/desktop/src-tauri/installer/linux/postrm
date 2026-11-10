@@ -1,0 +1,40 @@
+#!/bin/sh
+# Readora Debian/Ubuntu/RPM post-removal script
+# Removes ONLY Readora's own SQLite database and cache artifacts.
+# Never deletes user PDF documents or non-empty directories containing unrelated files.
+set -e
+
+case "$1" in
+  purge|remove)
+    TARGET_USER="${SUDO_USER:-$USER}"
+    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+      USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6 2>/dev/null || echo "/home/$TARGET_USER")
+    else
+      USER_HOME="$HOME"
+    fi
+
+    if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
+      DATA_DIR="${XDG_DATA_HOME:-$USER_HOME/.local/share}/readora"
+      CACHE_DIR="${XDG_CACHE_HOME:-$USER_HOME/.cache}/readora"
+
+      if [ -d "$DATA_DIR" ]; then
+        rm -f "$DATA_DIR/readora.sqlite" \
+              "$DATA_DIR/readora.sqlite-wal" \
+              "$DATA_DIR/readora.sqlite-shm" \
+              "$DATA_DIR/readora.sqlite-journal"
+        rm -f "$DATA_DIR/cache/"*.png "$DATA_DIR/cache/"*.cache "$DATA_DIR/cache/"*.tmp "$DATA_DIR/cache/"*.json 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty "$DATA_DIR/cache" 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty "$DATA_DIR" 2>/dev/null || true
+      fi
+
+      if [ -d "$CACHE_DIR" ]; then
+        rm -f "$CACHE_DIR/render-cache/"*.png "$CACHE_DIR/render-cache/"*.cache 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty "$CACHE_DIR/render-cache" 2>/dev/null || true
+        rm -f "$CACHE_DIR/"*.png "$CACHE_DIR/"*.cache "$CACHE_DIR/"*.tmp "$CACHE_DIR/"*.json 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty "$CACHE_DIR" 2>/dev/null || true
+      fi
+    fi
+    ;;
+esac
+
+exit 0

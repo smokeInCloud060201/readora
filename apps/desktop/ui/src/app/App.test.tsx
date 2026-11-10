@@ -330,5 +330,19 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
         screen.getByText(/Focus Reader 1\.1\.0 staged/i),
       ).toBeInTheDocument();
     });
+
+    // 7. Test Clean up application data & cache in Preferences -> General
+    fireEvent.click(screen.getByLabelText("Preferences"));
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    fireEvent.click(
+      screen.getByLabelText("Clean up application data and cache"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Cleaned up Readora database/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Your library")).toBeInTheDocument();
+    });
   });
 });

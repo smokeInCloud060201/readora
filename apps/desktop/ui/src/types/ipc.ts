@@ -208,6 +208,16 @@ export interface SystemDiagnosticsDto {
   third_party_notices: ThirdPartyNoticeDto[];
 }
 
+export interface AppCleanupReportDto {
+  removed_database_files: number;
+  removed_cache_entries: number;
+  removed_temp_entries: number;
+  data_dir_removed: boolean;
+  cache_dir_removed: boolean;
+  redacted_data_dir: string;
+  redacted_cache_dir: string;
+}
+
 export interface CommandErrorDto {
   code: string;
   message: string;

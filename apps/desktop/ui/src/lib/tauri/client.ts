@@ -13,6 +13,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   type AnnotationDto,
+  type AppCleanupReportDto,
   type AppSettingsDto,
   type BookmarkDto,
   type CommandErrorDto,
@@ -1045,6 +1046,37 @@ class BrowserFallbackBridge {
       ],
     };
   }
+
+  cleanupApplicationData(): AppCleanupReportDto {
+    const removedCacheItems =
+      this.renderCache.size +
+      this.storedPdfsByDocId.size +
+      this.sessions.size;
+    this.sessions.clear();
+    this.storedPdfsByDocId.clear();
+    this.storedPdfsByPath.clear();
+    this.recents = [];
+    this.annotations.clear();
+    this.renderCache.clear();
+    this.settings = {
+      theme: "system",
+      default_layout: "continuous",
+      default_fit_mode: "fit_width",
+      default_zoom: 1.0,
+      render_cache_budget_bytes: 64 * 1024 * 1024,
+      prefetch_window: 1,
+      show_extracted_text_layer: false,
+    };
+    return {
+      removed_database_files: 1,
+      removed_cache_entries: removedCacheItems,
+      removed_temp_entries: 0,
+      data_dir_removed: true,
+      cache_dir_removed: true,
+      redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
+      redacted_cache_dir: "~/Library/Caches/com.readora.desktop",
+    };
+  }
 }
 
 const fallbackBridge = new BrowserFallbackBridge();
@@ -1334,5 +1366,14 @@ export const readoraApi = {
       return invoke<SystemDiagnosticsDto>("system_diagnostics");
     }
     return fallbackBridge.getSystemDiagnostics();
+  },
+
+  async cleanupApplicationData(): Promise<AppCleanupReportDto> {
+    const localReport = fallbackBridge.cleanupApplicationData();
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AppCleanupReportDto>("app_cleanup_data");
+    }
+    return localReport;
   },
 };

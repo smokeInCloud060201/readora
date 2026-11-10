@@ -10,9 +10,27 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use app_application::{ApplicationError, PlatformPort, ResolvedFileInfo};
+use app_application::{AppCleanupReportDto, ApplicationError, PlatformPort, ResolvedFileInfo};
 use app_domain::{DocumentId, sanitize_display_name};
 use sha2::{Digest, Sha256};
+
+const ALLOWED_APP_DIR_NAMES: &[&str] = &[
+    "com.readora.desktop",
+    "Readora",
+    "readora",
+    "readora-data",
+    "readora-cache",
+    "readora-samples",
+];
+
+const KNOWN_SQLITE_FILES: &[&str] = &[
+    "readora.sqlite",
+    "readora.sqlite-wal",
+    "readora.sqlite-shm",
+    "readora.sqlite-journal",
+];
+
+const KNOWN_CACHE_EXTENSIONS: &[&str] = &["png", "cache", "tmp", "json", "bin"];
 
 /// Default platform adapter for desktop operating systems (macOS, Windows, Linux).
 #[derive(Debug, Clone, Default)]
@@ -71,6 +89,49 @@ impl NativePlatformAdapter {
         std::env::temp_dir().join("readora-data")
     }
 
+    /// Resolves the OS-appropriate application cache directory used exclusively by Readora.
+    #[must_use]
+    pub fn resolve_app_cache_dir() -> PathBuf {
+        if let Ok(override_dir) = std::env::var("READORA_CACHE_DIR") {
+            let trimmed = override_dir.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home)
+                    .join("Library")
+                    .join("Caches")
+                    .join("com.readora.desktop");
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                return PathBuf::from(local_appdata).join("Readora").join("Cache");
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+                let trimmed = xdg.trim();
+                if !trimmed.is_empty() {
+                    return PathBuf::from(trimmed).join("readora");
+                }
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home).join(".cache").join("readora");
+            }
+        }
+
+        std::env::temp_dir().join("readora-cache")
+    }
+
     /// Returns a privacy-safe representation of the OS application data directory
     /// without exposing the local username or absolute home path in support diagnostics.
     #[must_use]
@@ -93,27 +154,195 @@ impl NativePlatformAdapter {
         }
     }
 
+    /// Returns a privacy-safe representation of the OS application cache directory.
+    #[must_use]
+    pub const fn redacted_cache_dir_display() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            "~/Library/Caches/com.readora.desktop"
+        }
+        #[cfg(target_os = "windows")]
+        {
+            "%LOCALAPPDATA%\\Readora\\Cache"
+        }
+        #[cfg(target_os = "linux")]
+        {
+            "~/.cache/readora"
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            "$TMPDIR/readora-cache"
+        }
+    }
+
+    /// Verifies that a target directory path is a dedicated Readora application folder
+    /// (and never a root, home, Desktop, or Documents directory) before any cleanup.
+    #[must_use]
+    pub fn is_safe_readora_directory(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return false;
+        };
+        if ALLOWED_APP_DIR_NAMES.contains(&name) {
+            return true;
+        }
+        if name.eq_ignore_ascii_case("cache") {
+            if let Some(parent_name) = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+            {
+                return ALLOWED_APP_DIR_NAMES.contains(&parent_name);
+            }
+        }
+        false
+    }
+
+    /// Removes Readora's SQLite database files (`readora.sqlite`, `-wal`, `-shm`, `-journal`),
+    /// temporary atomic-write files, and dedicated cache files from the given application
+    /// directories for clean uninstall or local state reset.
+    ///
+    /// Strictly removes **only** artifacts created by Readora. Any unrelated user files or
+    /// external PDF documents are never touched, and directories are removed only via
+    /// non-recursive `fs::remove_dir` when completely empty.
+    pub fn cleanup_all_app_artifacts(
+        data_dir: &Path,
+        cache_dir: &Path,
+    ) -> Result<AppCleanupReportDto, ApplicationError> {
+        let mut report = AppCleanupReportDto {
+            redacted_data_dir: Self::redacted_data_dir_display().to_owned(),
+            redacted_cache_dir: Self::redacted_cache_dir_display().to_owned(),
+            ..AppCleanupReportDto::default()
+        };
+
+        if data_dir.exists() {
+            if !Self::is_safe_readora_directory(data_dir) {
+                return Err(ApplicationError::Platform(
+                    "refusing to clean directory that is not a dedicated Readora application folder"
+                        .to_owned(),
+                ));
+            }
+
+            // 1. Remove known SQLite database files created by Readora
+            for file_name in KNOWN_SQLITE_FILES {
+                let candidate = data_dir.join(file_name);
+                if candidate.is_file() {
+                    fs::remove_file(&candidate).map_err(|e| {
+                        ApplicationError::Platform(format!(
+                            "failed to remove application database file {file_name}: {e}"
+                        ))
+                    })?;
+                    report.removed_database_files += 1;
+                }
+            }
+
+            // 2. Remove Readora atomic-write temp files (`.export.tmp-*`, `.readora*.tmp-*`) in data_dir
+            if let Ok(entries) = fs::read_dir(data_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(fname) = path.file_name().and_then(|n| n.to_str())
+                        && path.is_file()
+                        && fname.starts_with('.')
+                        && fname.contains(".tmp-")
+                        && fs::remove_file(&path).is_ok()
+                    {
+                        report.removed_temp_entries += 1;
+                    }
+                }
+            }
+
+            // 3. Clean dedicated `cache` subdirectory inside data_dir if present
+            let nested_cache = data_dir.join("cache");
+            if nested_cache.is_dir() {
+                report.removed_cache_entries += Self::clean_known_cache_files_in_dir(&nested_cache);
+                let _ = fs::remove_dir(&nested_cache);
+            }
+
+            // Remove data_dir only if completely empty (never deletes unrelated files)
+            if fs::remove_dir(data_dir).is_ok() {
+                report.data_dir_removed = true;
+            }
+        }
+
+        if cache_dir.exists() {
+            if !Self::is_safe_readora_directory(cache_dir) {
+                return Err(ApplicationError::Platform(
+                    "refusing to clean cache path that is not a dedicated Readora cache folder"
+                        .to_owned(),
+                ));
+            }
+            report.removed_cache_entries += Self::clean_known_cache_files_in_dir(cache_dir);
+            if fs::remove_dir(cache_dir).is_ok() {
+                report.cache_dir_removed = true;
+            }
+        }
+
+        // Also clean Readora's temporary sample directory (`$TMPDIR/readora-samples`) if present
+        let sample_dir = std::env::temp_dir().join("readora-samples");
+        if sample_dir.is_dir() {
+            let sample_file = sample_dir.join("Readora-Welcome-Guide.pdf");
+            if sample_file.is_file() && fs::remove_file(&sample_file).is_ok() {
+                report.removed_temp_entries += 1;
+            }
+            let _ = fs::remove_dir(&sample_dir);
+        }
+
+        Ok(report)
+    }
+
+    /// Cleans the default OS Readora data and cache directories (`resolve_app_data_dir()` and
+    /// `resolve_app_cache_dir()`).
+    pub fn cleanup_default_app_artifacts() -> Result<AppCleanupReportDto, ApplicationError> {
+        let data_dir = Self::resolve_app_data_dir();
+        let cache_dir = Self::resolve_app_cache_dir();
+        Self::cleanup_all_app_artifacts(&data_dir, &cache_dir)
+    }
+
+    fn clean_known_cache_files_in_dir(dir: &Path) -> usize {
+        let mut removed = 0;
+        let Ok(entries) = fs::read_dir(dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let is_known_cache_file = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        KNOWN_CACHE_EXTENSIONS
+                            .iter()
+                            .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+                    })
+                    || path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with("readora-")
+                                || name.starts_with("render-cache")
+                                || (name.starts_with('.') && name.contains(".tmp-"))
+                        });
+                if is_known_cache_file && fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            } else if path.is_dir()
+                && let Some(sub_name) = path.file_name().and_then(|n| n.to_str())
+                && matches!(sub_name, "render-cache" | "thumbnails" | "pages" | "temp")
+            {
+                removed += Self::clean_known_cache_files_in_dir(&path);
+                let _ = fs::remove_dir(&path);
+            }
+        }
+        removed
+    }
+
     /// Removes Readora's SQLite database files (`readora.sqlite`, `-wal`, `-shm`) from
     /// the given application data directory for clean uninstall or local state reset.
     pub fn cleanup_app_data_dir(data_dir: &Path) -> Result<bool, ApplicationError> {
-        if !data_dir.exists() {
-            return Ok(false);
-        }
-        let mut removed_any = false;
-        for file_name in ["readora.sqlite", "readora.sqlite-wal", "readora.sqlite-shm"] {
-            let candidate = data_dir.join(file_name);
-            if candidate.exists() {
-                fs::remove_file(&candidate).map_err(|e| {
-                    ApplicationError::Platform(format!(
-                        "failed to remove application data file {file_name}: {e}"
-                    ))
-                })?;
-                removed_any = true;
-            }
-        }
-        // Remove directory if empty
-        let _ = fs::remove_dir(data_dir);
-        Ok(removed_any)
+        let cache_dir = data_dir.join("cache");
+        let report = Self::cleanup_all_app_artifacts(data_dir, &cache_dir)?;
+        Ok(report.removed_database_files > 0
+            || report.removed_cache_entries > 0
+            || report.removed_temp_entries > 0)
     }
 }
 
@@ -274,21 +503,72 @@ mod tests {
     fn platform_uninstall_cleanup_removes_sqlite_artifacts_and_redacts_paths() {
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().join("com.readora.desktop");
+        let cache_dir = dir.path().join("readora-cache");
         let adapter = NativePlatformAdapter::new();
 
         let db_file = data_dir.join("readora.sqlite");
         let wal_file = data_dir.join("readora.sqlite-wal");
+        let cache_file = cache_dir.join("render-cache").join("page-0.png");
         adapter
             .atomic_write_file(&db_file.to_string_lossy(), b"sqlite-bytes")
             .unwrap();
         adapter
             .atomic_write_file(&wal_file.to_string_lossy(), b"wal-bytes")
             .unwrap();
+        adapter
+            .atomic_write_file(&cache_file.to_string_lossy(), b"png-cache-bytes")
+            .unwrap();
 
         assert!(db_file.exists());
-        assert!(NativePlatformAdapter::cleanup_app_data_dir(&data_dir).unwrap());
+        assert!(cache_file.exists());
+        let report =
+            NativePlatformAdapter::cleanup_all_app_artifacts(&data_dir, &cache_dir).unwrap();
+        assert_eq!(report.removed_database_files, 2);
+        assert_eq!(report.removed_cache_entries, 1);
+        assert!(report.data_dir_removed);
+        assert!(report.cache_dir_removed);
         assert!(!db_file.exists());
         assert!(!wal_file.exists());
+        assert!(!cache_file.exists());
         assert!(!NativePlatformAdapter::redacted_data_dir_display().is_empty());
+        assert!(!NativePlatformAdapter::redacted_cache_dir_display().is_empty());
+    }
+
+    #[test]
+    fn platform_uninstall_cleanup_never_deletes_unrelated_user_files_or_non_app_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("com.readora.desktop");
+        let cache_dir = dir.path().join("readora-cache");
+        let user_docs_dir = dir.path().join("Documents");
+        let adapter = NativePlatformAdapter::new();
+
+        let db_file = data_dir.join("readora.sqlite");
+        let unrelated_file = data_dir.join("user-personal-notes.pdf");
+        let external_pdf = user_docs_dir.join("contract.pdf");
+
+        adapter
+            .atomic_write_file(&db_file.to_string_lossy(), b"sqlite-bytes")
+            .unwrap();
+        adapter
+            .atomic_write_file(&unrelated_file.to_string_lossy(), b"%PDF-1.7 user file")
+            .unwrap();
+        adapter
+            .atomic_write_file(&external_pdf.to_string_lossy(), b"%PDF-1.7 external")
+            .unwrap();
+
+        // Refuses to clean a non-Readora directory like `Documents`
+        assert!(
+            NativePlatformAdapter::cleanup_all_app_artifacts(&user_docs_dir, &cache_dir).is_err()
+        );
+        assert!(external_pdf.exists());
+
+        // Removes `readora.sqlite` but leaves `user-personal-notes.pdf` and `data_dir` untouched
+        let report =
+            NativePlatformAdapter::cleanup_all_app_artifacts(&data_dir, &cache_dir).unwrap();
+        assert_eq!(report.removed_database_files, 1);
+        assert!(!report.data_dir_removed);
+        assert!(!db_file.exists());
+        assert!(unrelated_file.exists());
+        assert!(external_pdf.exists());
     }
 }

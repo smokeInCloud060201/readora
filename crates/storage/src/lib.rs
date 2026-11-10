@@ -147,6 +147,23 @@ impl SqliteStorage {
             .flatten();
         Ok(version.unwrap_or(0))
     }
+
+    /// Wipes all Readora-persisted rows (`annotations`, `bookmarks`, `recent_documents`,
+    /// `app_settings`) and checkpoints/truncates the SQLite WAL journal for clean reset or uninstall.
+    pub fn reset_all_application_tables(&self) -> Result<(), ApplicationError> {
+        let conn = self.lock_connection()?;
+        conn.execute_batch(
+            "DELETE FROM annotations;
+             DELETE FROM bookmarks;
+             DELETE FROM recent_documents;
+             DELETE FROM app_settings;
+             PRAGMA wal_checkpoint(TRUNCATE);",
+        )
+        .map_err(|e| {
+            ApplicationError::Storage(format!("failed to reset application SQLite tables: {e}"))
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
