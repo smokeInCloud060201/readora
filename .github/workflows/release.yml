@@ -32,10 +32,13 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm dpkg-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -57,32 +60,136 @@ jobs:
           cargo test --workspace --release
           cargo build --workspace --release
 
-      - name: Verify SBOM, Third-Party Notices, and generate release-manifest.json
+      - name: Package OS Installers, Verify SBOM, and Generate Release Manifest
         shell: bash
         env:
           ARTIFACT_LABEL: ${{ matrix.artifact_label }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
         run: |
+          set -euo pipefail
           test -f THIRD_PARTY_NOTICES.md
           test -f sbom.cdx.json
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum THIRD_PARTY_NOTICES.md sbom.cdx.json > "release-manifests-${ARTIFACT_LABEL}.sha256"
-            BIN_SHA256=$(sha256sum sbom.cdx.json | awk '{print $1}')
-          else
-            shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json > "release-manifests-${ARTIFACT_LABEL}.sha256"
-            BIN_SHA256=$(shasum -a 256 sbom.cdx.json | awk '{print $1}')
-          fi
+
           RAW_TAG="${GITHUB_REF_NAME:-v0.1.0}"
+          if [[ "${RAW_TAG}" != v* ]]; then
+            RAW_TAG="v0.1.0"
+          fi
           CLEAN_VERSION="${RAW_TAG#v}"
           PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           REPO_SLUG="${GITHUB_REPOSITORY:-smokeInCloud060201/readora}"
-          cat > "release-manifest-${ARTIFACT_LABEL}.json" <<EOF
+
+          mkdir -p release-artifacts
+
+          if [[ "${MATRIX_PLATFORM}" == "macos-latest" ]]; then
+            APP_DIR="dist-macos/Readora.app/Contents"
+            mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources/ui"
+            cp target/release/readora-desktop "${APP_DIR}/MacOS/readora-desktop"
+            chmod +x "${APP_DIR}/MacOS/readora-desktop"
+            cp -R apps/desktop/ui/dist/* "${APP_DIR}/Resources/ui/"
+            cp assets/icons/icon.png "${APP_DIR}/Resources/icon.png"
+            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${APP_DIR}/Resources/"
+            cp apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh "${APP_DIR}/Resources/uninstall-cleanup.sh"
+            chmod +x "${APP_DIR}/Resources/uninstall-cleanup.sh"
+            cat > "${APP_DIR}/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDisplayName</key>
+            <string>Readora</string>
+            <key>CFBundleExecutable</key>
+            <string>readora-desktop</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.readora.desktop</string>
+            <key>CFBundleName</key>
+            <string>Readora</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${CLEAN_VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${CLEAN_VERSION}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+            PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.dmg"
+            hdiutil create -volname "Readora" -srcfolder dist-macos -ov -format UDZO "${PRIMARY_ASSET}"
+            tar -czf "release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.app.tar.gz" -C dist-macos Readora.app
+
+          elif [[ "${MATRIX_PLATFORM}" == "ubuntu-latest" ]]; then
+            DEB_ROOT="dist-linux/readora-deb"
+            mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps"
+            cp target/release/readora-desktop "${DEB_ROOT}/usr/bin/readora-desktop"
+            chmod 0755 "${DEB_ROOT}/usr/bin/readora-desktop"
+            cp -R apps/desktop/ui/dist/* "${DEB_ROOT}/usr/share/readora/ui/"
+            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${DEB_ROOT}/usr/share/readora/"
+            cp assets/icons/32x32.png "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps/readora.png"
+            cp apps/desktop/src-tauri/installer/linux/postrm "${DEB_ROOT}/DEBIAN/postrm"
+            chmod 0755 "${DEB_ROOT}/DEBIAN/postrm"
+            cat > "${DEB_ROOT}/DEBIAN/control" <<CONTROL
+          Package: readora
+          Version: ${CLEAN_VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Readora Contributors
+          Description: Local-first open-source desktop PDF reader for focused reading
+          CONTROL
+            PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_linux-x86_64.deb"
+            dpkg-deb --build "${DEB_ROOT}" "${PRIMARY_ASSET}"
+            tar -czf "release-artifacts/Readora_${CLEAN_VERSION}_linux-x86_64.tar.gz" -C "${DEB_ROOT}/usr" bin share
+
+          else
+            WIN_STAGE="dist-windows/Readora"
+            mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/installer"
+            cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
+            cp target/release/readora-desktop.exe "release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64.exe"
+            cp -R apps/desktop/ui/dist/* "${WIN_STAGE}/ui/"
+            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
+            cp apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh "${WIN_STAGE}/installer/"
+            PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64-setup.zip"
+            powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist-windows/Readora/*' -DestinationPath '${PRIMARY_ASSET}' -Force"
+          fi
+
+          ASSET_BASENAME=$(basename "${PRIMARY_ASSET}")
+          ASSET_SIZE=$(wc -c < "${PRIMARY_ASSET}" | tr -d '[:space:]')
+          if command -v sha256sum >/dev/null 2>&1; then
+            ASSET_SHA256=$(sha256sum "${PRIMARY_ASSET}" | awk '{print $1}')
+            sha256sum THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
+          else
+            ASSET_SHA256=$(shasum -a 256 "${PRIMARY_ASSET}" | awk '{print $1}')
+            shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
+          fi
+
+          cat > "release-artifacts/release-manifest-${ARTIFACT_LABEL}.json" <<EOF
           {
             "version": "${CLEAN_VERSION}",
             "title": "Focus Reader ${CLEAN_VERSION} is ready",
             "notes": "Verified GitHub Release build for ${ARTIFACT_LABEL}.",
-            "package_size_bytes": 44040192,
-            "sha256": "${BIN_SHA256}",
+            "package_size_bytes": ${ASSET_SIZE},
+            "sha256": "${ASSET_SHA256}",
             "published_at": "${PUBLISHED_AT}",
-            "download_url": "https://github.com/${REPO_SLUG}/releases/tag/${RAW_TAG}"
+            "download_url": "https://github.com/${REPO_SLUG}/releases/download/${RAW_TAG}/${ASSET_BASENAME}"
           }
           EOF
+
+      - name: Upload Installer Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: readora-${{ matrix.artifact_label }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
+      - name: Publish Installers to GitHub Release Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
