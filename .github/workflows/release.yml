@@ -59,21 +59,30 @@ jobs:
 
       - name: Verify SBOM, Third-Party Notices, and generate release-manifest.json
         shell: bash
+        env:
+          ARTIFACT_LABEL: ${{ matrix.artifact_label }}
         run: |
           test -f THIRD_PARTY_NOTICES.md
           test -f sbom.cdx.json
-          shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json > release-manifests-${{ matrix.artifact_label }}.sha256
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum THIRD_PARTY_NOTICES.md sbom.cdx.json > "release-manifests-${ARTIFACT_LABEL}.sha256"
+            BIN_SHA256=$(sha256sum sbom.cdx.json | awk '{print $1}')
+          else
+            shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json > "release-manifests-${ARTIFACT_LABEL}.sha256"
+            BIN_SHA256=$(shasum -a 256 sbom.cdx.json | awk '{print $1}')
+          fi
           RAW_TAG="${GITHUB_REF_NAME:-v0.1.0}"
           CLEAN_VERSION="${RAW_TAG#v}"
-          BIN_SHA256=$(shasum -a 256 sbom.cdx.json | awk '{print $1}')
-          cat > release-manifest-${{ matrix.artifact_label }}.json <<EOF
+          PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          REPO_SLUG="${GITHUB_REPOSITORY:-karsontang/readora}"
+          cat > "release-manifest-${ARTIFACT_LABEL}.json" <<EOF
           {
             "version": "${CLEAN_VERSION}",
             "title": "Focus Reader ${CLEAN_VERSION} is ready",
-            "notes": "Verified GitHub Release build for ${matrix.artifact_label}.",
+            "notes": "Verified GitHub Release build for ${ARTIFACT_LABEL}.",
             "package_size_bytes": 44040192,
             "sha256": "${BIN_SHA256}",
-            "published_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-            "download_url": "https://github.com/${GITHUB_REPOSITORY:-karsontang/readora}/releases/tag/${RAW_TAG}"
+            "published_at": "${PUBLISHED_AT}",
+            "download_url": "https://github.com/${REPO_SLUG}/releases/tag/${RAW_TAG}"
           }
           EOF
