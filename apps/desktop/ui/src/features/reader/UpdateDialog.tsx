@@ -25,6 +25,31 @@ function formatPackageMeta(status: AppUpdateStatusDto): string {
   return `${mb} MB · ${verificationLabel}`;
 }
 
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return <strong key={idx}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      return (
+        <code key={idx} className="update-inline-code">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
+}
+
+function isStructuredChangelog(notes: string): boolean {
+  return (
+    notes.includes("\n") ||
+    /^(#{1,4}\s|[-*•]\s)/m.test(notes) ||
+    notes.length > 160
+  );
+}
+
 export const UpdateDialog: React.FC<UpdateDialogProps> = ({
   updateStatus,
   onConfirmInstall,
@@ -39,11 +64,22 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
     ? (updateStatus.release_title ??
       `Focus Reader ${targetVersion} is ready`)
     : `Focus Reader ${updateStatus.current_version} is up to date`;
-  const subtitleText = isAvailable
+  const rawNotes = isAvailable
     ? (updateStatus.release_notes ??
       `Version ${targetVersion} has been verified and is ready to install.`)
     : `You are running the latest verified build of Focus Reader (${updateStatus.current_version}).`;
+  const hasChangelogBlocks = isAvailable && isStructuredChangelog(rawNotes);
+  const subtitleText = hasChangelogBlocks
+    ? `Version ${targetVersion} has been verified and is ready to install.`
+    : rawNotes;
   const metaLabel = formatPackageMeta(updateStatus);
+
+  const changelogLines = hasChangelogBlocks
+    ? rawNotes
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+    : [];
 
   return (
     <div
@@ -52,7 +88,12 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
       aria-modal="true"
       aria-label="Update Available Dialog"
     >
-      <div className="update-dialog-card" data-node-id="16:342">
+      <div
+        className={`update-dialog-card ${
+          hasChangelogBlocks ? "has-changelog" : ""
+        }`.trim()}
+        data-node-id="16:342"
+      >
         <button
           type="button"
           className="icon-close-btn update-dialog-close"
@@ -75,6 +116,40 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
         <p className="update-dialog-subtitle" data-node-id="16:351">
           {subtitleText}
         </p>
+
+        {hasChangelogBlocks && (
+          <div
+            className="update-changelog-box"
+            aria-label="Release Notes"
+          >
+            {changelogLines.map((line, index) => {
+              if (/^#{1,3}\s+/.test(line)) {
+                const heading = line.replace(/^#{1,3}\s+/, "");
+                return (
+                  <h3 key={index} className="update-changelog-heading">
+                    {renderInlineMarkdown(heading)}
+                  </h3>
+                );
+              }
+              if (/^[-*•]\s+/.test(line)) {
+                const item = line.replace(/^[-*•]\s+/, "");
+                return (
+                  <div key={index} className="update-changelog-item">
+                    <span className="update-changelog-bullet" aria-hidden="true">
+                      •
+                    </span>
+                    <span>{renderInlineMarkdown(item)}</span>
+                  </div>
+                );
+              }
+              return (
+                <p key={index} className="update-changelog-paragraph">
+                  {renderInlineMarkdown(line)}
+                </p>
+              );
+            })}
+          </div>
+        )}
 
         <div className="update-version-status-box" data-node-id="16:352">
           <div className="update-version-info">

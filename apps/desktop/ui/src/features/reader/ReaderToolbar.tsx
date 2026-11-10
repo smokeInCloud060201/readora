@@ -952,26 +952,13 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             </button>
           </div>
 
-          {/* Right Group (2:54): Export, Print, Share, More Actions, Notes Panel */}
+          {/* Right Group (2:54): Print, Share, More Actions, Notes Panel */}
           <div
             className="toolbar-group toolbar-group-right"
             role="group"
             aria-label="Document Actions"
             data-node-id="2:54"
           >
-            {onOpenShare && (
-              <button
-                type="button"
-                className="focus-icon-btn"
-                onClick={onOpenShare}
-                aria-label="Export Annotations"
-                title="Export Annotations"
-                data-node-id="2:55"
-              >
-                <FocusIcon name="download" size={16} />
-              </button>
-            )}
-
             {onOpenPrint && (
               <button
                 type="button"

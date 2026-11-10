@@ -285,6 +285,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(screen.getByText("Forms")).toBeInTheDocument();
 
     // 3. Open Share Dialog (Figma Frame 20) and export annotations bundle
+    expect(
+      screen.queryByLabelText("Export Annotations"),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Share Document"));
     expect(
       screen.getByRole("dialog", { name: "Share Document Dialog" }),
@@ -331,7 +334,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
         JSON.stringify({
           tag_name: "v1.1.0",
           name: "Focus Reader 1.1 is ready",
-          body: "A faster reader, improved annotations, and accessibility updates are ready to install.",
+          body: "### Highlights\n- **Seamless Software Updates**: A faster reader and improved annotations are ready to install.",
           published_at: "2026-11-10T00:00:00Z",
           html_url: "https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.0",
           assets: [
