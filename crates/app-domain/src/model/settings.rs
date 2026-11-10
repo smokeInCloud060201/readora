@@ -1,5 +1,7 @@
 //! Application preferences and resource budget settings.
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
@@ -14,6 +16,10 @@ pub const DEFAULT_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum allowed prefetch window (5 pages ahead/behind).
 pub const MAX_PREFETCH_WINDOW: u32 = 5;
+
+const fn default_auto_check_updates() -> bool {
+    true
+}
 
 /// User-configurable application preferences and performance budgets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +36,36 @@ pub struct AppSettings {
     pub render_cache_budget_bytes: usize,
     /// Number of adjacent pages to prefetch around the current page.
     pub prefetch_window: u32,
+    /// Whether to display the embedded digital text layer below the rendered page.
+    #[serde(default)]
+    pub show_extracted_text_layer: bool,
+    /// Whether Readora should automatically check for staged/available updates on launch.
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
+    /// Active installed semantic version if an update has been applied/staged.
+    #[serde(default)]
+    pub installed_version: Option<String>,
+    /// Semantic version of an update the user chose to defer with "Later".
+    #[serde(default)]
+    pub dismissed_update_version: Option<String>,
+}
+
+/// Compares two semantic version strings (`major.minor.patch`, optionally prefixed with `v`).
+#[must_use]
+pub fn compare_semver(left: &str, right: &str) -> Ordering {
+    fn parse_parts(raw: &str) -> [u64; 3] {
+        let cleaned = raw.trim().trim_start_matches(['v', 'V']);
+        let core = cleaned.split(['-', '+']).next().unwrap_or("");
+        let mut out = [0_u64; 3];
+        for (idx, part) in core.split('.').take(3).enumerate() {
+            out[idx] = part.parse::<u64>().unwrap_or(0);
+        }
+        out
+    }
+
+    let l = parse_parts(left);
+    let r = parse_parts(right);
+    l.cmp(&r)
 }
 
 impl AppSettings {
@@ -63,6 +99,10 @@ impl Default for AppSettings {
             default_zoom: ZoomLevel::ONE_HUNDRED_PERCENT,
             render_cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             prefetch_window: 1,
+            show_extracted_text_layer: false,
+            auto_check_updates: true,
+            installed_version: None,
+            dismissed_update_version: None,
         }
     }
 }

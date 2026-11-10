@@ -568,6 +568,7 @@ version = "0.1.0"
 dependencies = [
  "app-application",
  "app-domain",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",

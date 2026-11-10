@@ -30,6 +30,7 @@ import {
   type AnnotationDto,
   type AnnotationKind,
   type AppSettingsDto,
+  type AppUpdateStatusDto,
   type CommandErrorDto,
   type DocumentSessionDto,
   type NavigationActionDto,
@@ -88,7 +89,8 @@ export const App: React.FC = () => {
   const [showPrintDialog, setShowPrintDialog] = useState<boolean>(false);
   const [showImportDialog, setShowImportDialog] = useState<boolean>(false);
   const [showShareDialog, setShowShareDialog] = useState<boolean>(false);
-  const [hasUpdateAvailable, setHasUpdateAvailable] = useState<boolean>(true);
+  const [updateStatus, setUpdateStatus] =
+    useState<AppUpdateStatusDto | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState<boolean>(false);
   const [libraryCollection, setLibraryCollection] =
     useState<LibraryCollectionView>("all");
@@ -101,6 +103,12 @@ export const App: React.FC = () => {
       ]);
       setRecentDocs(recents);
       setSettings(loadedSettings);
+      if (loadedSettings.auto_check_updates !== false) {
+        const status = await readoraApi.checkForUpdates(false);
+        setUpdateStatus(status);
+      } else {
+        setUpdateStatus(null);
+      }
     } catch {
       // Ignore startup load errors when initializing empty state
     }
@@ -420,13 +428,67 @@ export const App: React.FC = () => {
   const handleSavePreferences = async (patch: SettingsPatchDto) => {
     const updated = await readoraApi.updateSettings(patch);
     setSettings(updated);
+    if (patch.auto_check_updates === false) {
+      setUpdateStatus((prev) =>
+        prev ? { ...prev, update_available: false } : null,
+      );
+    } else if (patch.auto_check_updates === true) {
+      const status = await readoraApi.checkForUpdates(false);
+      setUpdateStatus(status);
+    }
     setShowPreferences(false);
     setStatusMessage("Preferences saved");
+  };
+
+  const handleCheckForUpdates = async () => {
+    try {
+      const status = await readoraApi.checkForUpdates(true);
+      setUpdateStatus(status);
+      setShowUpdateDialog(true);
+      setStatusMessage(
+        status.update_available && status.latest_version
+          ? `Update available: Focus Reader ${status.latest_version}`
+          : `Focus Reader ${status.current_version} is up to date`,
+      );
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to check for updates",
+      );
+    }
+  };
+
+  const handleInstallUpdate = async (version: string) => {
+    try {
+      const nextStatus = await readoraApi.installUpdate(version);
+      const updatedSettings = await readoraApi.getSettings();
+      setUpdateStatus(nextStatus);
+      setSettings(updatedSettings);
+      setShowUpdateDialog(false);
+      setStatusMessage(
+        `Focus Reader ${nextStatus.current_version} staged — will apply on next launch`,
+      );
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to install update",
+      );
+    }
+  };
+
+  const handleDismissUpdate = async (version: string) => {
+    try {
+      const nextStatus = await readoraApi.dismissUpdate(version);
+      setUpdateStatus(nextStatus);
+      setShowUpdateDialog(false);
+      setStatusMessage(`Deferred Focus Reader ${version} update`);
+    } catch {
+      setShowUpdateDialog(false);
+    }
   };
 
   const handleCleanupAppData = async () => {
     const report = await readoraApi.cleanupApplicationData();
     const freshSettings = await readoraApi.getSettings();
+    const freshUpdateStatus = await readoraApi.checkForUpdates(false);
     setSession(null);
     setRenderedPage(null);
     setPageText("");
@@ -434,6 +496,7 @@ export const App: React.FC = () => {
     setAnnotations([]);
     setRecentDocs([]);
     setSettings(freshSettings);
+    setUpdateStatus(freshUpdateStatus);
     setShowPreferences(false);
     setStatusMessage(
       `Cleaned up Readora database (${report.removed_database_files} files) and cache (${report.removed_cache_entries} entries) — PDF files on disk untouched`,
@@ -585,8 +648,8 @@ export const App: React.FC = () => {
         onOpenImportDialog={() => setShowImportDialog(true)}
         onOpenShare={session ? () => setShowShareDialog(true) : undefined}
         onCopyPageText={() => void handleCopyText()}
-        hasUpdateAvailable={hasUpdateAvailable}
-        onOpenUpdateDialog={() => setShowUpdateDialog(true)}
+        hasUpdateAvailable={Boolean(updateStatus?.update_available)}
+        onOpenUpdateDialog={() => void handleCheckForUpdates()}
         onToggleTheme={() => void handleToggleTheme()}
         isFavorite={currentDocIsFavorite}
         onToggleFavorite={
@@ -853,17 +916,12 @@ export const App: React.FC = () => {
         />
       )}
 
-      {showUpdateDialog && (
+      {showUpdateDialog && updateStatus && (
         <UpdateDialog
-          version="1.1.0"
-          sizeLabel="42 MB · Downloaded and verified"
-          onConfirmInstall={(version) => {
-            setShowUpdateDialog(false);
-            setHasUpdateAvailable(false);
-            setStatusMessage(
-              `Focus Reader ${version} staged — will apply on next launch`,
-            );
-          }}
+          updateStatus={updateStatus}
+          onConfirmInstall={(version) => void handleInstallUpdate(version)}
+          onDismiss={(version) => void handleDismissUpdate(version)}
+          onCheckAgain={() => void handleCheckForUpdates()}
           onClose={() => setShowUpdateDialog(false)}
         />
       )}

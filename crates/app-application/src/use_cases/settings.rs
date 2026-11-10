@@ -41,6 +41,12 @@ pub fn execute_update_settings(
     if let Some(prefetch_window) = patch.prefetch_window {
         settings.prefetch_window = prefetch_window;
     }
+    if let Some(show_extracted_text_layer) = patch.show_extracted_text_layer {
+        settings.show_extracted_text_layer = show_extracted_text_layer;
+    }
+    if let Some(auto_check_updates) = patch.auto_check_updates {
+        settings.auto_check_updates = auto_check_updates;
+    }
 
     settings.validate()?;
     settings_repo.save(&settings)?;

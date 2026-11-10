@@ -10,7 +10,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use app_application::{AppCleanupReportDto, ApplicationError, PlatformPort, ResolvedFileInfo};
+use app_application::{
+    AppCleanupReportDto, ApplicationError, PlatformPort, ReleaseManifestDto, ResolvedFileInfo,
+};
 use app_domain::{DocumentId, sanitize_display_name};
 use sha2::{Digest, Sha256};
 
@@ -250,11 +252,14 @@ impl NativePlatformAdapter {
                 }
             }
 
-            // 3. Clean dedicated `cache` subdirectory inside data_dir if present
-            let nested_cache = data_dir.join("cache");
-            if nested_cache.is_dir() {
-                report.removed_cache_entries += Self::clean_known_cache_files_in_dir(&nested_cache);
-                let _ = fs::remove_dir(&nested_cache);
+            // 3. Clean dedicated `cache` and `updates` subdirectories inside data_dir if present
+            for subdir in ["cache", "updates"] {
+                let nested_dir = data_dir.join(subdir);
+                if nested_dir.is_dir() {
+                    report.removed_cache_entries +=
+                        Self::clean_known_cache_files_in_dir(&nested_dir);
+                    let _ = fs::remove_dir(&nested_dir);
+                }
             }
 
             // Remove data_dir only if completely empty (never deletes unrelated files)
@@ -326,7 +331,10 @@ impl NativePlatformAdapter {
                 }
             } else if path.is_dir()
                 && let Some(sub_name) = path.file_name().and_then(|n| n.to_str())
-                && matches!(sub_name, "render-cache" | "thumbnails" | "pages" | "temp")
+                && matches!(
+                    sub_name,
+                    "render-cache" | "thumbnails" | "pages" | "temp" | "updates"
+                )
             {
                 removed += Self::clean_known_cache_files_in_dir(&path);
                 let _ = fs::remove_dir(&path);
@@ -343,6 +351,76 @@ impl NativePlatformAdapter {
         Ok(report.removed_database_files > 0
             || report.removed_cache_entries > 0
             || report.removed_temp_entries > 0)
+    }
+
+    /// Resolves the path to the staged release manifest inside the given data directory.
+    #[must_use]
+    pub fn release_manifest_path_in(data_dir: &Path) -> PathBuf {
+        if let Ok(custom_path) = std::env::var("READORA_UPDATE_MANIFEST") {
+            let trimmed = custom_path.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+        data_dir.join("updates").join("release-manifest.json")
+    }
+
+    /// Reads and validates a staged release manifest from `data_dir/updates/release-manifest.json`
+    /// if present. Returns `Ok(None)` when no update manifest exists on disk.
+    pub fn read_release_manifest_in(
+        data_dir: &Path,
+    ) -> Result<Option<ReleaseManifestDto>, ApplicationError> {
+        let manifest_path = Self::release_manifest_path_in(data_dir);
+        if !manifest_path.is_file() {
+            return Ok(None);
+        }
+
+        let raw_json = fs::read_to_string(&manifest_path).map_err(|e| {
+            ApplicationError::Platform(format!("failed to read release manifest: {e}"))
+        })?;
+        let manifest: ReleaseManifestDto = serde_json::from_str(&raw_json).map_err(|e| {
+            ApplicationError::Platform(format!("invalid release manifest JSON: {e}"))
+        })?;
+        if manifest.version.trim().is_empty() || manifest.sha256.trim().is_empty() {
+            return Err(ApplicationError::Platform(
+                "release manifest is missing required version or sha256 fields".to_owned(),
+            ));
+        }
+        Ok(Some(manifest))
+    }
+
+    /// Atomically stages a verified release manifest inside `data_dir/updates/release-manifest.json`.
+    pub fn stage_release_manifest_in(
+        &self,
+        data_dir: &Path,
+        manifest: &ReleaseManifestDto,
+    ) -> Result<PathBuf, ApplicationError> {
+        if manifest.version.trim().is_empty() || manifest.sha256.trim().is_empty() {
+            return Err(ApplicationError::Platform(
+                "release manifest version and sha256 must not be empty".to_owned(),
+            ));
+        }
+        let manifest_path = Self::release_manifest_path_in(data_dir);
+        let serialized = serde_json::to_vec_pretty(manifest).map_err(|e| {
+            ApplicationError::Platform(format!("failed to serialize release manifest: {e}"))
+        })?;
+        self.atomic_write_file(&manifest_path.to_string_lossy(), &serialized)?;
+        Ok(manifest_path)
+    }
+
+    /// Removes the staged release manifest from `data_dir/updates/release-manifest.json` after installation.
+    pub fn clear_staged_release_manifest_in(data_dir: &Path) -> Result<bool, ApplicationError> {
+        let manifest_path = Self::release_manifest_path_in(data_dir);
+        if manifest_path.is_file() {
+            fs::remove_file(&manifest_path).map_err(|e| {
+                ApplicationError::Platform(format!("failed to remove staged manifest: {e}"))
+            })?;
+            if let Some(parent) = manifest_path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 

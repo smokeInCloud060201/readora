@@ -15,6 +15,7 @@ import {
   type AnnotationDto,
   type AppCleanupReportDto,
   type AppSettingsDto,
+  type AppUpdateStatusDto,
   type BookmarkDto,
   type CommandErrorDto,
   type DocumentMetadataDto,
@@ -25,6 +26,7 @@ import {
   type OpenDocumentRequestDto,
   type OutlineNodeDto,
   type RecentDocumentDto,
+  type ReleaseManifestDto,
   type RenderedPageResultDto,
   type RenderMode,
   type RenderPageCommandDto,
@@ -216,6 +218,39 @@ function hasUsableCanvas2D(): boolean {
   }
 }
 
+function compareSemver(left: string, right: string): number {
+  const parse = (raw: string): [number, number, number] => {
+    const cleaned = raw.trim().replace(/^[vV]/, "");
+    const core = cleaned.split(/[-+]/)[0] ?? "";
+    const parts = core.split(".");
+    return [
+      Number.parseInt(parts[0] ?? "0", 10) || 0,
+      Number.parseInt(parts[1] ?? "0", 10) || 0,
+      Number.parseInt(parts[2] ?? "0", 10) || 0,
+    ];
+  };
+  const l = parse(left);
+  const r = parse(right);
+  for (let i = 0; i < 3; i += 1) {
+    const li = l[i] ?? 0;
+    const ri = r[i] ?? 0;
+    if (li > ri) return 1;
+    if (li < ri) return -1;
+  }
+  return 0;
+}
+
+const DEFAULT_STAGED_RELEASE_MANIFEST: ReleaseManifestDto = {
+  version: "1.1.0",
+  title: "Focus Reader 1.1 is ready",
+  notes:
+    "A faster reader, improved annotations, and accessibility updates are ready to install.",
+  package_size_bytes: 42 * 1024 * 1024,
+  sha256:
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  published_at: "2026-11-10T00:00:00Z",
+};
+
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
   private storedPdfsByDocId = new Map<string, StoredPdfRecord>();
@@ -223,6 +258,9 @@ class BrowserFallbackBridge {
   private renderCache = new Map<string, string>();
   private recents: RecentDocumentDto[] = [];
   private annotations = new Map<string, AnnotationDto[]>();
+  private stagedManifest: ReleaseManifestDto | null = structuredClone(
+    DEFAULT_STAGED_RELEASE_MANIFEST,
+  );
   private settings: AppSettingsDto = {
     theme: "system",
     default_layout: "continuous",
@@ -231,6 +269,9 @@ class BrowserFallbackBridge {
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
     show_extracted_text_layer: false,
+    auto_check_updates: true,
+    installed_version: "1.0.0",
+    dismissed_update_version: null,
   };
   private generation = 1;
 
@@ -904,6 +945,9 @@ class BrowserFallbackBridge {
     if (patch.show_extracted_text_layer !== undefined) {
       this.settings.show_extracted_text_layer = patch.show_extracted_text_layer;
     }
+    if (patch.auto_check_updates !== undefined) {
+      this.settings.auto_check_updates = patch.auto_check_updates;
+    }
     return structuredClone(this.settings);
   }
 
@@ -1005,7 +1049,7 @@ class BrowserFallbackBridge {
 
   getSystemDiagnostics(): SystemDiagnosticsDto {
     return {
-      app_version: "0.1.0",
+      app_version: this.settings.installed_version || "1.0.0",
       target_os: "macos",
       target_arch: "aarch64",
       pdf_engine_kind: "pure_rust_fallback",
@@ -1047,6 +1091,91 @@ class BrowserFallbackBridge {
     };
   }
 
+  checkForUpdates(includeDismissed: boolean): AppUpdateStatusDto {
+    const currentVersion = this.settings.installed_version || "1.0.0";
+    const manifest = this.stagedManifest;
+    const now = Date.now();
+
+    if (manifest && compareSemver(manifest.version, currentVersion) > 0) {
+      const isDismissed =
+        !includeDismissed &&
+        this.settings.dismissed_update_version === manifest.version.trim();
+      const verified =
+        manifest.sha256.trim().length > 0 && manifest.package_size_bytes > 0;
+      return {
+        current_version: currentVersion,
+        update_available: !isDismissed && verified,
+        latest_version: manifest.version,
+        release_title: manifest.title,
+        release_notes: manifest.notes,
+        package_size_bytes: manifest.package_size_bytes,
+        sha256_checksum: manifest.sha256,
+        verified,
+        staged_for_restart: false,
+        checked_at_unix_ms: now,
+      };
+    }
+
+    return {
+      current_version: currentVersion,
+      update_available: false,
+      latest_version: currentVersion,
+      release_title: null,
+      release_notes: null,
+      package_size_bytes: null,
+      sha256_checksum: null,
+      verified: true,
+      staged_for_restart: false,
+      checked_at_unix_ms: now,
+    };
+  }
+
+  stageUpdateManifest(manifest: ReleaseManifestDto): AppUpdateStatusDto {
+    if (!manifest.version?.trim() || !manifest.sha256?.trim()) {
+      throw this.makeError(
+        "platform_error",
+        "Release manifest must include non-empty version and sha256 fields",
+      );
+    }
+    this.stagedManifest = structuredClone(manifest);
+    if (this.settings.dismissed_update_version === manifest.version.trim()) {
+      this.settings.dismissed_update_version = null;
+    }
+    return this.checkForUpdates(true);
+  }
+
+  installUpdate(targetVersion: string): AppUpdateStatusDto {
+    const trimmed = targetVersion.trim();
+    const currentVersion = this.settings.installed_version || "1.0.0";
+    if (!trimmed || compareSemver(trimmed, currentVersion) <= 0) {
+      throw this.makeError(
+        "platform_error",
+        `Target version ${trimmed} is not newer than installed version ${currentVersion}`,
+      );
+    }
+    this.settings.installed_version = trimmed;
+    this.settings.dismissed_update_version = null;
+    this.stagedManifest = null;
+    return {
+      current_version: trimmed,
+      update_available: false,
+      latest_version: trimmed,
+      release_title: null,
+      release_notes: null,
+      package_size_bytes: null,
+      sha256_checksum: null,
+      verified: true,
+      staged_for_restart: true,
+      checked_at_unix_ms: Date.now(),
+    };
+  }
+
+  dismissUpdate(version: string): AppUpdateStatusDto {
+    const trimmed = version.trim();
+    this.settings.dismissed_update_version = trimmed || null;
+    return this.checkForUpdates(false);
+  }
+
   cleanupApplicationData(): AppCleanupReportDto {
     const removedCacheItems =
       this.renderCache.size +
@@ -1058,6 +1187,7 @@ class BrowserFallbackBridge {
     this.recents = [];
     this.annotations.clear();
     this.renderCache.clear();
+    this.stagedManifest = null;
     this.settings = {
       theme: "system",
       default_layout: "continuous",
@@ -1066,6 +1196,9 @@ class BrowserFallbackBridge {
       render_cache_budget_bytes: 64 * 1024 * 1024,
       prefetch_window: 1,
       show_extracted_text_layer: false,
+      auto_check_updates: true,
+      installed_version: "1.0.0",
+      dismissed_update_version: null,
     };
     return {
       removed_database_files: 1,
@@ -1341,6 +1474,10 @@ export const readoraApi = {
           remote.show_extracted_text_layer ??
           localSettings.show_extracted_text_layer ??
           false,
+        auto_check_updates:
+          remote.auto_check_updates ??
+          localSettings.auto_check_updates ??
+          true,
       };
     }
     return localSettings;
@@ -1354,7 +1491,13 @@ export const readoraApi = {
       return {
         ...remote,
         show_extracted_text_layer:
-          localUpdated.show_extracted_text_layer ?? false,
+          remote.show_extracted_text_layer ??
+          localUpdated.show_extracted_text_layer ??
+          false,
+        auto_check_updates:
+          remote.auto_check_updates ??
+          localUpdated.auto_check_updates ??
+          true,
       };
     }
     return localUpdated;
@@ -1366,6 +1509,47 @@ export const readoraApi = {
       return invoke<SystemDiagnosticsDto>("system_diagnostics");
     }
     return fallbackBridge.getSystemDiagnostics();
+  },
+
+  async checkForUpdates(includeDismissed = false): Promise<AppUpdateStatusDto> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AppUpdateStatusDto>("app_check_for_updates", {
+        includeDismissed,
+      });
+    }
+    return fallbackBridge.checkForUpdates(includeDismissed);
+  },
+
+  async stageUpdateManifest(
+    manifest: ReleaseManifestDto,
+  ): Promise<AppUpdateStatusDto> {
+    const localStatus = fallbackBridge.stageUpdateManifest(manifest);
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AppUpdateStatusDto>("app_stage_update_manifest", {
+        manifest,
+      });
+    }
+    return localStatus;
+  },
+
+  async installUpdate(version: string): Promise<AppUpdateStatusDto> {
+    const localStatus = fallbackBridge.installUpdate(version);
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AppUpdateStatusDto>("app_install_update", { version });
+    }
+    return localStatus;
+  },
+
+  async dismissUpdate(version: string): Promise<AppUpdateStatusDto> {
+    const localStatus = fallbackBridge.dismissUpdate(version);
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AppUpdateStatusDto>("app_dismiss_update", { version });
+    }
+    return localStatus;
   },
 
   async cleanupApplicationData(): Promise<AppCleanupReportDto> {

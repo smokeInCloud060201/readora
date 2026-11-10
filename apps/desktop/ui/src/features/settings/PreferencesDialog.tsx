@@ -69,7 +69,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [reopenOnLaunch, setReopenOnLaunch] = useState(true);
   const [rememberPagePosition, setRememberPagePosition] = useState(true);
   const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState(false);
-  const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState<boolean>(
+    settings.auto_check_updates ?? true,
+  );
   const [shortcutFilter, setShortcutFilter] = useState("");
   const [platformPreview, setPlatformPreview] = useState<
     "macos" | "windows" | "linux"
@@ -89,6 +91,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
         Math.min(512, Math.max(8, cacheMiB)) * 1024 * 1024,
       prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
       show_extracted_text_layer: showExtractedTextLayer,
+      auto_check_updates: autoCheckUpdates,
     });
   };
 
@@ -155,7 +158,10 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
             </button>
           </div>
 
-          <span className="preferences-version">Focus Reader 1.0.0</span>
+          <span className="preferences-version">
+            Focus Reader{" "}
+            {diagnostics?.app_version ?? settings.installed_version ?? "1.0.0"}
+          </span>
         </nav>
 
         {/* Right 530px Content Pane */}

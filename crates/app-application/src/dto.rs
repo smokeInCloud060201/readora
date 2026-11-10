@@ -176,6 +176,52 @@ pub struct SettingsPatchDto {
     pub render_cache_budget_bytes: Option<usize>,
     /// Optional prefetch window update.
     pub prefetch_window: Option<u32>,
+    /// Optional toggle for displaying extracted digital text below the page.
+    pub show_extracted_text_layer: Option<bool>,
+    /// Optional toggle for automatically checking for updates on launch.
+    pub auto_check_updates: Option<bool>,
+}
+
+/// Verified release manifest describing an application update package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseManifestDto {
+    /// Target semantic version (e.g. `"1.1.0"`).
+    pub version: String,
+    /// Headline release title (e.g. `"Focus Reader 1.1 is ready"`).
+    pub title: String,
+    /// Concise release summary notes.
+    pub notes: String,
+    /// Update bundle size in bytes.
+    pub package_size_bytes: u64,
+    /// Hex-encoded SHA-256 digest of the verified update bundle.
+    pub sha256: String,
+    /// ISO-8601 publication date string.
+    pub published_at: String,
+}
+
+/// Live application update status evaluated against the installed version and release manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppUpdateStatusDto {
+    /// Currently installed application version (`major.minor.patch`).
+    pub current_version: String,
+    /// Whether a newer release is available to install.
+    pub update_available: bool,
+    /// Latest discovered version, if any.
+    pub latest_version: Option<String>,
+    /// Headline title for the available release.
+    pub release_title: Option<String>,
+    /// Release notes describing changes in the available release.
+    pub release_notes: Option<String>,
+    /// Bundle size in bytes of the available release.
+    pub package_size_bytes: Option<u64>,
+    /// SHA-256 checksum of the available release bundle.
+    pub sha256_checksum: Option<String>,
+    /// Whether the release package integrity has been verified.
+    pub verified: bool,
+    /// Whether the update has been staged to apply on next restart.
+    pub staged_for_restart: bool,
+    /// Unix timestamp in milliseconds when the update check completed.
+    pub checked_at_unix_ms: i64,
 }
 
 /// Third-party open-source component notice included in the SBOM and About view.

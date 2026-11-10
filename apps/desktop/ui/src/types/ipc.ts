@@ -178,6 +178,9 @@ export interface AppSettingsDto {
   render_cache_budget_bytes: number;
   prefetch_window: number;
   show_extracted_text_layer?: boolean;
+  auto_check_updates?: boolean;
+  installed_version?: string | null;
+  dismissed_update_version?: string | null;
 }
 
 export interface SettingsPatchDto {
@@ -188,6 +191,29 @@ export interface SettingsPatchDto {
   render_cache_budget_bytes?: number;
   prefetch_window?: number;
   show_extracted_text_layer?: boolean;
+  auto_check_updates?: boolean;
+}
+
+export interface ReleaseManifestDto {
+  version: string;
+  title: string;
+  notes: string;
+  package_size_bytes: number;
+  sha256: string;
+  published_at: string;
+}
+
+export interface AppUpdateStatusDto {
+  current_version: string;
+  update_available: boolean;
+  latest_version: string | null;
+  release_title: string | null;
+  release_notes: string | null;
+  package_size_bytes: number | null;
+  sha256_checksum: string | null;
+  verified: boolean;
+  staged_for_restart: boolean;
+  checked_at_unix_ms: number;
 }
 
 export interface ThirdPartyNoticeDto {

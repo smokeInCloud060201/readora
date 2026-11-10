@@ -19,7 +19,7 @@ pub use model::document::{
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{
     AppSettings, DEFAULT_CACHE_BUDGET_BYTES, MAX_CACHE_BUDGET_BYTES, MAX_PREFETCH_WINDOW,
-    MIN_CACHE_BUDGET_BYTES,
+    MIN_CACHE_BUDGET_BYTES, compare_semver,
 };
 pub use model::view_state::ViewState;
 pub use value_objects::document_id::DocumentId;

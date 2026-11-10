@@ -6,25 +6,26 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
-    AnnotationRepository, AppCleanupReportDto, ApplicationError, BookmarkRepository,
-    DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest,
-    PlatformPort, RecentDocumentRepository, RenderCachePort, RenderCancellationPort,
-    RenderPageCommand, RenderedPageResultDto, SearchRequestDto, SettingsPatchDto,
-    SettingsRepository, SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand,
-    UpsertBookmarkCommand, execute_delete_annotation, execute_delete_bookmark,
-    execute_export_annotations_bundle, execute_get_settings, execute_list_annotations,
-    execute_list_bookmarks, execute_navigation_action, execute_open_document, execute_render_page,
-    execute_search_document, execute_update_settings, execute_upsert_annotation,
-    execute_upsert_bookmark,
+    AnnotationRepository, AppCleanupReportDto, AppUpdateStatusDto, ApplicationError,
+    BookmarkRepository, DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction,
+    OpenDocumentRequest, PlatformPort, RecentDocumentRepository, ReleaseManifestDto,
+    RenderCachePort, RenderCancellationPort, RenderPageCommand, RenderedPageResultDto,
+    SearchRequestDto, SettingsPatchDto, SettingsRepository, SystemDiagnosticsDto,
+    ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand, execute_delete_annotation,
+    execute_delete_bookmark, execute_export_annotations_bundle, execute_get_settings,
+    execute_list_annotations, execute_list_bookmarks, execute_navigation_action,
+    execute_open_document, execute_render_page, execute_search_document, execute_update_settings,
+    execute_upsert_annotation, execute_upsert_bookmark,
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
-    OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState,
+    OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState, compare_semver,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
 use pdf_engine::{PdfDocument, PdfEngine, PdfEngineKind};
@@ -382,12 +383,17 @@ impl AppCore {
     /// active PDF engine, and redacted data directory) without any document contents or user paths.
     pub fn system_diagnostics(&self) -> Result<SystemDiagnosticsDto, ApplicationError> {
         let sqlite_schema_version = self.storage.schema_version()?;
+        let settings = self.get_settings()?;
+        let app_version = settings
+            .installed_version
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
         let pdf_engine_kind = match self.pdf_engine.kind() {
             PdfEngineKind::PdfiumDynamic => "pdfium_dynamic".to_owned(),
             PdfEngineKind::PureRustFallback => "pure_rust_fallback".to_owned(),
         };
         Ok(SystemDiagnosticsDto {
-            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            app_version,
             target_os: std::env::consts::OS.to_owned(),
             target_arch: std::env::consts::ARCH.to_owned(),
             pdf_engine_kind,
@@ -456,6 +462,140 @@ impl AppCore {
     /// without opening a database connection first.
     pub fn cleanup_default_app_artifacts() -> Result<AppCleanupReportDto, ApplicationError> {
         NativePlatformAdapter::cleanup_default_app_artifacts()
+    }
+
+    /// Evaluates whether a verified application update is available by comparing the installed
+    /// version against any staged release manifest on disk.
+    pub fn check_for_updates(
+        &self,
+        include_dismissed: bool,
+    ) -> Result<AppUpdateStatusDto, ApplicationError> {
+        let settings = self.get_settings()?;
+        let current_version = settings
+            .installed_version
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
+        let maybe_manifest = NativePlatformAdapter::read_release_manifest_in(&data_dir)?;
+        let checked_at_unix_ms = self.platform.current_unix_ms();
+
+        if let Some(manifest) = maybe_manifest {
+            let is_newer = compare_semver(&manifest.version, &current_version) == Ordering::Greater;
+            let is_dismissed = !include_dismissed
+                && settings
+                    .dismissed_update_version
+                    .as_deref()
+                    .is_some_and(|dismissed| dismissed == manifest.version.trim());
+            let verified = !manifest.sha256.trim().is_empty() && manifest.package_size_bytes > 0;
+
+            if is_newer {
+                return Ok(AppUpdateStatusDto {
+                    current_version,
+                    update_available: !is_dismissed && verified,
+                    latest_version: Some(manifest.version),
+                    release_title: Some(manifest.title),
+                    release_notes: Some(manifest.notes),
+                    package_size_bytes: Some(manifest.package_size_bytes),
+                    sha256_checksum: Some(manifest.sha256),
+                    verified,
+                    staged_for_restart: false,
+                    checked_at_unix_ms,
+                });
+            }
+        }
+
+        Ok(AppUpdateStatusDto {
+            current_version: current_version.clone(),
+            update_available: false,
+            latest_version: Some(current_version),
+            release_title: None,
+            release_notes: None,
+            package_size_bytes: None,
+            sha256_checksum: None,
+            verified: true,
+            staged_for_restart: false,
+            checked_at_unix_ms,
+        })
+    }
+
+    /// Stages a verified release manifest into the Readora updates directory and evaluates update status.
+    pub fn stage_update_manifest(
+        &self,
+        manifest: ReleaseManifestDto,
+    ) -> Result<AppUpdateStatusDto, ApplicationError> {
+        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
+        let adapter = NativePlatformAdapter::new();
+        adapter.stage_release_manifest_in(&data_dir, &manifest)?;
+
+        let mut settings = self.get_settings()?;
+        if settings.dismissed_update_version.as_deref() == Some(manifest.version.trim()) {
+            settings.dismissed_update_version = None;
+            SettingsRepository::save(self.storage.as_ref(), &settings)?;
+        }
+
+        self.check_for_updates(true)
+    }
+
+    /// Applies a verified staged update by recording the new installed version in SQLite settings
+    /// and cleaning up the staged manifest.
+    pub fn install_update(
+        &self,
+        target_version: &str,
+    ) -> Result<AppUpdateStatusDto, ApplicationError> {
+        let trimmed = target_version.trim();
+        if trimmed.is_empty() {
+            return Err(ApplicationError::Platform(
+                "target update version must not be empty".to_owned(),
+            ));
+        }
+
+        let mut settings = self.get_settings()?;
+        let current_version = settings
+            .installed_version
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+
+        if compare_semver(trimmed, &current_version) != Ordering::Greater {
+            return Err(ApplicationError::Platform(format!(
+                "target version {trimmed} is not newer than current version {current_version}"
+            )));
+        }
+
+        settings.installed_version = Some(trimmed.to_owned());
+        settings.dismissed_update_version = None;
+        SettingsRepository::save(self.storage.as_ref(), &settings)?;
+
+        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
+        let _ = NativePlatformAdapter::clear_staged_release_manifest_in(&data_dir);
+
+        Ok(AppUpdateStatusDto {
+            current_version: trimmed.to_owned(),
+            update_available: false,
+            latest_version: Some(trimmed.to_owned()),
+            release_title: None,
+            release_notes: None,
+            package_size_bytes: None,
+            sha256_checksum: None,
+            verified: true,
+            staged_for_restart: true,
+            checked_at_unix_ms: self.platform.current_unix_ms(),
+        })
+    }
+
+    /// Defers notification for a specific update version until the user manually checks for updates
+    /// or a newer release arrives.
+    pub fn dismiss_update(&self, version: &str) -> Result<AppUpdateStatusDto, ApplicationError> {
+        let trimmed = version.trim();
+        let mut settings = self.get_settings()?;
+        settings.dismissed_update_version = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        };
+        SettingsRepository::save(self.storage.as_ref(), &settings)?;
+        self.check_for_updates(false)
     }
 
     /// Writes a multi-page sample PDF into `target_dir` and returns its path so the user can

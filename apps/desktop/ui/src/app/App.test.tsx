@@ -309,18 +309,39 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
     fireEvent.click(screen.getByLabelText("Close preferences"));
 
-    // 6. Click "Update available" top-right button (Figma Frame 27) and install via Update Dialog (Figma Frame 28)
-    const updateBtn = screen.getByRole("button", { name: "Update available" });
-    expect(updateBtn).toBeInTheDocument();
+    // 6. Click "Update available" top-right button (Figma Frame 27), test "Later" deferral, manual Check for Updates, and install (Figma Frame 28)
+    const updateBtn = await screen.findByRole("button", {
+      name: "Update available",
+    });
     fireEvent.click(updateBtn);
 
-    expect(
-      screen.getByRole("dialog", { name: "Update Available Dialog" }),
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByRole("dialog", { name: "Update Available Dialog" }),
+      ).toBeInTheDocument();
+    });
     expect(screen.getByText("Focus Reader 1.1 is ready")).toBeInTheDocument();
     expect(
       screen.getByText("42 MB · Downloaded and verified"),
     ).toBeInTheDocument();
+
+    // Defer with "Later" -> notification pill hides
+    fireEvent.click(screen.getByRole("button", { name: "Later" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Update available" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // Manually check via Help -> Check for Updates…
+    fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    fireEvent.click(screen.getByText("Check for Updates…"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("dialog", { name: "Update Available Dialog" }),
+      ).toBeInTheDocument();
+    });
 
     fireEvent.click(
       screen.getByRole("button", { name: "Restart and install" }),
@@ -330,6 +351,18 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
         screen.getByText(/Focus Reader 1\.1\.0 staged/i),
       ).toBeInTheDocument();
     });
+
+    // Verify Help -> Check for Updates… now shows up-to-date status for 1.1.0
+    fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    fireEvent.click(screen.getByText("Check for Updates…"));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", {
+          name: "Focus Reader 1.1.0 is up to date",
+        }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
 
     // 7. Test Clean up application data & cache in Preferences -> General
     fireEvent.click(screen.getByLabelText("Preferences"));

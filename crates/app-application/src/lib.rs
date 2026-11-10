@@ -11,10 +11,10 @@ pub mod ports;
 pub mod use_cases;
 
 pub use dto::{
-    AppCleanupReportDto, DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction,
-    OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
-    SettingsPatchDto, SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand,
-    UpsertBookmarkCommand,
+    AppCleanupReportDto, AppUpdateStatusDto, DocumentSessionDto, ExportAnnotationsBundleDto,
+    NavigationAction, OpenDocumentRequest, ReleaseManifestDto, RenderPageCommand,
+    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SystemDiagnosticsDto,
+    ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};

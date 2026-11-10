@@ -1,10 +1,10 @@
 //! Typed IPC command handlers bridging the desktop frontend to `AppCore`.
 
 use app_application::{
-    AppCleanupReportDto, ApplicationError, DocumentSessionDto, ExportAnnotationsBundleDto,
-    NavigationAction, OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto,
-    SearchRequestDto, SettingsPatchDto, SystemDiagnosticsDto, UpsertAnnotationCommand,
-    UpsertBookmarkCommand,
+    AppCleanupReportDto, AppUpdateStatusDto, ApplicationError, DocumentSessionDto,
+    ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest, ReleaseManifestDto,
+    RenderPageCommand, RenderedPageResultDto, SearchRequestDto, SettingsPatchDto,
+    SystemDiagnosticsDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 use app_core::AppCore;
 use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
@@ -219,5 +219,31 @@ impl DesktopCommandHandler {
     /// Handles `app_cleanup_data` (removes only Readora-created database, cache, and temp files).
     pub fn app_cleanup_data(&self) -> Result<AppCleanupReportDto, CommandErrorDto> {
         Ok(self.core.cleanup_application_data()?)
+    }
+
+    /// Handles `app_check_for_updates`.
+    pub fn app_check_for_updates(
+        &self,
+        include_dismissed: bool,
+    ) -> Result<AppUpdateStatusDto, CommandErrorDto> {
+        Ok(self.core.check_for_updates(include_dismissed)?)
+    }
+
+    /// Handles `app_stage_update_manifest`.
+    pub fn app_stage_update_manifest(
+        &self,
+        manifest: ReleaseManifestDto,
+    ) -> Result<AppUpdateStatusDto, CommandErrorDto> {
+        Ok(self.core.stage_update_manifest(manifest)?)
+    }
+
+    /// Handles `app_install_update`.
+    pub fn app_install_update(&self, version: &str) -> Result<AppUpdateStatusDto, CommandErrorDto> {
+        Ok(self.core.install_update(version)?)
+    }
+
+    /// Handles `app_dismiss_update`.
+    pub fn app_dismiss_update(&self, version: &str) -> Result<AppUpdateStatusDto, CommandErrorDto> {
+        Ok(self.core.dismiss_update(version)?)
     }
 }
