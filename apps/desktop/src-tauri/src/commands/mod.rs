@@ -3,7 +3,7 @@
 use app_application::{
     ApplicationError, DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction,
     OpenDocumentRequest, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
-    SettingsPatchDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    SettingsPatchDto, SystemDiagnosticsDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 use app_core::AppCore;
 use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
@@ -208,5 +208,10 @@ impl DesktopCommandHandler {
     /// Handles `settings_update`.
     pub fn settings_update(&self, patch: SettingsPatchDto) -> Result<AppSettings, CommandErrorDto> {
         Ok(self.core.update_settings(patch)?)
+    }
+
+    /// Handles `system_diagnostics`.
+    pub fn system_diagnostics(&self) -> Result<SystemDiagnosticsDto, CommandErrorDto> {
+        Ok(self.core.system_diagnostics()?)
     }
 }

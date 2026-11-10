@@ -1,0 +1,67 @@
+name: Release Packaging
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build Native Installers (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            artifact_label: macos-aarch64
+          - platform: ubuntu-latest
+            artifact_label: linux-x86_64
+          - platform: windows-latest
+            artifact_label: windows-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/ui/pnpm-lock.yaml
+
+      - name: Install frontend dependencies & build UI dist
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build release workspace binaries & run release tests
+        run: |
+          cargo test --workspace --release
+          cargo build --workspace --release
+
+      - name: Verify SBOM and Third-Party Notices presence
+        shell: bash
+        run: |
+          test -f THIRD_PARTY_NOTICES.md
+          test -f sbom.cdx.json
+          shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json > release-manifests-${{ matrix.artifact_label }}.sha256

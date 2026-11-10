@@ -17,6 +17,9 @@ const MIGRATION_0002: &str =
     include_str!("../migrations/0002_library_collections_and_annotations.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_annotations.sql");
 
+/// Current append-only SQLite schema version shipped with this release.
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+
 /// Thread-safe SQLite storage adapter implementing `RecentDocumentRepository`,
 /// `BookmarkRepository`, and `SettingsRepository`.
 pub struct SqliteStorage {
@@ -127,6 +130,23 @@ impl SqliteStorage {
             .lock()
             .map_err(|_| ApplicationError::Storage("SQLite connection mutex poisoned".to_owned()))
     }
+
+    /// Returns the highest applied append-only schema migration version.
+    pub fn schema_version(&self) -> Result<i64, ApplicationError> {
+        let conn = self.lock_connection()?;
+        let version: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(version) FROM schema_migrations",
+                params![],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to read schema_migrations version: {e}"))
+            })?
+            .flatten();
+        Ok(version.unwrap_or(0))
+    }
 }
 
 #[cfg(test)]
@@ -233,5 +253,51 @@ mod tests {
 
         storage.remove(&doc_id).unwrap();
         assert!(storage.get(&doc_id).unwrap().is_none());
+        assert_eq!(storage.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn sqlite_storage_upgrades_from_v1_schema_preserving_user_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("readora.sqlite");
+
+        // Simulate a v0.1.0 installation with only migration 0001 applied
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(MIGRATION_0001).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at_unix_ms) VALUES (1, 1000)",
+                params![],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO app_settings (singleton_id, settings_json)
+                 VALUES (1, '{\"theme\":\"dark\",\"default_layout\":\"continuous\",\"default_fit_mode\":\"fit_page\",\"default_zoom\":1.25,\"render_cache_budget_bytes\":67108864,\"prefetch_window\":2}')",
+                params![],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO recent_documents (document_id, file_path, display_name, last_page, page_count, zoom_pct, rotation_deg, last_opened_unix_ms)
+                 VALUES ('doc-legacy-1', '/docs/legacy.pdf', 'legacy.pdf', 4, 12, 125, 0, 123456)",
+                params![],
+            )
+            .unwrap();
+        }
+
+        // Upgrade by opening with current SqliteStorage
+        let upgraded = SqliteStorage::open(&db_path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+
+        // Verify user preferences and recent documents were preserved across upgrade
+        let settings = upgraded.load().unwrap();
+        assert_eq!(settings.theme, ThemePreference::Dark);
+        assert_eq!(settings.prefetch_window, 2);
+
+        let doc_id = DocumentId::new("doc-legacy-1").unwrap();
+        let recent = upgraded.get(&doc_id).unwrap().unwrap();
+        assert_eq!(recent.display_name, "legacy.pdf");
+        assert_eq!(recent.last_page.zero_based(), 4);
+        assert!(!recent.is_favorite);
+        assert!(!recent.is_archived);
     }
 }

@@ -24,6 +24,7 @@ import {
   type SearchHitDto,
   type SearchRequestDto,
   type SettingsPatchDto,
+  type SystemDiagnosticsDto,
   type UpsertAnnotationCommandDto,
   type UpsertBookmarkCommandDto,
   type ViewStateDto,
@@ -468,6 +469,44 @@ class BrowserFallbackBridge {
   private makeError(code: string, message: string): CommandErrorDto {
     return { code, message };
   }
+
+  getSystemDiagnostics(): SystemDiagnosticsDto {
+    return {
+      app_version: "0.1.0",
+      target_os: "macos",
+      target_arch: "aarch64",
+      pdf_engine_kind: "pure_rust_fallback",
+      sqlite_schema_version: 3,
+      redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
+      render_cache_usage_bytes: 0,
+      third_party_notices: [
+        {
+          name: "PDFium",
+          version: "chromium/6723",
+          license: "BSD-3-Clause AND Apache-2.0",
+          role: "Dynamic native PDF rendering engine",
+        },
+        {
+          name: "rusqlite + SQLite",
+          version: "0.32",
+          license: "MIT AND Blessing",
+          role: "Local WAL persistence for recents, bookmarks, annotations, and settings",
+        },
+        {
+          name: "Tauri",
+          version: "2.x",
+          license: "MIT OR Apache-2.0",
+          role: "Cross-platform desktop application shell and IPC",
+        },
+        {
+          name: "React + TypeScript",
+          version: "19.x / 5.7",
+          license: "MIT AND Apache-2.0",
+          role: "Presentation UI layer",
+        },
+      ],
+    };
+  }
 }
 
 const fallbackBridge = new BrowserFallbackBridge();
@@ -666,5 +705,13 @@ export const readoraApi = {
       return invoke<AppSettingsDto>("settings_update", { patch });
     }
     return fallbackBridge.updateSettings(patch);
+  },
+
+  async getSystemDiagnostics(): Promise<SystemDiagnosticsDto> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<SystemDiagnosticsDto>("system_diagnostics");
+    }
+    return fallbackBridge.getSystemDiagnostics();
   },
 };

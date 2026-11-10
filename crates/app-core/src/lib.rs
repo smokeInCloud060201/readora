@@ -15,11 +15,11 @@ use app_application::{
     ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest, PlatformPort,
     RecentDocumentRepository, RenderCachePort, RenderCancellationPort, RenderPageCommand,
     RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SettingsRepository,
-    UpsertAnnotationCommand, UpsertBookmarkCommand, execute_delete_annotation,
-    execute_delete_bookmark, execute_export_annotations_bundle, execute_get_settings,
-    execute_list_annotations, execute_list_bookmarks, execute_navigation_action,
-    execute_open_document, execute_render_page, execute_search_document, execute_update_settings,
-    execute_upsert_annotation, execute_upsert_bookmark,
+    SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    execute_delete_annotation, execute_delete_bookmark, execute_export_annotations_bundle,
+    execute_get_settings, execute_list_annotations, execute_list_bookmarks,
+    execute_navigation_action, execute_open_document, execute_render_page, execute_search_document,
+    execute_update_settings, execute_upsert_annotation, execute_upsert_bookmark,
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
@@ -375,6 +375,52 @@ impl AppCore {
         patch: SettingsPatchDto,
     ) -> Result<AppSettings, ApplicationError> {
         execute_update_settings(patch, self.storage.as_ref(), self.render_cache.as_ref())
+    }
+
+    /// Returns privacy-preserving support and packaging diagnostics (SBOM notices, schema version,
+    /// active PDF engine, and redacted data directory) without any document contents or user paths.
+    pub fn system_diagnostics(&self) -> Result<SystemDiagnosticsDto, ApplicationError> {
+        let sqlite_schema_version = self.storage.schema_version()?;
+        let pdf_engine_kind = match self.pdf_engine.kind() {
+            PdfEngineKind::PdfiumDynamic => "pdfium_dynamic".to_owned(),
+            PdfEngineKind::PureRustFallback => "pure_rust_fallback".to_owned(),
+        };
+        Ok(SystemDiagnosticsDto {
+            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            target_os: std::env::consts::OS.to_owned(),
+            target_arch: std::env::consts::ARCH.to_owned(),
+            pdf_engine_kind,
+            sqlite_schema_version,
+            redacted_data_dir: NativePlatformAdapter::redacted_data_dir_display().to_owned(),
+            render_cache_usage_bytes: self.render_cache.current_usage_bytes(),
+            third_party_notices: vec![
+                ThirdPartyNoticeDto {
+                    name: "PDFium".to_owned(),
+                    version: "chromium/6723".to_owned(),
+                    license: "BSD-3-Clause AND Apache-2.0".to_owned(),
+                    role: "Dynamic native PDF rendering engine".to_owned(),
+                },
+                ThirdPartyNoticeDto {
+                    name: "rusqlite + SQLite".to_owned(),
+                    version: "0.32".to_owned(),
+                    license: "MIT AND Blessing".to_owned(),
+                    role: "Local WAL persistence for recents, bookmarks, annotations, and settings"
+                        .to_owned(),
+                },
+                ThirdPartyNoticeDto {
+                    name: "Tauri".to_owned(),
+                    version: "2.x".to_owned(),
+                    license: "MIT OR Apache-2.0".to_owned(),
+                    role: "Cross-platform desktop application shell and IPC".to_owned(),
+                },
+                ThirdPartyNoticeDto {
+                    name: "React + TypeScript".to_owned(),
+                    version: "19.x / 5.7".to_owned(),
+                    license: "MIT AND Apache-2.0".to_owned(),
+                    role: "Presentation UI layer".to_owned(),
+                },
+            ],
+        })
     }
 
     /// Writes a multi-page sample PDF into `target_dir` and returns its path so the user can

@@ -13,7 +13,7 @@ pub mod use_cases;
 pub use dto::{
     DocumentSessionDto, ExportAnnotationsBundleDto, NavigationAction, OpenDocumentRequest,
     RenderPageCommand, RenderedPageResultDto, SearchRequestDto, SettingsPatchDto,
-    UpsertAnnotationCommand, UpsertBookmarkCommand,
+    SystemDiagnosticsDto, ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};

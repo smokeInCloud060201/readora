@@ -177,3 +177,37 @@ pub struct SettingsPatchDto {
     /// Optional prefetch window update.
     pub prefetch_window: Option<u32>,
 }
+
+/// Third-party open-source component notice included in the SBOM and About view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThirdPartyNoticeDto {
+    /// Component or crate name.
+    pub name: String,
+    /// Pinned version or version series.
+    pub version: String,
+    /// SPDX license expression.
+    pub license: String,
+    /// Role in Readora.
+    pub role: String,
+}
+
+/// Privacy-safe support and packaging diagnostics (never includes file contents or user home paths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemDiagnosticsDto {
+    /// Application semantic version.
+    pub app_version: String,
+    /// Target operating system (`macos`, `windows`, `linux`).
+    pub target_os: String,
+    /// Target CPU architecture (`aarch64`, `x86_64`).
+    pub target_arch: String,
+    /// Active PDF engine identifier (`pdfium_dynamic` or `pure_rust_fallback`).
+    pub pdf_engine_kind: String,
+    /// Active SQLite schema migration version.
+    pub sqlite_schema_version: i64,
+    /// Privacy-redacted application data directory location.
+    pub redacted_data_dir: String,
+    /// Current render cache memory usage in bytes.
+    pub render_cache_usage_bytes: usize,
+    /// Third-party open-source component inventory (SBOM summary).
+    pub third_party_notices: Vec<ThirdPartyNoticeDto>,
+}

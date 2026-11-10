@@ -28,9 +28,37 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "app", "nsis", "msi", "appimage", "deb", "rpm"],
+    "category": "Productivity",
+    "shortDescription": "Local-first open-source PDF reader",
+    "longDescription": "Readora is a fast, privacy-first, open-source desktop PDF reader for macOS, Windows, and Linux.",
+    "license": "MIT OR Apache-2.0",
+    "licenseFile": "../../../THIRD_PARTY_NOTICES.md",
+    "resources": [
+      "../../../THIRD_PARTY_NOTICES.md",
+      "../../../sbom.cdx.json"
+    ],
     "icon": [
       "../../../assets/icons/icon.png"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": "./Entitlements.plist",
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
   }
 }

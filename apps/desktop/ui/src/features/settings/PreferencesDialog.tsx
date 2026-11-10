@@ -1,14 +1,20 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { readoraApi } from "../../lib/tauri/client";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type AppSettingsDto,
   type FitMode,
   type LayoutMode,
   type SettingsPatchDto,
+  type SystemDiagnosticsDto,
   type ThemePreference,
 } from "../../types/ipc";
 
-export type PreferencesSection = "general" | "appearance" | "shortcuts";
+export type PreferencesSection =
+  | "general"
+  | "appearance"
+  | "shortcuts"
+  | "about";
 
 interface PreferencesDialogProps {
   settings: AppSettingsDto;
@@ -34,9 +40,11 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   onSave,
   onClose,
 }) => {
-  const [activeSection, setActiveSection] = useState<
-    "general" | "appearance" | "shortcuts"
-  >(initialSection);
+  const [activeSection, setActiveSection] =
+    useState<PreferencesSection>(initialSection);
+  const [diagnostics, setDiagnostics] = useState<SystemDiagnosticsDto | null>(
+    null,
+  );
   const [theme, setTheme] = useState<ThemePreference>(settings.theme);
   const [defaultLayout, setDefaultLayout] = useState<LayoutMode>(
     settings.default_layout,
@@ -57,6 +65,10 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState(false);
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
   const [shortcutFilter, setShortcutFilter] = useState("");
+
+  useEffect(() => {
+    void readoraApi.getSystemDiagnostics().then(setDiagnostics);
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,6 +132,15 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
             >
               Shortcuts
             </button>
+            <button
+              type="button"
+              className={`preferences-nav-btn ${
+                activeSection === "about" ? "active" : ""
+              }`}
+              onClick={() => setActiveSection("about")}
+            >
+              About & Licenses
+            </button>
           </div>
 
           <span className="preferences-version">Focus Reader 1.0.0</span>
@@ -135,7 +156,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   ? "General"
                   : activeSection === "appearance"
                     ? "Platform & Appearance"
-                    : "Keyboard shortcuts"}
+                    : activeSection === "shortcuts"
+                      ? "Keyboard shortcuts"
+                      : "About, Diagnostics & Licenses"}
               </h2>
             </div>
             <button
@@ -253,6 +276,53 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   <div key={item.label} className="shortcut-row">
                     <span>{item.label}</span>
                     <kbd>{item.keys}</kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : activeSection === "about" ? (
+            <div
+              className="preferences-fields-grid"
+              aria-label="System Diagnostics and Licenses"
+            >
+              <dl className="details-meta-list">
+                <div className="details-meta-row">
+                  <dt>Release Version</dt>
+                  <dd>
+                    {diagnostics?.app_version ?? "0.1.0"} (MIT OR Apache-2.0)
+                  </dd>
+                </div>
+                <div className="details-meta-row">
+                  <dt>Platform Target</dt>
+                  <dd>
+                    {diagnostics
+                      ? `${diagnostics.target_os} · ${diagnostics.target_arch}`
+                      : "Desktop"}
+                  </dd>
+                </div>
+                <div className="details-meta-row">
+                  <dt>SQLite Schema</dt>
+                  <dd>v{diagnostics?.sqlite_schema_version ?? 3} (WAL)</dd>
+                </div>
+                <div className="details-meta-row">
+                  <dt>Local Data Location</dt>
+                  <dd>
+                    <code>
+                      {diagnostics?.redacted_data_dir ??
+                        "~/Library/Application Support/com.readora.desktop"}
+                    </code>
+                  </dd>
+                </div>
+              </dl>
+
+              <p className="eyebrow-label">THIRD-PARTY OPEN-SOURCE NOTICES (SBOM)</p>
+              <div className="shortcuts-list">
+                {(diagnostics?.third_party_notices ?? []).map((notice) => (
+                  <div key={notice.name} className="shortcut-row">
+                    <span>
+                      <strong>{notice.name}</strong> ({notice.version})
+                    </span>
+                    <span>{notice.license}</span>
                   </div>
                 ))}
               </div>

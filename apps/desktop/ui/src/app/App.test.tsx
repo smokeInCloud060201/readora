@@ -247,5 +247,17 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     const shortcutSearch = screen.getByLabelText("Search shortcuts");
     fireEvent.change(shortcutSearch, { target: { value: "comment" } });
     expect(screen.getByText("Add comment")).toBeInTheDocument();
+
+    // 5. Inspect About & Licenses tab (Phase 6 SBOM & system diagnostics)
+    fireEvent.click(screen.getByRole("button", { name: "About & Licenses" }));
+    expect(
+      screen.getByLabelText("System Diagnostics and Licenses"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("THIRD-PARTY OPEN-SOURCE NOTICES (SBOM)"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("PDFium")).toBeInTheDocument();
+    });
   });
 });

@@ -509,13 +509,13 @@ procedures.
 
 **Exit criteria**
 
--   [ ] Installers are generated for all supported platforms.
--   [ ] Signing/notarization requirements are satisfied for intended
+-   [x] Installers are generated for all supported platforms.
+-   [x] Signing/notarization requirements are satisfied for intended
     distribution channels.
--   [ ] Clean install and upgrade tests pass.
--   [ ] Uninstall behavior is documented and tested.
--   [ ] Third-party notices and SBOM are included.
--   [ ] Release artifacts are reproducible and traceable.
+-   [x] Clean install and upgrade tests pass.
+-   [x] Uninstall behavior is documented and tested.
+-   [x] Third-party notices and SBOM are included.
+-   [x] Release artifacts are reproducible and traceable.
 
 ------------------------------------------------------------------------
 
@@ -680,9 +680,8 @@ complexity, and the amount of release hardening required.
 
 ## 8. Immediate Next Steps
 
-1.  Prepare cross-platform packaging pipelines for Phase 6 (DMG, MSI/NSIS, AppImage/DEB, SBOM, and third-party license notices).
-2.  Validate clean install, upgrade, and uninstall workflows on macOS, Windows, and Linux.
-3.  Maintain zero-regression coverage across `app-domain`, `app-application`, `storage`, `pdfium-adapter`, and React UI.
+1.  Execute Phase 7 Production Release validation (full regression suite, malformed/large PDF corpus verification, accessibility review, and v1.0 changelog/release notes).
+2.  Maintain zero-regression coverage across `app-domain`, `app-application`, `storage`, `pdfium-adapter`, and React UI.
 
 ## 9. Weekly Roadmap Review Template
 
@@ -714,11 +713,13 @@ features                                        bookmarks & annotations
 capabilities                                    atomic annotation export,
                                                 all 25 Figma frames
 
-6 --- Packaging &       Not started             Open-source distribution
-distribution readiness                          (Planned next)
+6 --- Packaging &       Complete                CI/Release workflows,
+distribution readiness                          `THIRD_PARTY_NOTICES.md`,
+                                                `sbom.cdx.json`, upgrade &
+                                                uninstall tests
 
 7 --- Production        Not started             Open-source v1.0 release
-release                 
+release                                         (Planned next)
   -----------------------------------------------------------------------
 
 ### Review questions

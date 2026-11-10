@@ -94,6 +94,10 @@ mod tests {
             .unwrap();
         assert!(arch.is_archived);
 
+        let diag = handler.system_diagnostics().unwrap();
+        assert_eq!(diag.sqlite_schema_version, 3);
+        assert!(!diag.third_party_notices.is_empty());
+
         handler.document_close(&doc_id).unwrap();
     }
 }

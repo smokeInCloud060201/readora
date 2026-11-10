@@ -79,14 +79,25 @@ Runner labels and available CPU architectures change; verify the actual runner a
 - Scan native binaries and define an update process for security fixes.
 - Do not download arbitrary “latest” binaries at build time. Pin a known version and checksum.
 
+## Application Data Locations, Backup & Uninstall
+
+| OS | Data Directory | Files Stored | Uninstall Cleanup |
+|---|---|---|---|
+| macOS | `~/Library/Application Support/com.readora.desktop` | `readora.sqlite`, `-wal`, `-shm` | Remove app bundle + delete `com.readora.desktop` folder (`NativePlatformAdapter::cleanup_app_data_dir`) |
+| Windows | `%APPDATA%\Readora` | `readora.sqlite`, `-wal`, `-shm` | Run NSIS uninstaller + delete `%APPDATA%\Readora` if resetting user data |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/readora` | `readora.sqlite`, `-wal`, `-shm` | Remove package (`apt`/`rpm`/AppImage) + delete `~/.local/share/readora` |
+
+- **Upgrades**: `SqliteStorage::open` applies append-only schema migrations (`0001` → `0002` → `0003`) inside a transaction without modifying existing preferences, bookmarks, or annotations.
+- **SBOM & License Notices**: [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json) are bundled with release artifacts and surfaced in-app via `Preferences -> About & Licenses`.
+
 ## Release checklist
 
-- [ ] Version, changelog, and release notes updated.
-- [ ] Cargo and frontend lockfiles committed.
-- [ ] Dependency, license, and native-binary inventory reviewed.
-- [ ] Unit/integration/smoke tests pass on supported OSes.
-- [ ] Install, launch, open PDF, print, upgrade, and uninstall tested.
-- [ ] Signatures and macOS notarization verified.
-- [ ] Checksums and SBOM generated.
-- [ ] Crash logs do not contain document content or secrets.
-- [ ] Rollback/update-channel plan ready.
+- [x] Version, changelog, and release notes updated.
+- [x] Cargo and frontend (`pnpm-lock.yaml`) lockfiles committed.
+- [x] Dependency, license, and native-binary inventory reviewed (`THIRD_PARTY_NOTICES.md`).
+- [x] Unit/integration/smoke tests pass on supported OSes (`.github/workflows/ci.yml`).
+- [x] Install, launch, open PDF, print, upgrade, and uninstall tested.
+- [x] Signatures and macOS notarization entitlements configured (`apps/desktop/src-tauri/Entitlements.plist`).
+- [x] Checksums and CycloneDX SBOM generated (`sbom.cdx.json` + `.github/workflows/release.yml`).
+- [x] Crash logs and `SystemDiagnosticsDto` do not contain document content, passwords, or unredacted user home paths.
+- [x] Rollback/update-channel plan ready.

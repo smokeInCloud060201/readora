@@ -188,6 +188,24 @@ export interface SettingsPatchDto {
   prefetch_window?: number;
 }
 
+export interface ThirdPartyNoticeDto {
+  name: string;
+  version: string;
+  license: string;
+  role: string;
+}
+
+export interface SystemDiagnosticsDto {
+  app_version: string;
+  target_os: string;
+  target_arch: string;
+  pdf_engine_kind: string;
+  sqlite_schema_version: number;
+  redacted_data_dir: string;
+  render_cache_usage_bytes: number;
+  third_party_notices: ThirdPartyNoticeDto[];
+}
+
 export interface CommandErrorDto {
   code: string;
   message: string;

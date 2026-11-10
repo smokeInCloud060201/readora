@@ -70,6 +70,51 @@ impl NativePlatformAdapter {
 
         std::env::temp_dir().join("readora-data")
     }
+
+    /// Returns a privacy-safe representation of the OS application data directory
+    /// without exposing the local username or absolute home path in support diagnostics.
+    #[must_use]
+    pub const fn redacted_data_dir_display() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            "~/Library/Application Support/com.readora.desktop"
+        }
+        #[cfg(target_os = "windows")]
+        {
+            "%APPDATA%\\Readora"
+        }
+        #[cfg(target_os = "linux")]
+        {
+            "~/.local/share/readora"
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            "$TMPDIR/readora-data"
+        }
+    }
+
+    /// Removes Readora's SQLite database files (`readora.sqlite`, `-wal`, `-shm`) from
+    /// the given application data directory for clean uninstall or local state reset.
+    pub fn cleanup_app_data_dir(data_dir: &Path) -> Result<bool, ApplicationError> {
+        if !data_dir.exists() {
+            return Ok(false);
+        }
+        let mut removed_any = false;
+        for file_name in ["readora.sqlite", "readora.sqlite-wal", "readora.sqlite-shm"] {
+            let candidate = data_dir.join(file_name);
+            if candidate.exists() {
+                fs::remove_file(&candidate).map_err(|e| {
+                    ApplicationError::Platform(format!(
+                        "failed to remove application data file {file_name}: {e}"
+                    ))
+                })?;
+                removed_any = true;
+            }
+        }
+        // Remove directory if empty
+        let _ = fs::remove_dir(data_dir);
+        Ok(removed_any)
+    }
 }
 
 impl PlatformPort for NativePlatformAdapter {
@@ -223,5 +268,27 @@ mod tests {
 
         // Size limit exceeded
         assert!(adapter.resolve_and_validate_pdf_path(&file_str, 5).is_err());
+    }
+
+    #[test]
+    fn platform_uninstall_cleanup_removes_sqlite_artifacts_and_redacts_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("com.readora.desktop");
+        let adapter = NativePlatformAdapter::new();
+
+        let db_file = data_dir.join("readora.sqlite");
+        let wal_file = data_dir.join("readora.sqlite-wal");
+        adapter
+            .atomic_write_file(&db_file.to_string_lossy(), b"sqlite-bytes")
+            .unwrap();
+        adapter
+            .atomic_write_file(&wal_file.to_string_lossy(), b"wal-bytes")
+            .unwrap();
+
+        assert!(db_file.exists());
+        assert!(NativePlatformAdapter::cleanup_app_data_dir(&data_dir).unwrap());
+        assert!(!db_file.exists());
+        assert!(!wal_file.exists());
+        assert!(!NativePlatformAdapter::redacted_data_dir_display().is_empty());
     }
 }
