@@ -322,6 +322,9 @@ export function parseGithubReleasePayload(
   };
 }
 
+const DEFAULT_APP_VERSION: string =
+  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.2";
+
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
   private storedPdfsByDocId = new Map<string, StoredPdfRecord>();
@@ -340,7 +343,7 @@ class BrowserFallbackBridge {
     show_extracted_text_layer: false,
     auto_check_updates: true,
     github_release_repo: "smokeInCloud060201/readora",
-    installed_version: "1.0.0",
+    installed_version: DEFAULT_APP_VERSION,
     dismissed_update_version: null,
   };
   private generation = 1;
@@ -1168,7 +1171,8 @@ class BrowserFallbackBridge {
   }
 
   checkForUpdates(includeDismissed: boolean): AppUpdateStatusDto {
-    const currentVersion = this.settings.installed_version || "1.0.0";
+    const currentVersion =
+      this.settings.installed_version || DEFAULT_APP_VERSION;
     const githubRepo =
       this.settings.github_release_repo || "smokeInCloud060201/readora";
     const manifest = this.stagedManifest;
@@ -1233,7 +1237,8 @@ class BrowserFallbackBridge {
 
   installUpdate(targetVersion: string): AppUpdateStatusDto {
     const trimmed = targetVersion.trim();
-    const currentVersion = this.settings.installed_version || "1.0.0";
+    const currentVersion =
+      this.settings.installed_version || DEFAULT_APP_VERSION;
     const githubRepo =
       this.settings.github_release_repo || "smokeInCloud060201/readora";
     if (!trimmed || compareSemver(trimmed, currentVersion) <= 0) {
@@ -1289,7 +1294,7 @@ class BrowserFallbackBridge {
       show_extracted_text_layer: false,
       auto_check_updates: true,
       github_release_repo: "smokeInCloud060201/readora",
-      installed_version: "1.0.0",
+      installed_version: DEFAULT_APP_VERSION,
       dismissed_update_version: null,
     };
     return {

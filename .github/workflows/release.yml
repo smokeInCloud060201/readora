@@ -51,7 +51,12 @@ jobs:
           cache-dependency-path: apps/desktop/ui/pnpm-lock.yaml
 
       - name: Install frontend dependencies & build UI dist
+        shell: bash
         run: |
+          RAW_TAG="${GITHUB_REF_NAME:-v1.0.2}"
+          if [[ "${RAW_TAG}" == v* ]]; then
+            export VITE_APP_VERSION="${RAW_TAG#v}"
+          fi
           pnpm --dir apps/desktop/ui install --frozen-lockfile
           pnpm --dir apps/desktop/ui build
 

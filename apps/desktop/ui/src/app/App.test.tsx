@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readoraApi } from "../lib/tauri/client";
 import { App } from "./App";
 
@@ -10,8 +10,20 @@ function createTestPdfFile(fileName: string): File {
 }
 
 describe("Readora Desktop Reader UI Vertical Slice", () => {
+  const originalFetch = globalThis.fetch;
+
   beforeEach(async () => {
+    // Isolate all tests from live GitHub API network calls so publishing new tags never races or breaks CI
+    globalThis.fetch = (async () =>
+      new Response("{}", {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
     await readoraApi.cleanupApplicationData();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("imports a PDF via Figma Import PDF Dialog file picker without manual path input, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
@@ -323,26 +335,36 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
     fireEvent.click(screen.getByLabelText("Close preferences"));
 
-    // 6. Verify no hardcoded update badge on launch, then simulate a new v1.1.0 GitHub Release and check for updates (Figma Frames 27 & 28)
+    // 6. Verify no hardcoded update badge on launch, then simulate a newer GitHub Release dynamically relative to installed_version (Figma Frames 27 & 28)
     expect(
       screen.queryByRole("button", { name: "Update available" }),
     ).not.toBeInTheDocument();
 
-    const originalFetch = globalThis.fetch;
+    const activeSettings = await readoraApi.getSettings();
+    const currentMajor =
+      Number.parseInt(
+        (activeSettings.installed_version || "1.0.0")
+          .replace(/^v/i, "")
+          .split(".")[0] || "1",
+        10,
+      ) || 1;
+    const nextVersion = `${currentMajor + 1}.0.0`;
+    const nextTag = `v${nextVersion}`;
+    const nextTitle = `Focus Reader ${nextVersion} is ready`;
+
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          tag_name: "v1.1.0",
-          name: "Focus Reader 1.1 is ready",
+          tag_name: nextTag,
+          name: nextTitle,
           body: "### Highlights\n- **Seamless Software Updates**: A faster reader and improved annotations are ready to install.",
           published_at: "2026-11-10T00:00:00Z",
-          html_url: "https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.0",
+          html_url: `https://github.com/smokeInCloud060201/readora/releases/tag/${nextTag}`,
           assets: [
             {
-              name: "Readora_1.1.0_aarch64.dmg",
+              name: `Readora_${nextVersion}_macos-aarch64.dmg`,
               size: 42 * 1024 * 1024,
-              browser_download_url:
-                "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/Readora_1.1.0_aarch64.dmg",
+              browser_download_url: `https://github.com/smokeInCloud060201/readora/releases/download/${nextTag}/Readora_${nextVersion}_macos-aarch64.dmg`,
               digest:
                 "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             },
@@ -351,65 +373,61 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       )) as typeof fetch;
 
-    try {
-      // Trigger Help -> Check for Updates… which queries GitHub Releases
-      fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
-      fireEvent.click(screen.getByText("Check for Updates…"));
+    // Trigger Help -> Check for Updates… which queries GitHub Releases
+    fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    fireEvent.click(screen.getByText("Check for Updates…"));
 
-      await waitFor(() => {
-        expect(
-          screen.getByRole("dialog", { name: "Update Available Dialog" }),
-        ).toBeInTheDocument();
-      });
-      expect(screen.getByText("Focus Reader 1.1 is ready")).toBeInTheDocument();
+    await waitFor(() => {
       expect(
-        screen.getByText("42 MB · Downloaded and verified"),
+        screen.getByRole("dialog", { name: "Update Available Dialog" }),
       ).toBeInTheDocument();
+      expect(screen.getByText(nextTitle)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText("42 MB · Downloaded and verified"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Update available" }),
+    ).toBeInTheDocument();
+
+    // Defer with "Later" -> notification pill hides
+    fireEvent.click(screen.getByRole("button", { name: "Later" }));
+    await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: "Update available" }),
+        screen.queryByRole("button", { name: "Update available" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // Manually check via Help -> Check for Updates…
+    fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    fireEvent.click(screen.getByText("Check for Updates…"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("dialog", { name: "Update Available Dialog" }),
       ).toBeInTheDocument();
+    });
 
-      // Defer with "Later" -> notification pill hides
-      fireEvent.click(screen.getByRole("button", { name: "Later" }));
-      await waitFor(() => {
-        expect(
-          screen.queryByRole("button", { name: "Update available" }),
-        ).not.toBeInTheDocument();
-      });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restart and install" }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByText(new RegExp(`Focus Reader ${nextVersion.replace(/\./g, "\\.")} staged`, "i")),
+      ).toBeInTheDocument();
+    });
 
-      // Manually check via Help -> Check for Updates…
-      fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
-      fireEvent.click(screen.getByText("Check for Updates…"));
-
-      await waitFor(() => {
-        expect(
-          screen.getByRole("dialog", { name: "Update Available Dialog" }),
-        ).toBeInTheDocument();
-      });
-
-      fireEvent.click(
-        screen.getByRole("button", { name: "Restart and install" }),
-      );
-      await waitFor(() => {
-        expect(
-          screen.getByText(/Focus Reader 1\.1\.0 staged/i),
-        ).toBeInTheDocument();
-      });
-
-      // Verify Help -> Check for Updates… now shows up-to-date status for 1.1.0 even when GitHub latest is v1.1.0
-      fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
-      fireEvent.click(screen.getByText("Check for Updates…"));
-      await waitFor(() => {
-        expect(
-          screen.getByRole("heading", {
-            name: "Focus Reader 1.1.0 is up to date",
-          }),
-        ).toBeInTheDocument();
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // Verify Help -> Check for Updates… now shows up-to-date status for nextVersion even when GitHub latest is nextTag
+    fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    fireEvent.click(screen.getByText("Check for Updates…"));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", {
+          name: `Focus Reader ${nextVersion} is up to date`,
+        }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
 
     // 7. Test Clean up application data & cache in Preferences -> General
     fireEvent.click(screen.getByLabelText("Preferences"));
