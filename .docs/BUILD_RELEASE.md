@@ -35,15 +35,15 @@ cargo test --workspace
 
 # Frontend
 cd apps/desktop/ui
-npm ci
-npm run lint
-npm run typecheck
-npm run test
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm typecheck
+pnpm test
 
 # Desktop development/build
 cd ..
-npm run tauri dev
-npm run tauri build
+pnpm tauri dev
+pnpm tauri build
 ```
 
 Do not commit machine-specific build outputs or vendor secrets.

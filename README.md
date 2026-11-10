@@ -1,6 +1,6 @@
 # Rust PDF Reader — Architecture Pack
 
-A commercial-grade, cross-platform desktop PDF reader architecture for macOS, Windows, and Linux.
+An open-source, cross-platform desktop PDF reader architecture for macOS, Windows, and Linux.
 
 ## Product direction
 
@@ -36,11 +36,11 @@ cargo test --workspace
 
 # Frontend (React 19 + TypeScript strict + Vite + Vitest)
 cd apps/desktop/ui
-npm ci
-npm run lint
-npm run typecheck
-npm run test
-npm run build
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
 ## Repository layout
