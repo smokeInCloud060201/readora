@@ -108,7 +108,7 @@ mod tests {
                 package_size_bytes: 44_040_192,
                 sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
                 published_at: "2026-11-10T00:00:00Z".to_owned(),
-                download_url: Some("https://github.com/karsontang/readora/releases/tag/v1.1.0".to_owned()),
+                download_url: Some("https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.0".to_owned()),
             })
             .unwrap();
         assert!(staged.update_available);

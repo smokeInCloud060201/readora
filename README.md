@@ -127,7 +127,7 @@ flowchart TD
 
 1. **Clone the repository and install dependencies:**
    ```bash
-   git clone https://github.com/karsontang/readora.git
+   git clone https://github.com/smokeInCloud060201/readora.git
    cd readora
    pnpm install --frozen-lockfile
    ```

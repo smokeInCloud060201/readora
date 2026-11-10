@@ -22,7 +22,7 @@ const fn default_auto_check_updates() -> bool {
 }
 
 fn default_github_release_repo() -> String {
-    "karsontang/readora".to_owned()
+    "smokeInCloud060201/readora".to_owned()
 }
 
 /// User-configurable application preferences and performance budgets.

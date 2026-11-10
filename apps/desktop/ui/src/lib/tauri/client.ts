@@ -339,7 +339,7 @@ class BrowserFallbackBridge {
     prefetch_window: 1,
     show_extracted_text_layer: false,
     auto_check_updates: true,
-    github_release_repo: "karsontang/readora",
+    github_release_repo: "smokeInCloud060201/readora",
     installed_version: "1.0.0",
     dismissed_update_version: null,
   };
@@ -1170,7 +1170,7 @@ class BrowserFallbackBridge {
   checkForUpdates(includeDismissed: boolean): AppUpdateStatusDto {
     const currentVersion = this.settings.installed_version || "1.0.0";
     const githubRepo =
-      this.settings.github_release_repo || "karsontang/readora";
+      this.settings.github_release_repo || "smokeInCloud060201/readora";
     const manifest = this.stagedManifest;
     const now = Date.now();
 
@@ -1235,7 +1235,7 @@ class BrowserFallbackBridge {
     const trimmed = targetVersion.trim();
     const currentVersion = this.settings.installed_version || "1.0.0";
     const githubRepo =
-      this.settings.github_release_repo || "karsontang/readora";
+      this.settings.github_release_repo || "smokeInCloud060201/readora";
     if (!trimmed || compareSemver(trimmed, currentVersion) <= 0) {
       throw this.makeError(
         "platform_error",
@@ -1288,7 +1288,7 @@ class BrowserFallbackBridge {
       prefetch_window: 1,
       show_extracted_text_layer: false,
       auto_check_updates: true,
-      github_release_repo: "karsontang/readora",
+      github_release_repo: "smokeInCloud060201/readora",
       installed_version: "1.0.0",
       dismissed_update_version: null,
     };
@@ -1606,7 +1606,7 @@ export const readoraApi = {
   async checkForUpdates(includeDismissed = false): Promise<AppUpdateStatusDto> {
     const invoke = getNativeTauriInvoke();
     const settings = await this.getSettings();
-    const repo = (settings.github_release_repo || "karsontang/readora").trim();
+    const repo = (settings.github_release_repo || "smokeInCloud060201/readora").trim();
 
     if (typeof fetch === "function" && repo.includes("/")) {
       try {

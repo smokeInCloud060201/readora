@@ -73,7 +73,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     settings.auto_check_updates ?? true,
   );
   const [githubReleaseRepo, setGithubReleaseRepo] = useState<string>(
-    settings.github_release_repo ?? "karsontang/readora",
+    settings.github_release_repo ?? "smokeInCloud060201/readora",
   );
   const [shortcutFilter, setShortcutFilter] = useState("");
   const [platformPreview, setPlatformPreview] = useState<
@@ -95,7 +95,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
       show_extracted_text_layer: showExtractedTextLayer,
       auto_check_updates: autoCheckUpdates,
-      github_release_repo: githubReleaseRepo.trim() || "karsontang/readora",
+      github_release_repo: githubReleaseRepo.trim() || "smokeInCloud060201/readora",
     });
   };
 

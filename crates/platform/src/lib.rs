@@ -785,18 +785,18 @@ mod tests {
             "name": "Focus Reader 1.2",
             "body": "Faster continuous scrolling and GitHub release verification.",
             "published_at": "2026-11-10T12:00:00Z",
-            "html_url": "https://github.com/karsontang/readora/releases/tag/v1.2.0",
+            "html_url": "https://github.com/smokeInCloud060201/readora/releases/tag/v1.2.0",
             "assets": [
                 {
                     "name": "Readora_1.2.0_x64-setup.exe",
                     "size": 38797312,
-                    "browser_download_url": "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_x64-setup.exe",
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.2.0/Readora_1.2.0_x64-setup.exe",
                     "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 },
                 {
                     "name": "Readora_1.2.0_aarch64.dmg",
                     "size": 44040192,
-                    "browser_download_url": "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg",
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg",
                     "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                 }
             ]
@@ -814,7 +814,7 @@ mod tests {
         assert_eq!(
             manifest.download_url.as_deref(),
             Some(
-                "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg"
+                "https://github.com/smokeInCloud060201/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg"
             )
         );
     }

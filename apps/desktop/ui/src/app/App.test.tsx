@@ -322,13 +322,13 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
           name: "Focus Reader 1.1 is ready",
           body: "A faster reader, improved annotations, and accessibility updates are ready to install.",
           published_at: "2026-11-10T00:00:00Z",
-          html_url: "https://github.com/karsontang/readora/releases/tag/v1.1.0",
+          html_url: "https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.0",
           assets: [
             {
               name: "Readora_1.1.0_aarch64.dmg",
               size: 42 * 1024 * 1024,
               browser_download_url:
-                "https://github.com/karsontang/readora/releases/download/v1.1.0/Readora_1.1.0_aarch64.dmg",
+                "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/Readora_1.1.0_aarch64.dmg",
               digest:
                 "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             },

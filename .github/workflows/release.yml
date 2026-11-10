@@ -74,7 +74,7 @@ jobs:
           RAW_TAG="${GITHUB_REF_NAME:-v0.1.0}"
           CLEAN_VERSION="${RAW_TAG#v}"
           PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          REPO_SLUG="${GITHUB_REPOSITORY:-karsontang/readora}"
+          REPO_SLUG="${GITHUB_REPOSITORY:-smokeInCloud060201/readora}"
           cat > "release-manifest-${ARTIFACT_LABEL}.json" <<EOF
           {
             "version": "${CLEAN_VERSION}",
