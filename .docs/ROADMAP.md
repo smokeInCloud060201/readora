@@ -27,17 +27,17 @@
 
 **Exit:** beta install/upgrade experience is supportable and release artifacts are signed.
 
-## Phase 3 — Commercial product
+## Phase 3 — Open-Source Community Release
 - Advanced annotations and form workflows.
 - Signature inspection/validation (only after requirements and trust model are defined).
-- Optional paid features/licensing, update channels, support diagnostics.
-- Localization, accessibility audit, product analytics only with privacy review.
+- Community release channels, open-source governance, and local support diagnostics.
+- Localization, accessibility audit, and strict local-first privacy guarantees (zero telemetry).
 
-**Exit:** feature and legal review complete; support, release, and vulnerability response processes documented.
+**Exit:** feature and open-source license review complete; release, packaging, and vulnerability response processes documented.
 
 # Rust Cross-Platform PDF Reader --- Project Roadmap
 
-> **Project goal:** Build a commercial-grade PDF reader for macOS,
+> **Project goal:** Build an open-source, free, production-grade PDF reader for macOS,
 > Windows, and Linux using Rust, with a maintainable architecture,
 > reliable PDF rendering, and native desktop packaging.
 
@@ -203,7 +203,7 @@ before building the full application.
 
 -   PDFium's exact feature coverage and the quality/maintenance of Rust
     bindings.
--   License compatibility and notices required for commercial
+-   Open-source license compatibility and notices required for free binary
     distribution.
 -   Native binary availability, loading paths, and update strategy.
 -   Large-page rendering, high-DPI displays, and memory pressure.
@@ -217,12 +217,12 @@ baseline performance measurements.
 
 **Exit criteria**
 
--   [ ] PDF open/render/close works on every target OS.
--   [ ] Supported CPU architectures are documented.
--   [ ] Engine licensing and distribution obligations are reviewed.
--   [ ] Native library loading works in packaged test builds.
--   [ ] Initial performance and memory baselines are recorded.
--   [ ] A decision is documented on the rendering data-transfer
+-   [x] PDF open/render/close works on every target OS.
+-   [x] Supported CPU architectures are documented.
+-   [x] Engine licensing and distribution obligations are reviewed.
+-   [x] Native library loading works in packaged test builds.
+-   [x] Initial performance and memory baselines are recorded.
+-   [x] A decision is documented on the rendering data-transfer
     approach.
 
 ------------------------------------------------------------------------
@@ -264,12 +264,12 @@ functioning Rust workspace, frontend, typed IPC, and CI.
 
 **Exit criteria**
 
--   [ ] Clean checkout builds using documented instructions.
--   [ ] Desktop shell launches on macOS, Windows, and Linux.
--   [ ] CI runs formatting, linting, tests, and relevant build checks.
--   [ ] Tauri commands use typed contracts.
--   [ ] Tauri capabilities are minimal and reviewed.
--   [ ] Architecture and coding rules are documented.
+-   [x] Clean checkout builds using documented instructions.
+-   [x] Desktop shell launches on macOS, Windows, and Linux.
+-   [x] CI runs formatting, linting, tests, and relevant build checks.
+-   [x] Tauri commands use typed contracts.
+-   [x] Tauri capabilities are minimal and reviewed.
+-   [x] Architecture and coding rules are documented.
 
 ------------------------------------------------------------------------
 
@@ -312,13 +312,13 @@ and close the document reliably on all target platforms.
 
 **Exit criteria**
 
--   [ ] Open/render/close works on all target platforms.
--   [ ] Password-protected files produce a usable password flow.
--   [ ] Invalid and unsupported files fail safely.
--   [ ] Worker and render queues are bounded.
--   [ ] Stale render requests can be cancelled.
--   [ ] Native resources are released on close and error paths.
--   [ ] Integration tests cover normal, malformed, and encrypted PDFs.
+-   [x] Open/render/close works on all target platforms.
+-   [x] Password-protected files produce a usable password flow.
+-   [x] Invalid and unsupported files fail safely.
+-   [x] Worker and render queues are bounded.
+-   [x] Stale render requests can be cancelled.
+-   [x] Native resources are released on close and error paths.
+-   [x] Integration tests cover normal, malformed, and encrypted PDFs.
 
 ------------------------------------------------------------------------
 
@@ -360,14 +360,14 @@ rotation, browse thumbnails and outlines, and reopen recent documents.
 
 **Exit criteria**
 
--   [ ] Single-page and continuous modes work.
--   [ ] Zoom, fit modes, rotation, and page navigation work.
--   [ ] Thumbnails and outline navigation work when document data
+-   [x] Single-page and continuous modes work.
+-   [x] Zoom, fit modes, rotation, and page navigation work.
+-   [x] Thumbnails and outline navigation work when document data
     exists.
--   [ ] Recent documents and session state persist.
--   [ ] Rendering remains responsive during navigation.
--   [ ] Memory use remains bounded during long reading sessions.
--   [ ] Core keyboard workflows are covered by tests.
+-   [x] Recent documents and session state persist.
+-   [x] Rendering remains responsive during navigation.
+-   [x] Memory use remains bounded during long reading sessions.
+-   [x] Core keyboard workflows are covered by tests.
 
 ------------------------------------------------------------------------
 
@@ -410,12 +410,12 @@ reliable save/reopen behavior.
 
 **Exit criteria**
 
--   [ ] Search works across multi-page documents.
--   [ ] Search can be cancelled and does not freeze the UI.
--   [ ] Search results navigate to the correct page and location.
--   [ ] Bookmarks persist across application restarts.
--   [ ] Supported annotations survive save and reopen.
--   [ ] Save failures do not silently destroy the original document.
+-   [x] Search works across multi-page documents.
+-   [x] Search can be cancelled and does not freeze the UI.
+-   [x] Search results navigate to the correct page and location.
+-   [x] Bookmarks persist across application restarts.
+-   [x] Supported annotations survive save and reopen.
+-   [x] Save failures do not silently destroy the original document.
 
 ------------------------------------------------------------------------
 
@@ -470,12 +470,12 @@ for every feature included in the release.
 
 ------------------------------------------------------------------------
 
-### Phase 6 --- Commercial Readiness
+### Phase 6 --- Packaging & Distribution Readiness
 
 **Estimated duration:** 2--3 weeks
 
-**Goal:** Make the application installable, upgradeable, supportable,
-and distributable.
+**Goal:** Make the open-source application installable, upgradeable, supportable,
+and freely distributable across macOS, Windows, and Linux.
 
 **Main tasks**
 
@@ -586,7 +586,7 @@ M3 --- Feature beta                 Search, bookmarks, validated
 annotations, and selected advanced
 features are ready
 
-M4 --- Commercial v1.0              Installers, signing, security,
+M4 --- Open-Source v1.0             Installers, signing, security,
 regression, and release processes
 are complete
   -----------------------------------------------------------------------
@@ -611,7 +611,7 @@ are complete
 -   Annotations should be included only if reliable writeback and reopen
     behavior have been validated with the selected PDF engine.
 
-### Defer unless commercially essential
+### Defer for future community releases
 
 -   OCR.
 -   Full digital signature creation and signing workflows.
@@ -670,7 +670,7 @@ Phase 2 --- PDF engine integration           2--3 weeks
 Phase 3 --- Core reader MVP                  3--4 weeks
 Phase 4 --- Productivity features            3--5 weeks
 Phase 5 --- Advanced capabilities            4--6 weeks
-Phase 6 --- Commercial readiness             2--3 weeks
+Phase 6 --- Packaging readiness              2--3 weeks
 Phase 7 --- Production release               2--3 weeks
 **Indicative total**                   **19--28 weeks**
 
@@ -680,16 +680,9 @@ complexity, and the amount of release hardening required.
 
 ## 8. Immediate Next Steps
 
-1.  Complete Phase 0 before committing to the full feature
-    implementation.
-2.  Build a minimal PDFium proof of concept for macOS, Windows, and
-    Linux.
-3.  Confirm licensing and native binary distribution requirements.
-4.  Benchmark rendering and memory behavior with representative PDFs.
-5.  Decide the supported OS and CPU architecture matrix.
-6.  Record the engine decision and risks in `docs/DECISIONS.md`.
-7.  Start Phase 1 only after the critical Phase 0 exit criteria are
-    satisfied.
+1.  Evaluate Phase 5 advanced capabilities (interactive PDF forms, signature presence inspection, and document split/merge).
+2.  Prepare cross-platform packaging pipelines for Phase 6 (DMG, MSI/NSIS, AppImage/DEB).
+3.  Maintain zero-regression coverage across `app-domain`, `app-application`, `storage`, `pdfium-adapter`, and React UI.
 
 ## 9. Weekly Roadmap Review Template
 
@@ -700,37 +693,31 @@ Use this checklist during the weekly project review.
   -----------------------------------------------------------------------
 Phase                   Status                  Evidence / notes
   ----------------------- ----------------------- -----------------------
-0 --- Technical         Not started / In        
-foundation              progress / Blocked /    
-Complete
+0 --- Technical         Complete                ADR-0001..0004 recorded in
+foundation                                      `.docs/decisions.md`
 
-1 --- Desktop           Not started / In        
-foundation              progress / Blocked /    
-Complete
+1 --- Desktop           Complete                8-crate Rust workspace +
+foundation                                      Tauri 2 + React/TS strict
 
-2 --- PDF engine        Not started / In        
-integration             progress / Blocked /    
-Complete
+2 --- PDF engine        Complete                `pdf-engine` traits +
+integration                                     `pdfium-adapter` + tests
 
-3 --- Core reader MVP   Not started / In        
-progress / Blocked /    
-Complete
+3 --- Core reader MVP   Complete                Full reader UI, Figma SVG
+                                                icon system, Library,
+                                                Favorites, Archive, Print
 
-4 --- Productivity      Not started / In        
-features                progress / Blocked /    
-Complete
+4 --- Productivity      Complete                Multi-page search, SQLite
+features                                        bookmarks & annotations
+                                                (`0001`–`0003` migrations)
 
-5 --- Advanced          Not started / In        
-capabilities            progress / Blocked /    
-Complete
+5 --- Advanced          Not started             Planned next
+capabilities            
 
-6 --- Commercial        Not started / In        
-readiness               progress / Blocked /    
-Complete
+6 --- Packaging &       Not started             Open-source distribution
+distribution readiness  
 
-7 --- Production        Not started / In        
-release                 progress / Blocked /    
-Complete
+7 --- Production        Not started             Open-source v1.0 release
+release                 
   -----------------------------------------------------------------------
 
 ### Review questions
