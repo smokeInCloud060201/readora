@@ -31,8 +31,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,11 +49,11 @@ jobs:
         run: cargo test --workspace
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm --dir apps/desktop/ui install --frozen-lockfile
 
       - name: Run frontend lint, typecheck, tests, and production bundle
         run: |
-          pnpm lint
-          pnpm typecheck
-          pnpm test
-          pnpm build
+          pnpm --dir apps/desktop/ui lint
+          pnpm --dir apps/desktop/ui typecheck
+          pnpm --dir apps/desktop/ui test
+          pnpm --dir apps/desktop/ui build

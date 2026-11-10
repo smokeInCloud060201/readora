@@ -39,8 +39,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,8 +49,8 @@ jobs:
 
       - name: Install frontend dependencies & build UI dist
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          pnpm --dir apps/desktop/ui install --frozen-lockfile
+          pnpm --dir apps/desktop/ui build
 
       - name: Build release workspace binaries & run release tests
         run: |
