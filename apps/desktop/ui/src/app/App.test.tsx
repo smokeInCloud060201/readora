@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { readoraApi } from "../lib/tauri/client";
 import { App } from "./App";
 
 function createTestPdfFile(fileName: string): File {
@@ -9,6 +10,10 @@ function createTestPdfFile(fileName: string): File {
 }
 
 describe("Readora Desktop Reader UI Vertical Slice", () => {
+  beforeEach(async () => {
+    await readoraApi.cleanupApplicationData();
+  });
+
   it("imports a PDF via Figma Import PDF Dialog file picker without manual path input, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
     render(<App />);
 
@@ -164,6 +169,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       target: { files: [createTestPdfFile("Field-Notes-On-Focus.pdf")] },
     });
     await waitFor(() => {
+      expect(
+        screen.getByLabelText("Toggle Notes and Details Panel"),
+      ).toBeInTheDocument();
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
 
@@ -263,6 +271,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
 
     await waitFor(() => {
+      expect(
+        screen.getByLabelText("Toggle Notes and Details Panel"),
+      ).toBeInTheDocument();
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
 
