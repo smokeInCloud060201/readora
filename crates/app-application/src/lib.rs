@@ -12,16 +12,20 @@ pub mod use_cases;
 
 pub use dto::{
     DocumentSessionDto, NavigationAction, OpenDocumentRequest, RenderPageCommand,
-    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertBookmarkCommand,
+    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertAnnotationCommand,
+    UpsertBookmarkCommand,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};
 pub use ports::render_cache::{
     CachedPageEntry, RenderCacheKey, RenderCachePort, RenderCancellationPort,
 };
-pub use ports::storage::{BookmarkRepository, RecentDocumentRepository, SettingsRepository};
+pub use ports::storage::{
+    AnnotationRepository, BookmarkRepository, RecentDocumentRepository, SettingsRepository,
+};
 pub use use_cases::bookmarks::{
-    execute_delete_bookmark, execute_list_bookmarks, execute_upsert_bookmark,
+    execute_delete_annotation, execute_delete_bookmark, execute_list_annotations,
+    execute_list_bookmarks, execute_upsert_annotation, execute_upsert_bookmark,
 };
 pub use use_cases::navigate_view::execute_navigation_action;
 pub use use_cases::open_document::{OpenedDocumentSession, execute_open_document};

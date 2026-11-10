@@ -1,13 +1,19 @@
 import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
-import { type BookmarkDto, type DocumentDescriptorDto } from "../../types/ipc";
+import {
+  type AnnotationDto,
+  type BookmarkDto,
+  type DocumentDescriptorDto,
+} from "../../types/ipc";
 
 interface BookmarksPanelProps {
   bookmarks: BookmarkDto[];
+  annotations?: AnnotationDto[];
   currentPage: number;
   descriptor?: DocumentDescriptorDto | null;
   onAddBookmark: (label: string) => void;
   onDeleteBookmark: (bookmarkId: string) => void;
+  onDeleteAnnotation?: (annotationId: string) => void;
   onSelectPage: (zeroBasedPage: number) => void;
   onClosePanel?: () => void;
 }
@@ -22,10 +28,12 @@ function formatBytes(bytes?: number): string {
 
 export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
   bookmarks,
+  annotations = [],
   currentPage,
   descriptor,
   onAddBookmark,
   onDeleteBookmark,
+  onDeleteAnnotation,
   onSelectPage,
   onClosePanel,
 }) => {
@@ -107,10 +115,10 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
           </form>
 
           <p className="notes-section-eyebrow">
-            ON THIS DOCUMENT &nbsp; {bookmarks.length}
+            ON THIS DOCUMENT &nbsp; {bookmarks.length + annotations.length}
           </p>
 
-          {bookmarks.length === 0 ? (
+          {bookmarks.length === 0 && annotations.length === 0 ? (
             <div className="note-card highlight-accent">
               <div className="note-card-header">
                 <span className="icon-inline-label">
@@ -130,6 +138,49 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
             </div>
           ) : (
             <ul className="notes-card-list">
+              {annotations.map((ann) => (
+                <li
+                  key={ann.id}
+                  className="note-card highlight-accent"
+                  style={{ borderLeftColor: ann.color_hex }}
+                >
+                  <div className="note-card-header">
+                    <span className="icon-inline-label">
+                      <FocusIcon name="highlight" size={13} />
+                      <span>
+                        {ann.kind === "underline" ? "Underline" : "Highlight"} ·
+                        Page {ann.page_index + 1}
+                      </span>
+                    </span>
+                    {onDeleteAnnotation && (
+                      <button
+                        type="button"
+                        className="delete-icon-btn"
+                        onClick={() => onDeleteAnnotation(ann.id)}
+                        aria-label={`Delete annotation ${ann.note_text || ann.quote_text}`}
+                      >
+                        <FocusIcon name="trash" size={13} />
+                      </button>
+                    )}
+                  </div>
+                  {ann.quote_text && (
+                    <blockquote className="note-quote-box">
+                      “{ann.quote_text}”
+                    </blockquote>
+                  )}
+                  <button
+                    type="button"
+                    className="note-card-jump-btn"
+                    onClick={() => onSelectPage(ann.page_index)}
+                  >
+                    <span className="note-card-label">
+                      {ann.note_text || "Highlighted excerpt"}
+                    </span>
+                    <span className="page-pill">p. {ann.page_index + 1}</span>
+                  </button>
+                  <div className="note-card-author">MK &nbsp; You</div>
+                </li>
+              ))}
               {bookmarks.map((bm, idx) => (
                 <li
                   key={bm.id}

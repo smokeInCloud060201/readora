@@ -8,6 +8,7 @@
  */
 
 import {
+  type AnnotationDto,
   type AppSettingsDto,
   type BookmarkDto,
   type CommandErrorDto,
@@ -22,6 +23,7 @@ import {
   type SearchHitDto,
   type SearchRequestDto,
   type SettingsPatchDto,
+  type UpsertAnnotationCommandDto,
   type UpsertBookmarkCommandDto,
   type ViewStateDto,
 } from "../../types/ipc";
@@ -64,6 +66,7 @@ const FALLBACK_PNG_DATA_URL =
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
   private recents: RecentDocumentDto[] = [];
+  private annotations = new Map<string, AnnotationDto[]>();
   private settings: AppSettingsDto = {
     theme: "system",
     default_layout: "single_page",
@@ -274,6 +277,39 @@ class BrowserFallbackBridge {
       const idx = session.bookmarks.findIndex((b) => b.id === bookmarkId);
       if (idx >= 0) {
         session.bookmarks.splice(idx, 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  listAnnotations(documentId: string): AnnotationDto[] {
+    return structuredClone(this.annotations.get(documentId) ?? []);
+  }
+
+  upsertAnnotation(command: UpsertAnnotationCommandDto): AnnotationDto {
+    const list = this.annotations.get(command.document_id) ?? [];
+    const created: AnnotationDto = {
+      id: `ann-${command.document_id}-${command.page_index}-${Date.now()}`,
+      document_id: command.document_id,
+      page_index: command.page_index,
+      kind: command.kind,
+      color_hex: command.color_hex,
+      quote_text: command.quote_text.trim(),
+      note_text: command.note_text.trim(),
+      created_at_unix_ms: Date.now(),
+    };
+    const next = [...list, created].sort((a, b) => a.page_index - b.page_index);
+    this.annotations.set(command.document_id, next);
+    return structuredClone(created);
+  }
+
+  deleteAnnotation(annotationId: string): boolean {
+    for (const [docId, list] of this.annotations.entries()) {
+      const idx = list.findIndex((a) => a.id === annotationId);
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        this.annotations.set(docId, list);
         return true;
       }
     }
@@ -523,6 +559,32 @@ export const readoraApi = {
       return invoke<boolean>("bookmark_delete", { bookmarkId });
     }
     return fallbackBridge.deleteBookmark(bookmarkId);
+  },
+
+  async listAnnotations(documentId: string): Promise<AnnotationDto[]> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AnnotationDto[]>("annotation_list", { documentId });
+    }
+    return fallbackBridge.listAnnotations(documentId);
+  },
+
+  async upsertAnnotation(
+    command: UpsertAnnotationCommandDto,
+  ): Promise<AnnotationDto> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<AnnotationDto>("annotation_upsert", { command });
+    }
+    return fallbackBridge.upsertAnnotation(command);
+  },
+
+  async deleteAnnotation(annotationId: string): Promise<boolean> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      return invoke<boolean>("annotation_delete", { annotationId });
+    }
+    return fallbackBridge.deleteAnnotation(annotationId);
   },
 
   async getSettings(): Promise<AppSettingsDto> {

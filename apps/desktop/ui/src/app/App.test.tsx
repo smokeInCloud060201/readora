@@ -117,14 +117,24 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
 
-    // 1. Open Highlight Options popover (Figma Frame 24)
+    // 1. Open Highlight Options popover (Figma Frame 24) and save a persistent highlight
     fireEvent.click(screen.getByRole("button", { name: "Highlight Options" }));
     expect(
       screen.getByRole("dialog", { name: "Highlight Options" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Highlight color Sage"));
     fireEvent.click(screen.getByLabelText("Underline instead"));
-    fireEvent.click(screen.getByRole("button", { name: "Highlight Options" }));
+    fireEvent.click(screen.getByLabelText("Save page highlight"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Saved page highlight")).toBeInTheDocument();
+    });
+
+    // Verify saved annotation appears in Bookmarks / Notes panel
+    fireEvent.click(screen.getByText("Bookmarks"));
+    expect(
+      screen.getByText(/underline · Page \d+/i),
+    ).toBeInTheDocument();
 
     // 2. Open Print Dialog (Figma Frame 21) and submit print job
     fireEvent.click(screen.getByLabelText("Print Document"));

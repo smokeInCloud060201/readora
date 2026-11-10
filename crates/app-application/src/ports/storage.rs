@@ -1,6 +1,8 @@
 //! Storage repository ports for recent documents, bookmarks, and application settings.
 
-use app_domain::{AppSettings, Bookmark, BookmarkId, DocumentId, RecentDocument};
+use app_domain::{
+    Annotation, AnnotationId, AppSettings, Bookmark, BookmarkId, DocumentId, RecentDocument,
+};
 
 use crate::error::ApplicationError;
 
@@ -46,6 +48,21 @@ pub trait BookmarkRepository: Send + Sync {
 
     /// Deletes a bookmark by ID, returning `true` if a record was removed.
     fn delete(&self, bookmark_id: &BookmarkId) -> Result<bool, ApplicationError>;
+}
+
+/// Port for persisting and querying user annotations (highlights, underlines, comments).
+pub trait AnnotationRepository: Send + Sync {
+    /// Inserts or updates an annotation.
+    fn upsert(&self, annotation: &Annotation) -> Result<Annotation, ApplicationError>;
+
+    /// Lists all annotations for `document_id` ordered by `page_index` ascending.
+    fn list_for_document(
+        &self,
+        document_id: &DocumentId,
+    ) -> Result<Vec<Annotation>, ApplicationError>;
+
+    /// Deletes an annotation by ID, returning `true` if a record was removed.
+    fn delete(&self, annotation_id: &AnnotationId) -> Result<bool, ApplicationError>;
 }
 
 /// Port for loading and saving durable application preferences.

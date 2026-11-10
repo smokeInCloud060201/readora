@@ -20,6 +20,8 @@ import {
 import { FocusIcon } from "../shared/components/FocusIcon";
 import {
   rotationToDegrees,
+  type AnnotationDto,
+  type AnnotationKind,
   type AppSettingsDto,
   type CommandErrorDto,
   type DocumentSessionDto,
@@ -59,6 +61,7 @@ export const App: React.FC = () => {
   const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
   const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
   const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
+  const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
@@ -149,8 +152,12 @@ export const App: React.FC = () => {
           opened.view_state,
           settings.prefetch_window,
         );
-        const recents = await readoraApi.listRecentDocuments(20);
+        const [recents, loadedAnnotations] = await Promise.all([
+          readoraApi.listRecentDocuments(20),
+          readoraApi.listAnnotations(opened.descriptor.id),
+        ]);
         setRecentDocs(recents);
+        setAnnotations(loadedAnnotations);
       } catch (err) {
         if (isCommandError(err)) {
           if (err.code === "password_required") {
@@ -183,8 +190,12 @@ export const App: React.FC = () => {
         opened.view_state,
         settings.prefetch_window,
       );
-      const recents = await readoraApi.listRecentDocuments(20);
+      const [recents, loadedAnnotations] = await Promise.all([
+        readoraApi.listRecentDocuments(20),
+        readoraApi.listAnnotations(opened.descriptor.id),
+      ]);
       setRecentDocs(recents);
+      setAnnotations(loadedAnnotations);
     } catch (err) {
       setErrorBanner(
         isCommandError(err) ? err.message : "Failed to open sample PDF",
@@ -199,6 +210,7 @@ export const App: React.FC = () => {
     setRenderedPage(null);
     setPageText("");
     setSearchHits([]);
+    setAnnotations([]);
     const recents = await readoraApi.listRecentDocuments(20);
     setRecentDocs(recents);
   }, [session]);
@@ -272,6 +284,39 @@ export const App: React.FC = () => {
           }
         : null,
     );
+  };
+
+  const handleCreateAnnotation = async (
+    kind: AnnotationKind,
+    colorHex: string,
+    quoteText: string,
+    noteText: string,
+  ) => {
+    if (!session) return;
+    try {
+      const created = await readoraApi.upsertAnnotation({
+        document_id: session.descriptor.id,
+        page_index: session.view_state.current_page,
+        kind,
+        color_hex: colorHex,
+        quote_text: quoteText,
+        note_text: noteText,
+      });
+      setAnnotations((prev) =>
+        [...prev, created].sort((a, b) => a.page_index - b.page_index),
+      );
+      setStatusMessage("Saved page highlight");
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to save annotation",
+      );
+    }
+  };
+
+  const handleDeleteAnnotation = async (annotationId: string) => {
+    if (!session) return;
+    await readoraApi.deleteAnnotation(annotationId);
+    setAnnotations((prev) => prev.filter((a) => a.id !== annotationId));
   };
 
   const handleSearch = async (query: string, caseSensitive: boolean) => {
@@ -544,18 +589,24 @@ export const App: React.FC = () => {
                 renderedPage={renderedPage}
                 pageText={pageText}
                 isLoading={isRendering}
+                annotations={annotations}
                 onCopyText={() => void handleCopyText()}
                 onQuickAddNote={() => setActiveSidebar("bookmarks")}
+                onCreateAnnotation={(kind, color, quote, note) =>
+                  void handleCreateAnnotation(kind, color, quote, note)
+                }
               />
             </div>
 
             {showBookmarksPanel && (
               <BookmarksPanel
                 bookmarks={session.bookmarks}
+                annotations={annotations}
                 currentPage={session.view_state.current_page}
                 descriptor={session.descriptor}
                 onAddBookmark={(label) => void handleAddBookmark(label)}
                 onDeleteBookmark={(id) => void handleDeleteBookmark(id)}
+                onDeleteAnnotation={(id) => void handleDeleteAnnotation(id)}
                 onSelectPage={(p) =>
                   void dispatchNavigation({ kind: "go_to_page", value: p })
                 }

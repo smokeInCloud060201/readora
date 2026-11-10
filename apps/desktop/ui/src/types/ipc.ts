@@ -126,6 +126,28 @@ export interface UpsertBookmarkCommandDto {
   label: string;
 }
 
+export type AnnotationKind = "highlight" | "underline" | "comment";
+
+export interface AnnotationDto {
+  id: string;
+  document_id: string;
+  page_index: number;
+  kind: AnnotationKind;
+  color_hex: string;
+  quote_text: string;
+  note_text: string;
+  created_at_unix_ms: number;
+}
+
+export interface UpsertAnnotationCommandDto {
+  document_id: string;
+  page_index: number;
+  kind: AnnotationKind;
+  color_hex: string;
+  quote_text: string;
+  note_text: string;
+}
+
 export interface AppSettingsDto {
   theme: ThemePreference;
   default_layout: LayoutMode;

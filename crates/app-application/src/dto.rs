@@ -3,8 +3,8 @@
 use std::fmt;
 
 use app_domain::{
-    Bookmark, DocumentDescriptor, FitMode, LayoutMode, OutlineNode, RenderMode, ThemePreference,
-    ViewState,
+    AnnotationKind, Bookmark, DocumentDescriptor, FitMode, LayoutMode, OutlineNode, RenderMode,
+    ThemePreference, ViewState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +125,23 @@ pub struct UpsertBookmarkCommand {
     pub page_index: u32,
     /// User-facing bookmark label.
     pub label: String,
+}
+
+/// Command to create or update a persistent user annotation on a page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertAnnotationCommand {
+    /// Target document ID.
+    pub document_id: String,
+    /// Zero-based page index.
+    pub page_index: u32,
+    /// Annotation primitive kind (`highlight`, `underline`, `comment`).
+    pub kind: AnnotationKind,
+    /// Hex color swatch (`#RRGGBB`).
+    pub color_hex: String,
+    /// Quoted excerpt from the page.
+    pub quote_text: String,
+    /// User note or comment attached to the annotation.
+    pub note_text: String,
 }
 
 /// Partial update patch for application settings.

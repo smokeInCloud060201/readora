@@ -15,6 +15,7 @@ pub mod repositories;
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str =
     include_str!("../migrations/0002_library_collections_and_annotations.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_annotations.sql");
 
 /// Thread-safe SQLite storage adapter implementing `RecentDocumentRepository`,
 /// `BookmarkRepository`, and `SettingsRepository`.
@@ -90,6 +91,28 @@ impl SqliteStorage {
             })?;
         }
 
+        let has_m3: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 3",
+                params![],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ApplicationError::Storage(format!("failed to query migration 3: {e}")))?;
+
+        if has_m3.is_none() {
+            tx.execute_batch(MIGRATION_0003).map_err(|e| {
+                ApplicationError::Storage(format!("failed to apply migration 0003: {e}"))
+            })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_unix_ms) VALUES (3, 0)",
+                params![],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to record schema migration 3: {e}"))
+            })?;
+        }
+
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit migration transaction: {e}"))
         })?;
@@ -108,10 +131,12 @@ impl SqliteStorage {
 
 #[cfg(test)]
 mod tests {
-    use app_application::{BookmarkRepository, RecentDocumentRepository, SettingsRepository};
+    use app_application::{
+        AnnotationRepository, BookmarkRepository, RecentDocumentRepository, SettingsRepository,
+    };
     use app_domain::{
-        AppSettings, Bookmark, BookmarkId, DocumentId, PageIndex, RecentDocument, ThemePreference,
-        ViewState,
+        Annotation, AnnotationId, AnnotationKind, AppSettings, Bookmark, BookmarkId, DocumentId,
+        PageIndex, RecentDocument, ThemePreference, ViewState,
     };
 
     use super::*;
@@ -163,10 +188,37 @@ mod tests {
         let saved_bm = BookmarkRepository::upsert(&storage, &bm2).unwrap();
         assert_eq!(saved_bm.label, "Updated Note");
 
-        let all_bms = storage.list_for_document(&doc_id).unwrap();
+        let all_bms = BookmarkRepository::list_for_document(&storage, &doc_id).unwrap();
         assert_eq!(all_bms.len(), 1);
-        assert!(storage.delete(&saved_bm.id).unwrap());
-        assert!(storage.list_for_document(&doc_id).unwrap().is_empty());
+        assert!(BookmarkRepository::delete(&storage, &saved_bm.id).unwrap());
+        assert!(
+            BookmarkRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Annotation persistence (Highlight, Underline, Comment)
+        let ann = Annotation::new(
+            AnnotationId::generate(),
+            doc_id.clone(),
+            PageIndex::new(2),
+            AnnotationKind::Highlight,
+            "#a9d5b2",
+            "Hexagonal Architecture keeps domain rules pure.",
+            "Core architecture invariant",
+            500,
+        )
+        .unwrap();
+        AnnotationRepository::upsert(&storage, &ann).unwrap();
+        let all_anns = AnnotationRepository::list_for_document(&storage, &doc_id).unwrap();
+        assert_eq!(all_anns.len(), 1);
+        assert_eq!(all_anns[0].color_hex, "#a9d5b2");
+        assert!(AnnotationRepository::delete(&storage, &ann.id).unwrap());
+        assert!(
+            AnnotationRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .is_empty()
+        );
 
         // Settings default and persistence
         let default_settings = storage.load().unwrap();

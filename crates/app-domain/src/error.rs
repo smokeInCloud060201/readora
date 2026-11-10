@@ -61,6 +61,13 @@ pub enum DomainError {
         max_len: usize,
     },
 
+    /// Annotation content or color is invalid.
+    #[error("invalid annotation: {reason}")]
+    InvalidAnnotation {
+        /// Validation failure reason.
+        reason: String,
+    },
+
     /// Cache byte budget is outside the valid range.
     #[error("render cache budget {budget_bytes} bytes is outside [{min_bytes}, {max_bytes}]")]
     InvalidCacheBudget {

@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   rotationToDegrees,
+  type AnnotationDto,
+  type AnnotationKind,
   type RenderedPageResultDto,
   type ViewStateDto,
 } from "../../types/ipc";
@@ -11,8 +13,15 @@ interface PageViewportProps {
   renderedPage: RenderedPageResultDto | null;
   pageText: string;
   isLoading: boolean;
+  annotations?: AnnotationDto[];
   onCopyText: () => void;
   onQuickAddNote?: () => void;
+  onCreateAnnotation?: (
+    kind: AnnotationKind,
+    colorHex: string,
+    quoteText: string,
+    noteText: string,
+  ) => void;
 }
 
 const HIGHLIGHT_SWATCHES = [
@@ -28,8 +37,10 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   renderedPage,
   pageText,
   isLoading,
+  annotations = [],
   onCopyText,
   onQuickAddNote,
+  onCreateAnnotation,
 }) => {
   const rotationDeg = rotationToDegrees(viewState.rotation);
   const [showHighlightPopover, setShowHighlightPopover] = useState(false);
@@ -37,6 +48,17 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     HIGHLIGHT_SWATCHES[0].hex,
   );
   const [underlineInstead, setUnderlineInstead] = useState(false);
+
+  const pageAnnotations = annotations.filter(
+    (ann) => ann.page_index === viewState.current_page,
+  );
+  const latestPageAnnotation = pageAnnotations[pageAnnotations.length - 1];
+  const activeBorderColor = latestPageAnnotation
+    ? latestPageAnnotation.color_hex
+    : selectedColor;
+  const activeUnderline = latestPageAnnotation
+    ? latestPageAnnotation.kind === "underline"
+    : underlineInstead;
 
   return (
     <main
@@ -77,8 +99,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           className="selectable-text-layer"
           aria-label="Selectable Page Text"
           style={{
-            borderLeftColor: selectedColor,
-            textDecoration: underlineInstead ? "underline" : "none",
+            borderLeftColor: activeBorderColor,
+            textDecoration: activeUnderline ? "underline" : "none",
           }}
         >
           <p className="text-layer-content">{pageText}</p>
@@ -99,18 +121,40 @@ export const PageViewport: React.FC<PageViewportProps> = ({
         >
           <div className="highlight-popover-header">
             <span className="highlight-popover-label">Highlight color</span>
-            {onQuickAddNote && (
-              <button
-                type="button"
-                className="highlight-pin-link"
-                onClick={() => {
-                  setShowHighlightPopover(false);
-                  onQuickAddNote();
-                }}
-              >
-                + Add note
-              </button>
-            )}
+            <div className="highlight-popover-actions">
+              {onCreateAnnotation && (
+                <button
+                  type="button"
+                  className="highlight-pin-link"
+                  aria-label="Save page highlight"
+                  onClick={() => {
+                    onCreateAnnotation(
+                      underlineInstead ? "underline" : "highlight",
+                      selectedColor,
+                      pageText || `Page ${viewState.current_page + 1} excerpt`,
+                      underlineInstead
+                        ? "Underlined passage"
+                        : "Highlighted passage",
+                    );
+                    setShowHighlightPopover(false);
+                  }}
+                >
+                  Save highlight
+                </button>
+              )}
+              {onQuickAddNote && (
+                <button
+                  type="button"
+                  className="highlight-pin-link"
+                  onClick={() => {
+                    setShowHighlightPopover(false);
+                    onQuickAddNote();
+                  }}
+                >
+                  + Add note
+                </button>
+              )}
+            </div>
           </div>
           <div
             className="highlight-swatch-row"

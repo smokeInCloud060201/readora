@@ -11,16 +11,18 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
-    ApplicationError, BookmarkRepository, DocumentSessionDto, NavigationAction,
-    OpenDocumentRequest, PlatformPort, RecentDocumentRepository, RenderCachePort,
+    AnnotationRepository, ApplicationError, BookmarkRepository, DocumentSessionDto,
+    NavigationAction, OpenDocumentRequest, PlatformPort, RecentDocumentRepository, RenderCachePort,
     RenderCancellationPort, RenderPageCommand, RenderedPageResultDto, SearchRequestDto,
-    SettingsPatchDto, SettingsRepository, UpsertBookmarkCommand, execute_delete_bookmark,
-    execute_get_settings, execute_list_bookmarks, execute_navigation_action, execute_open_document,
-    execute_render_page, execute_search_document, execute_update_settings, execute_upsert_bookmark,
+    SettingsPatchDto, SettingsRepository, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    execute_delete_annotation, execute_delete_bookmark, execute_get_settings,
+    execute_list_annotations, execute_list_bookmarks, execute_navigation_action,
+    execute_open_document, execute_render_page, execute_search_document, execute_update_settings,
+    execute_upsert_annotation, execute_upsert_bookmark,
 };
 use app_domain::{
-    AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId, OutlineNode,
-    PageIndex, RecentDocument, SearchHit, ViewState,
+    Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
+    OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
 use pdf_engine::{PdfDocument, PdfEngine, PdfEngineKind};
@@ -142,7 +144,7 @@ impl AppCore {
             .lock()
             .map_err(|_| ApplicationError::Platform("view state lock poisoned".to_owned()))?
             .clone();
-        let bookmarks = self.storage.list_for_document(&doc_id)?;
+        let bookmarks = BookmarkRepository::list_for_document(self.storage.as_ref(), &doc_id)?;
 
         Ok(DocumentSessionDto {
             descriptor: entry.descriptor.clone(),
@@ -299,6 +301,36 @@ impl AppCore {
     /// Deletes a bookmark by ID.
     pub fn delete_bookmark(&self, bookmark_id: &str) -> Result<bool, ApplicationError> {
         execute_delete_bookmark(bookmark_id, self.storage.as_ref())
+    }
+
+    /// Creates or updates a persistent annotation (highlight, underline, or comment) on a page.
+    pub fn upsert_annotation(
+        &self,
+        command: UpsertAnnotationCommand,
+    ) -> Result<Annotation, ApplicationError> {
+        let doc_id = DocumentId::new(&command.document_id)?;
+        let page_count = if let Ok(entry) = self.lookup_session(&doc_id) {
+            entry.descriptor.page_count
+        } else if let Some(recent) = self.storage.get(&doc_id)? {
+            recent.page_count
+        } else {
+            return Err(ApplicationError::DocumentNotOpen(command.document_id));
+        };
+
+        let storage_ref: &dyn AnnotationRepository = self.storage.as_ref();
+        execute_upsert_annotation(&command, page_count, storage_ref, self.platform.as_ref())
+    }
+
+    /// Lists all persistent annotations for a document.
+    pub fn list_annotations(&self, document_id: &str) -> Result<Vec<Annotation>, ApplicationError> {
+        let storage_ref: &dyn AnnotationRepository = self.storage.as_ref();
+        execute_list_annotations(document_id, storage_ref)
+    }
+
+    /// Deletes a persistent annotation by ID.
+    pub fn delete_annotation(&self, annotation_id: &str) -> Result<bool, ApplicationError> {
+        let storage_ref: &dyn AnnotationRepository = self.storage.as_ref();
+        execute_delete_annotation(annotation_id, storage_ref)
     }
 
     /// Returns the current application settings.

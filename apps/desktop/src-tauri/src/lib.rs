@@ -19,8 +19,10 @@ pub fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use app_application::{NavigationAction, RenderPageCommand, UpsertBookmarkCommand};
-    use app_domain::RenderMode;
+    use app_application::{
+        NavigationAction, RenderPageCommand, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    };
+    use app_domain::{AnnotationKind, RenderMode};
 
     use super::*;
 
@@ -58,6 +60,19 @@ mod tests {
             .unwrap();
         assert_eq!(handler.bookmark_list(&doc_id).unwrap().len(), 1);
         assert!(handler.bookmark_delete(bm.id.as_str()).unwrap());
+
+        let ann = handler
+            .annotation_upsert(UpsertAnnotationCommand {
+                document_id: doc_id.clone(),
+                page_index: 1,
+                kind: AnnotationKind::Highlight,
+                color_hex: "#a9d5b2".to_owned(),
+                quote_text: "Hexagonal Architecture".to_owned(),
+                note_text: "Key architecture pattern".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(handler.annotation_list(&doc_id).unwrap().len(), 1);
+        assert!(handler.annotation_delete(ann.id.as_str()).unwrap());
 
         let recents = handler.recent_documents_list(10).unwrap();
         assert_eq!(recents.len(), 1);

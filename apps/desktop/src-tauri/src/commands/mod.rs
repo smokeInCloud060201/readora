@@ -2,10 +2,11 @@
 
 use app_application::{
     ApplicationError, DocumentSessionDto, NavigationAction, OpenDocumentRequest, RenderPageCommand,
-    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertBookmarkCommand,
+    RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, UpsertAnnotationCommand,
+    UpsertBookmarkCommand,
 };
 use app_core::AppCore;
-use app_domain::{AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
+use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
 use serde::{Deserialize, Serialize};
 
 /// Structured, serializable error DTO returned across the IPC boundary.
@@ -167,6 +168,24 @@ impl DesktopCommandHandler {
     /// Handles `bookmark_delete`.
     pub fn bookmark_delete(&self, bookmark_id: &str) -> Result<bool, CommandErrorDto> {
         Ok(self.core.delete_bookmark(bookmark_id)?)
+    }
+
+    /// Handles `annotation_upsert`.
+    pub fn annotation_upsert(
+        &self,
+        command: UpsertAnnotationCommand,
+    ) -> Result<Annotation, CommandErrorDto> {
+        Ok(self.core.upsert_annotation(command)?)
+    }
+
+    /// Handles `annotation_list`.
+    pub fn annotation_list(&self, document_id: &str) -> Result<Vec<Annotation>, CommandErrorDto> {
+        Ok(self.core.list_annotations(document_id)?)
+    }
+
+    /// Handles `annotation_delete`.
+    pub fn annotation_delete(&self, annotation_id: &str) -> Result<bool, CommandErrorDto> {
+        Ok(self.core.delete_annotation(annotation_id)?)
     }
 
     /// Handles `settings_get`.
