@@ -6,10 +6,19 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use app_core::AppCore;
 use readora_desktop_lib::{DesktopCommandHandler, init_tracing};
+use tao::dpi::LogicalSize;
+use tao::event::{Event, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::window::WindowBuilder;
+use wry::WebViewBuilder;
+
+#[derive(Debug, Clone, Copy)]
+enum DesktopUserEvent {
+    Quit,
+}
 
 fn resolve_ui_dist_dir() -> Option<PathBuf> {
     if let Ok(exe_path) = std::env::current_exe()
@@ -121,39 +130,6 @@ fn handle_http_connection(mut stream: TcpStream, ui_root: &Path) {
     }
 }
 
-fn launch_desktop_window(url: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let app_browsers = [
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        ];
-        for browser in app_browsers {
-            if Path::new(browser).is_file()
-                && Command::new(browser)
-                    .arg(format!("--app={url}"))
-                    .arg("--window-size=1380,880")
-                    .spawn()
-                    .is_ok()
-            {
-                return;
-            }
-        }
-        let _ = Command::new("open").arg(url).spawn();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
-    }
-
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        let _ = Command::new("xdg-open").arg(url).spawn();
-    }
-}
-
 fn main() {
     init_tracing();
 
@@ -203,12 +179,77 @@ fn main() {
 
     let url = format!("http://127.0.0.1:{}/", local_addr.port());
     tracing::info!("Serving Readora UI on {url}");
-    launch_desktop_window(&url);
 
-    for stream in listener.incoming().flatten() {
-        let ui_dir = ui_root.clone();
-        std::thread::spawn(move || {
-            handle_http_connection(stream, &ui_dir);
-        });
-    }
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let ui_dir = ui_root.clone();
+            std::thread::spawn(move || {
+                handle_http_connection(stream, &ui_dir);
+            });
+        }
+    });
+
+    let event_loop = EventLoopBuilder::<DesktopUserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+
+    let window = match WindowBuilder::new()
+        .with_title("Readora — PDF Reader")
+        .with_inner_size(LogicalSize::new(1380.0, 880.0))
+        .with_min_inner_size(LogicalSize::new(860.0, 580.0))
+        .build(&event_loop)
+    {
+        Ok(win) => win,
+        Err(err) => {
+            tracing::error!("Failed to create native Readora window: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let init_script = r#"
+      window.close = function() {
+        if (window.ipc && typeof window.ipc.postMessage === 'function') {
+          window.ipc.postMessage('quit');
+        }
+      };
+      window.addEventListener('keydown', function(e) {
+        if ((e.metaKey || e.ctrlKey) && e.key && e.key.toLowerCase() === 'q') {
+          e.preventDefault();
+          if (window.ipc && typeof window.ipc.postMessage === 'function') {
+            window.ipc.postMessage('quit');
+          }
+        }
+      });
+    "#;
+
+    let _webview = match WebViewBuilder::new()
+        .with_url(&url)
+        .with_initialization_script(init_script)
+        .with_ipc_handler(move |request| {
+            if request.body() == "quit" {
+                let _ = proxy.send_event(DesktopUserEvent::Quit);
+            }
+        })
+        .build(&window)
+    {
+        Ok(wv) => wv,
+        Err(err) => {
+            tracing::error!("Failed to initialize native OS WebView: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::UserEvent(DesktopUserEvent::Quit) => {
+                *control_flow = ControlFlow::Exit;
+            }
+            _ => {}
+        }
+    });
 }
