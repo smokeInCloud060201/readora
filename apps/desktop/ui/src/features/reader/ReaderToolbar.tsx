@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type FitMode,
@@ -101,6 +101,60 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
     "file" | "edit" | "view" | "window" | "help" | null
   >(null);
 
+  const appMenuBarRef = useRef<HTMLDivElement | null>(null);
+  const zoomMenuRef = useRef<HTMLDivElement | null>(null);
+  const moreActionsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!activeAppMenu && !showZoomMenu && !showMoreActionsMenu) {
+      return;
+    }
+
+    const handlePointerDownOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+
+      if (
+        activeAppMenu &&
+        appMenuBarRef.current &&
+        !appMenuBarRef.current.contains(target)
+      ) {
+        setActiveAppMenu(null);
+      }
+
+      if (
+        showZoomMenu &&
+        zoomMenuRef.current &&
+        !zoomMenuRef.current.contains(target)
+      ) {
+        setShowZoomMenu(false);
+      }
+
+      if (
+        showMoreActionsMenu &&
+        moreActionsRef.current &&
+        !moreActionsRef.current.contains(target)
+      ) {
+        setShowMoreActionsMenu(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActiveAppMenu(null);
+        setShowZoomMenu(false);
+        setShowMoreActionsMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDownOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeAppMenu, showZoomMenu, showMoreActionsMenu]);
+
   const handlePageSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!viewState) return;
@@ -130,7 +184,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
         role="menubar"
         aria-label="Application Menu Bar"
       >
-        <div className="desktop-menu-left">
+        <div className="desktop-menu-left" ref={appMenuBarRef}>
           <span className="desktop-menu-brand">● &nbsp; Focus Reader</span>
 
           <div className="desktop-menu-item-wrapper">
@@ -143,6 +197,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={() =>
                 setActiveAppMenu((prev) => (prev === "file" ? null : "file"))
               }
+              onMouseEnter={() => {
+                if (activeAppMenu && activeAppMenu !== "file") {
+                  setActiveAppMenu("file");
+                }
+              }}
             >
               File
             </button>
@@ -257,6 +316,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={() =>
                 setActiveAppMenu((prev) => (prev === "edit" ? null : "edit"))
               }
+              onMouseEnter={() => {
+                if (activeAppMenu && activeAppMenu !== "edit") {
+                  setActiveAppMenu("edit");
+                }
+              }}
             >
               Edit
             </button>
@@ -321,6 +385,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={() =>
                 setActiveAppMenu((prev) => (prev === "view" ? null : "view"))
               }
+              onMouseEnter={() => {
+                if (activeAppMenu && activeAppMenu !== "view") {
+                  setActiveAppMenu("view");
+                }
+              }}
             >
               View
             </button>
@@ -501,6 +570,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   prev === "window" ? null : "window",
                 )
               }
+              onMouseEnter={() => {
+                if (activeAppMenu && activeAppMenu !== "window") {
+                  setActiveAppMenu("window");
+                }
+              }}
             >
               Window
             </button>
@@ -560,6 +634,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={() =>
                 setActiveAppMenu((prev) => (prev === "help" ? null : "help"))
               }
+              onMouseEnter={() => {
+                if (activeAppMenu && activeAppMenu !== "help") {
+                  setActiveAppMenu("help");
+                }
+              }}
             >
               Help
             </button>
@@ -862,7 +941,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               <FocusIcon name="zoom-out" size={16} />
             </button>
 
-            <div className="zoom-menu-wrapper">
+            <div ref={zoomMenuRef} className="zoom-menu-wrapper">
               <button
                 type="button"
                 className="zoom-pill-btn"
@@ -986,7 +1065,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             )}
 
             {/* Figma Frame 16: Toolbar / More Actions Menu (6:1050) */}
-            <div className="more-actions-wrapper">
+            <div ref={moreActionsRef} className="more-actions-wrapper">
               <button
                 type="button"
                 className={`focus-icon-btn ${

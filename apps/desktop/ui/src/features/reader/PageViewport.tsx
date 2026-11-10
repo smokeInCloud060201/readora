@@ -82,6 +82,40 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     HIGHLIGHT_SWATCHES[0].hex,
   );
   const [underlineInstead, setUnderlineInstead] = useState(false);
+  const highlightPopoverRef = useRef<HTMLDivElement | null>(null);
+  const floatingToolsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showHighlightPopover) {
+      return;
+    }
+
+    const handlePointerDownOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+      if (
+        !highlightPopoverRef.current?.contains(target) &&
+        !floatingToolsRef.current?.contains(target)
+      ) {
+        setShowHighlightPopover(false);
+      }
+    };
+
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowHighlightPopover(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDownOutside);
+    document.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutside);
+      document.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [showHighlightPopover]);
 
   const isContinuous = viewState.layout_mode === "continuous";
 
@@ -505,6 +539,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       {/* Figma Frame 24: Highlight Options Popover (254x116) */}
       {showHighlightPopover && (
         <div
+          ref={highlightPopoverRef}
           className="highlight-options-popover"
           role="dialog"
           aria-label="Highlight Options"
@@ -586,6 +621,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
       {/* Bottom Floating Annotation & Selection Tools Bar (Figma Frame 01 & 24: 2:149, 246x45) */}
       <div
+        ref={floatingToolsRef}
         className="floating-annotation-tools"
         role="toolbar"
         aria-label="Page Reading Tools"

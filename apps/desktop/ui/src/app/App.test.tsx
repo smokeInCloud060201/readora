@@ -270,7 +270,14 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
   it("supports Application Menu Bar (11-15), Import PDF Dialog (07), Share/Export Dialog (20), Preferences General/Shortcuts (18-19), and Form/Signature inspection", async () => {
     render(<App />);
 
-    // 1. Open File menu (Figma Frame 11) and launch Import PDF Dialog (Figma Frame 07)
+    // 1. Open File menu (Figma Frame 11), verify outside-click dismissal, then launch Import PDF Dialog (Figma Frame 07)
+    fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
+    expect(screen.getByRole("menu", { name: "File Menu" })).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(
+      screen.queryByRole("menu", { name: "File Menu" }),
+    ).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
     expect(screen.getByRole("menu", { name: "File Menu" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Open PDF…"));
