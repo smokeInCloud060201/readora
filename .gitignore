@@ -1,0 +1,14 @@
+/target
+/node_modules
+/dist
+/.env
+.env.*
+*.pdf
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+*.provisionprofile
+.DS_Store
+Thumbs.db
+.idea/

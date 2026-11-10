@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/app-domain",
+  "crates/app-application",
+  "crates/app-infrastructure",
+  "crates/pdf-engine",
+  "crates/pdfium-adapter",
+  "crates/storage",
+  "crates/platform",
+  "crates/app-core",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+rust-version = "1.85"
+version = "0.1.0"
+authors = ["Your Company"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "serde"] }

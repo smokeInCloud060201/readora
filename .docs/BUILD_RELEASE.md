@@ -1,0 +1,92 @@
+# Build, Installers, Signing, and Release
+
+## Release principle
+
+Build native artifacts on native operating-system runners. Tauri supports platform-specific bundles, but signing and some packaging tools are OS-specific. Do not promise a single cross-compiled job will produce every production installer.
+
+## Artifact matrix
+
+| Platform | Architectures | Primary artifact | Additional |
+|---|---|---|---|
+| macOS | arm64 + x86_64 (separate or universal after validation) | `.dmg` containing signed `.app` | `.app` |
+| Windows | x86_64 initially; arm64 later if validated | NSIS setup `.exe` | `.msi` |
+| Linux | x86_64 initially; arm64 later if validated | `.AppImage` | `.deb`, `.rpm` |
+
+Linux distribution needs a documented minimum glibc baseline and supported desktop/runtime expectations. Test on clean machines/VMs, not only the build image.
+
+## Build prerequisites
+
+- All platforms: pinned Rust toolchain, Node LTS, package manager lockfile, Tauri CLI, reproducible build scripts.
+- macOS: Xcode Command Line Tools, Apple Developer ID certificate for outside-App-Store distribution, notarization credentials.
+- Windows: Microsoft C++ Build Tools, WebView2 runtime strategy, Windows code-signing certificate; WiX tooling for MSI as applicable.
+- Linux: Tauri/WebKitGTK build dependencies, packaging dependencies, clean target distro images.
+
+Use the official Tauri prerequisites for the exact dependency list for the pinned Tauri version.
+
+## Local development
+
+Typical commands (adapt to the package scripts and generated Tauri project):
+
+```bash
+# Rust checks
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+
+# Frontend
+cd apps/desktop/ui
+npm ci
+npm run lint
+npm run typecheck
+npm run test
+
+# Desktop development/build
+cd ..
+npm run tauri dev
+npm run tauri build
+```
+
+Do not commit machine-specific build outputs or vendor secrets.
+
+## CI pipeline
+
+Recommended GitHub Actions (or equivalent) matrix:
+1. Pull request: fmt, clippy, unit tests, frontend lint/typecheck/tests, dependency audit, license report.
+2. Main branch: build unsigned artifacts on native runners for smoke testing.
+3. Release tag: build release artifacts, sign, notarize where required, generate checksums/SBOM, publish draft release.
+4. Human release approval: verify artifacts, install/upgrade/uninstall tests, then publish.
+
+Suggested runner matrix:
+- `macos-latest`: macOS arm64 build; use an Intel runner if shipping x86_64 separately.
+- `windows-latest`: Windows x64 installer.
+- `ubuntu-latest`: Linux packages; test AppImage/DEB/RPM on clean supported distributions.
+
+Runner labels and available CPU architectures change; verify the actual runner architecture in CI.
+
+## Signing and trust
+
+- macOS direct distribution: Developer ID signing, hardened runtime/entitlements as required, notarize, staple ticket, verify Gatekeeper behavior.
+- Windows: Authenticode-sign installer and executable; timestamp signatures.
+- Linux: sign repository metadata/packages where applicable; publish SHA-256 checksums and provenance.
+- Never store certificates or passwords in repository. Use CI secret store and least-privilege credentials.
+- Test upgrades over the previous production version and clean uninstall behavior.
+
+## PDFium binary packaging
+
+- Bundle the matching PDFium shared library for each OS/architecture if required by the chosen Rust binding.
+- Verify dynamic library lookup paths and required runtime dependencies on clean machines.
+- Include all required third-party notices and licenses.
+- Scan native binaries and define an update process for security fixes.
+- Do not download arbitrary “latest” binaries at build time. Pin a known version and checksum.
+
+## Release checklist
+
+- [ ] Version, changelog, and release notes updated.
+- [ ] Cargo and frontend lockfiles committed.
+- [ ] Dependency, license, and native-binary inventory reviewed.
+- [ ] Unit/integration/smoke tests pass on supported OSes.
+- [ ] Install, launch, open PDF, print, upgrade, and uninstall tested.
+- [ ] Signatures and macOS notarization verified.
+- [ ] Checksums and SBOM generated.
+- [ ] Crash logs do not contain document content or secrets.
+- [ ] Rollback/update-channel plan ready.
