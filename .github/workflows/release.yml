@@ -74,6 +74,6 @@ jobs:
             "package_size_bytes": 44040192,
             "sha256": "${BIN_SHA256}",
             "published_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-            "download_url": "https://github.com/${GITHUB_repository:-karsontang/readora}/releases/tag/${RAW_TAG}"
+            "download_url": "https://github.com/${GITHUB_REPOSITORY:-karsontang/readora}/releases/tag/${RAW_TAG}"
           }
           EOF
