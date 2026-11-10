@@ -237,6 +237,14 @@ impl DesktopCommandHandler {
         Ok(self.core.stage_update_manifest(manifest)?)
     }
 
+    /// Handles `app_stage_github_release` by parsing GitHub's `/releases/latest` JSON payload.
+    pub fn app_stage_github_release(
+        &self,
+        raw_json: &str,
+    ) -> Result<AppUpdateStatusDto, CommandErrorDto> {
+        Ok(self.core.stage_github_release_json(raw_json)?)
+    }
+
     /// Handles `app_install_update`.
     pub fn app_install_update(&self, version: &str) -> Result<AppUpdateStatusDto, CommandErrorDto> {
         Ok(self.core.install_update(version)?)

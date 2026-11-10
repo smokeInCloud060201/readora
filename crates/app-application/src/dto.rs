@@ -180,6 +180,8 @@ pub struct SettingsPatchDto {
     pub show_extracted_text_layer: Option<bool>,
     /// Optional toggle for automatically checking for updates on launch.
     pub auto_check_updates: Option<bool>,
+    /// Optional GitHub `owner/repo` slug for checking GitHub Releases.
+    pub github_release_repo: Option<String>,
 }
 
 /// Verified release manifest describing an application update package.
@@ -197,6 +199,9 @@ pub struct ReleaseManifestDto {
     pub sha256: String,
     /// ISO-8601 publication date string.
     pub published_at: String,
+    /// Direct download URL or GitHub Release page URL.
+    #[serde(default)]
+    pub download_url: Option<String>,
 }
 
 /// Live application update status evaluated against the installed version and release manifest.
@@ -216,6 +221,10 @@ pub struct AppUpdateStatusDto {
     pub package_size_bytes: Option<u64>,
     /// SHA-256 checksum of the available release bundle.
     pub sha256_checksum: Option<String>,
+    /// Direct download or GitHub release URL for the update package.
+    pub download_url: Option<String>,
+    /// Configured GitHub `owner/repo` release source.
+    pub github_repo: String,
     /// Whether the release package integrity has been verified.
     pub verified: bool,
     /// Whether the update has been staged to apply on next restart.

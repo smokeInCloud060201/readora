@@ -179,6 +179,7 @@ export interface AppSettingsDto {
   prefetch_window: number;
   show_extracted_text_layer?: boolean;
   auto_check_updates?: boolean;
+  github_release_repo?: string;
   installed_version?: string | null;
   dismissed_update_version?: string | null;
 }
@@ -192,6 +193,7 @@ export interface SettingsPatchDto {
   prefetch_window?: number;
   show_extracted_text_layer?: boolean;
   auto_check_updates?: boolean;
+  github_release_repo?: string;
 }
 
 export interface ReleaseManifestDto {
@@ -201,6 +203,7 @@ export interface ReleaseManifestDto {
   package_size_bytes: number;
   sha256: string;
   published_at: string;
+  download_url?: string | null;
 }
 
 export interface AppUpdateStatusDto {
@@ -211,6 +214,8 @@ export interface AppUpdateStatusDto {
   release_notes: string | null;
   package_size_bytes: number | null;
   sha256_checksum: string | null;
+  download_url: string | null;
+  github_repo: string;
   verified: boolean;
   staged_for_restart: boolean;
   checked_at_unix_ms: number;

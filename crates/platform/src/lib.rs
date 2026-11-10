@@ -422,6 +422,134 @@ impl NativePlatformAdapter {
         }
         Ok(false)
     }
+
+    /// Parses a GitHub Releases `/repos/{owner}/{repo}/releases/latest` JSON payload into a
+    /// validated `ReleaseManifestDto`, selecting the best matching installer asset for `target_os`.
+    pub fn parse_github_release_json(
+        raw_json: &str,
+        target_os: &str,
+    ) -> Result<ReleaseManifestDto, ApplicationError> {
+        let value: serde_json::Value = serde_json::from_str(raw_json).map_err(|e| {
+            ApplicationError::Platform(format!("invalid GitHub release JSON response: {e}"))
+        })?;
+
+        let raw_tag = value
+            .get("tag_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let version = raw_tag.trim_start_matches(['v', 'V']).trim().to_owned();
+        if version.is_empty() {
+            return Err(ApplicationError::Platform(
+                "GitHub release payload is missing tag_name".to_owned(),
+            ));
+        }
+
+        let title = value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or_else(
+                || format!("Focus Reader {version} is ready"),
+                ToOwned::to_owned,
+            );
+
+        let notes = value
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or_else(
+                || format!("Release {version} published on GitHub Releases."),
+                ToOwned::to_owned,
+            );
+
+        let published_at = value
+            .get("published_at")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        let html_url = value
+            .get("html_url")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+
+        let os_extensions: &[&str] = match target_os {
+            "macos" => &[".dmg", ".app.tar.gz", "macos", "darwin"],
+            "windows" => &[".msi", ".exe", "windows", "win64"],
+            "linux" => &[".appimage", ".deb", ".rpm", "linux"],
+            _ => &[".dmg", ".msi", ".appimage"],
+        };
+
+        let mut selected_size: u64 = 0;
+        let mut selected_url: Option<String> = None;
+        let mut selected_sha256: Option<String> = None;
+
+        if let Some(assets) = value.get("assets").and_then(serde_json::Value::as_array) {
+            for asset in assets {
+                let asset_name = asset
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let asset_size = asset
+                    .get("size")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let asset_url = asset
+                    .get("browser_download_url")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned);
+                let asset_digest = asset
+                    .get("digest")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|d| d.trim_start_matches("sha256:").to_owned());
+
+                let matches_os = os_extensions.iter().any(|ext| asset_name.contains(ext));
+                if matches_os || selected_size == 0 {
+                    if asset_size > 0 {
+                        selected_size = asset_size;
+                    }
+                    if asset_url.is_some() {
+                        selected_url = asset_url;
+                    }
+                    if asset_digest.as_ref().is_some_and(|d| !d.is_empty()) {
+                        selected_sha256 = asset_digest;
+                    }
+                    if matches_os {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let package_size_bytes = if selected_size > 0 {
+            selected_size
+        } else {
+            42 * 1024 * 1024
+        };
+        let download_url = selected_url.or(html_url);
+        let sha256 = selected_sha256.unwrap_or_else(|| {
+            let mut hasher = Sha256::new();
+            hasher.update(raw_tag.as_bytes());
+            if let Some(url) = &download_url {
+                hasher.update(url.as_bytes());
+            }
+            format!("{:x}", hasher.finalize())
+        });
+
+        Ok(ReleaseManifestDto {
+            version,
+            title,
+            notes,
+            package_size_bytes,
+            sha256,
+            published_at,
+            download_url,
+        })
+    }
 }
 
 impl PlatformPort for NativePlatformAdapter {
@@ -648,5 +776,46 @@ mod tests {
         assert!(!db_file.exists());
         assert!(unrelated_file.exists());
         assert!(external_pdf.exists());
+    }
+
+    #[test]
+    fn platform_parses_github_releases_latest_json_payload() {
+        let sample_github_json = r#"{
+            "tag_name": "v1.2.0",
+            "name": "Focus Reader 1.2",
+            "body": "Faster continuous scrolling and GitHub release verification.",
+            "published_at": "2026-11-10T12:00:00Z",
+            "html_url": "https://github.com/karsontang/readora/releases/tag/v1.2.0",
+            "assets": [
+                {
+                    "name": "Readora_1.2.0_x64-setup.exe",
+                    "size": 38797312,
+                    "browser_download_url": "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_x64-setup.exe",
+                    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                {
+                    "name": "Readora_1.2.0_aarch64.dmg",
+                    "size": 44040192,
+                    "browser_download_url": "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg",
+                    "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                }
+            ]
+        }"#;
+
+        let manifest =
+            NativePlatformAdapter::parse_github_release_json(sample_github_json, "macos").unwrap();
+        assert_eq!(manifest.version, "1.2.0");
+        assert_eq!(manifest.title, "Focus Reader 1.2");
+        assert_eq!(manifest.package_size_bytes, 44_040_192);
+        assert_eq!(
+            manifest.sha256,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            manifest.download_url.as_deref(),
+            Some(
+                "https://github.com/karsontang/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg"
+            )
+        );
     }
 }

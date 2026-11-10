@@ -21,6 +21,10 @@ const fn default_auto_check_updates() -> bool {
     true
 }
 
+fn default_github_release_repo() -> String {
+    "karsontang/readora".to_owned()
+}
+
 /// User-configurable application preferences and performance budgets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -42,6 +46,9 @@ pub struct AppSettings {
     /// Whether Readora should automatically check for staged/available updates on launch.
     #[serde(default = "default_auto_check_updates")]
     pub auto_check_updates: bool,
+    /// GitHub `owner/repo` slug used to query `/repos/{owner}/{repo}/releases/latest`.
+    #[serde(default = "default_github_release_repo")]
+    pub github_release_repo: String,
     /// Active installed semantic version if an update has been applied/staged.
     #[serde(default)]
     pub installed_version: Option<String>,
@@ -101,6 +108,7 @@ impl Default for AppSettings {
             prefetch_window: 1,
             show_extracted_text_layer: false,
             auto_check_updates: true,
+            github_release_repo: default_github_release_repo(),
             installed_version: None,
             dismissed_update_version: None,
         }

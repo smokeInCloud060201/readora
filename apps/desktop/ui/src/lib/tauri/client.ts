@@ -240,16 +240,87 @@ function compareSemver(left: string, right: string): number {
   return 0;
 }
 
-const DEFAULT_STAGED_RELEASE_MANIFEST: ReleaseManifestDto = {
-  version: "1.1.0",
-  title: "Focus Reader 1.1 is ready",
-  notes:
-    "A faster reader, improved annotations, and accessibility updates are ready to install.",
-  package_size_bytes: 42 * 1024 * 1024,
-  sha256:
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  published_at: "2026-11-10T00:00:00Z",
-};
+interface GithubReleaseAssetPayload {
+  name?: string;
+  size?: number;
+  browser_download_url?: string;
+  digest?: string;
+}
+
+interface GithubReleasePayload {
+  tag_name?: string;
+  name?: string;
+  body?: string;
+  published_at?: string;
+  html_url?: string;
+  assets?: GithubReleaseAssetPayload[];
+}
+
+export function parseGithubReleasePayload(
+  rawJson: string,
+  targetOs = "macos",
+): ReleaseManifestDto {
+  const parsed = JSON.parse(rawJson) as GithubReleasePayload;
+  const rawTag = (parsed.tag_name ?? "").trim();
+  const version = rawTag.replace(/^[vV]/, "").trim();
+  if (!version) {
+    throw new Error("GitHub release payload is missing tag_name");
+  }
+
+  const title =
+    parsed.name?.trim() || `Focus Reader ${version} is ready`;
+  const notes =
+    parsed.body?.trim() ||
+    `Release ${version} published on GitHub Releases.`;
+  const publishedAt = parsed.published_at ?? "";
+  const htmlUrl = parsed.html_url ?? null;
+
+  const osTokens =
+    targetOs === "windows"
+      ? [".msi", ".exe", "windows", "win64"]
+      : targetOs === "linux"
+        ? [".appimage", ".deb", ".rpm", "linux"]
+        : [".dmg", ".app.tar.gz", "macos", "darwin"];
+
+  let selectedSize = 0;
+  let selectedUrl: string | null = null;
+  let selectedSha256: string | null = null;
+
+  if (Array.isArray(parsed.assets)) {
+    for (const asset of parsed.assets) {
+      const nameLower = (asset.name ?? "").toLowerCase();
+      const size = typeof asset.size === "number" ? asset.size : 0;
+      const url = asset.browser_download_url ?? null;
+      const digest = asset.digest
+        ? asset.digest.replace(/^sha256:/i, "").trim()
+        : null;
+      const matchesOs = osTokens.some((tok) => nameLower.includes(tok));
+      if (matchesOs || selectedSize === 0) {
+        if (size > 0) selectedSize = size;
+        if (url) selectedUrl = url;
+        if (digest) selectedSha256 = digest;
+        if (matchesOs) break;
+      }
+    }
+  }
+
+  const packageSizeBytes =
+    selectedSize > 0 ? selectedSize : 42 * 1024 * 1024;
+  const downloadUrl = selectedUrl ?? htmlUrl;
+  const sha256 =
+    selectedSha256 ||
+    `github-tag-${version}-${(downloadUrl ?? "").length}`;
+
+  return {
+    version,
+    title,
+    notes,
+    package_size_bytes: packageSizeBytes,
+    sha256,
+    published_at: publishedAt,
+    download_url: downloadUrl,
+  };
+}
 
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
@@ -258,9 +329,7 @@ class BrowserFallbackBridge {
   private renderCache = new Map<string, string>();
   private recents: RecentDocumentDto[] = [];
   private annotations = new Map<string, AnnotationDto[]>();
-  private stagedManifest: ReleaseManifestDto | null = structuredClone(
-    DEFAULT_STAGED_RELEASE_MANIFEST,
-  );
+  private stagedManifest: ReleaseManifestDto | null = null;
   private settings: AppSettingsDto = {
     theme: "system",
     default_layout: "continuous",
@@ -270,6 +339,7 @@ class BrowserFallbackBridge {
     prefetch_window: 1,
     show_extracted_text_layer: false,
     auto_check_updates: true,
+    github_release_repo: "karsontang/readora",
     installed_version: "1.0.0",
     dismissed_update_version: null,
   };
@@ -948,6 +1018,12 @@ class BrowserFallbackBridge {
     if (patch.auto_check_updates !== undefined) {
       this.settings.auto_check_updates = patch.auto_check_updates;
     }
+    if (
+      patch.github_release_repo !== undefined &&
+      patch.github_release_repo.trim().includes("/")
+    ) {
+      this.settings.github_release_repo = patch.github_release_repo.trim();
+    }
     return structuredClone(this.settings);
   }
 
@@ -1093,6 +1169,8 @@ class BrowserFallbackBridge {
 
   checkForUpdates(includeDismissed: boolean): AppUpdateStatusDto {
     const currentVersion = this.settings.installed_version || "1.0.0";
+    const githubRepo =
+      this.settings.github_release_repo || "karsontang/readora";
     const manifest = this.stagedManifest;
     const now = Date.now();
 
@@ -1110,6 +1188,8 @@ class BrowserFallbackBridge {
         release_notes: manifest.notes,
         package_size_bytes: manifest.package_size_bytes,
         sha256_checksum: manifest.sha256,
+        download_url: manifest.download_url ?? null,
+        github_repo: githubRepo,
         verified,
         staged_for_restart: false,
         checked_at_unix_ms: now,
@@ -1124,10 +1204,17 @@ class BrowserFallbackBridge {
       release_notes: null,
       package_size_bytes: null,
       sha256_checksum: null,
+      download_url: null,
+      github_repo: githubRepo,
       verified: true,
       staged_for_restart: false,
       checked_at_unix_ms: now,
     };
+  }
+
+  stageGithubReleaseJson(rawJson: string): AppUpdateStatusDto {
+    const manifest = parseGithubReleasePayload(rawJson, "macos");
+    return this.stageUpdateManifest(manifest);
   }
 
   stageUpdateManifest(manifest: ReleaseManifestDto): AppUpdateStatusDto {
@@ -1147,6 +1234,8 @@ class BrowserFallbackBridge {
   installUpdate(targetVersion: string): AppUpdateStatusDto {
     const trimmed = targetVersion.trim();
     const currentVersion = this.settings.installed_version || "1.0.0";
+    const githubRepo =
+      this.settings.github_release_repo || "karsontang/readora";
     if (!trimmed || compareSemver(trimmed, currentVersion) <= 0) {
       throw this.makeError(
         "platform_error",
@@ -1164,6 +1253,8 @@ class BrowserFallbackBridge {
       release_notes: null,
       package_size_bytes: null,
       sha256_checksum: null,
+      download_url: null,
+      github_repo: githubRepo,
       verified: true,
       staged_for_restart: true,
       checked_at_unix_ms: Date.now(),
@@ -1197,6 +1288,7 @@ class BrowserFallbackBridge {
       prefetch_window: 1,
       show_extracted_text_layer: false,
       auto_check_updates: true,
+      github_release_repo: "karsontang/readora",
       installed_version: "1.0.0",
       dismissed_update_version: null,
     };
@@ -1513,6 +1605,36 @@ export const readoraApi = {
 
   async checkForUpdates(includeDismissed = false): Promise<AppUpdateStatusDto> {
     const invoke = getNativeTauriInvoke();
+    const settings = await this.getSettings();
+    const repo = (settings.github_release_repo || "karsontang/readora").trim();
+
+    if (typeof fetch === "function" && repo.includes("/")) {
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${repo}/releases/latest`,
+          {
+            method: "GET",
+            headers: {
+              Accept: "application/vnd.github+json",
+            },
+          },
+        );
+        if (response.ok) {
+          const rawJson = await response.text();
+          if (rawJson.trim().startsWith("{")) {
+            fallbackBridge.stageGithubReleaseJson(rawJson);
+            if (invoke) {
+              await invoke<AppUpdateStatusDto>("app_stage_github_release", {
+                rawJson,
+              });
+            }
+          }
+        }
+      } catch {
+        // Offline or network unreachable — fall back to locally staged release manifest
+      }
+    }
+
     if (invoke) {
       return invoke<AppUpdateStatusDto>("app_check_for_updates", {
         includeDismissed,

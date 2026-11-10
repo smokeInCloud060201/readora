@@ -47,6 +47,12 @@ pub fn execute_update_settings(
     if let Some(auto_check_updates) = patch.auto_check_updates {
         settings.auto_check_updates = auto_check_updates;
     }
+    if let Some(github_repo) = patch.github_release_repo {
+        let trimmed = github_repo.trim();
+        if !trimmed.is_empty() && trimmed.contains('/') {
+            settings.github_release_repo = trimmed.to_owned();
+        }
+    }
 
     settings.validate()?;
     settings_repo.save(&settings)?;

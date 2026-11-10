@@ -471,6 +471,7 @@ impl AppCore {
         include_dismissed: bool,
     ) -> Result<AppUpdateStatusDto, ApplicationError> {
         let settings = self.get_settings()?;
+        let github_repo = settings.github_release_repo.clone();
         let current_version = settings
             .installed_version
             .clone()
@@ -498,6 +499,8 @@ impl AppCore {
                     release_notes: Some(manifest.notes),
                     package_size_bytes: Some(manifest.package_size_bytes),
                     sha256_checksum: Some(manifest.sha256),
+                    download_url: manifest.download_url,
+                    github_repo,
                     verified,
                     staged_for_restart: false,
                     checked_at_unix_ms,
@@ -513,10 +516,23 @@ impl AppCore {
             release_notes: None,
             package_size_bytes: None,
             sha256_checksum: None,
+            download_url: None,
+            github_repo,
             verified: true,
             staged_for_restart: false,
             checked_at_unix_ms,
         })
+    }
+
+    /// Parses a GitHub `/repos/{owner}/{repo}/releases/latest` JSON payload, stages the manifest
+    /// if it is newer than the installed version, and returns the updated `AppUpdateStatusDto`.
+    pub fn stage_github_release_json(
+        &self,
+        raw_json: &str,
+    ) -> Result<AppUpdateStatusDto, ApplicationError> {
+        let manifest =
+            NativePlatformAdapter::parse_github_release_json(raw_json, std::env::consts::OS)?;
+        self.stage_update_manifest(manifest)
     }
 
     /// Stages a verified release manifest into the Readora updates directory and evaluates update status.
@@ -551,6 +567,7 @@ impl AppCore {
         }
 
         let mut settings = self.get_settings()?;
+        let github_repo = settings.github_release_repo.clone();
         let current_version = settings
             .installed_version
             .clone()
@@ -578,6 +595,8 @@ impl AppCore {
             release_notes: None,
             package_size_bytes: None,
             sha256_checksum: None,
+            download_url: None,
+            github_repo,
             verified: true,
             staged_for_restart: true,
             checked_at_unix_ms: self.platform.current_unix_ms(),

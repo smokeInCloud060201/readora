@@ -72,6 +72,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [autoCheckUpdates, setAutoCheckUpdates] = useState<boolean>(
     settings.auto_check_updates ?? true,
   );
+  const [githubReleaseRepo, setGithubReleaseRepo] = useState<string>(
+    settings.github_release_repo ?? "karsontang/readora",
+  );
   const [shortcutFilter, setShortcutFilter] = useState("");
   const [platformPreview, setPlatformPreview] = useState<
     "macos" | "windows" | "linux"
@@ -92,6 +95,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
       show_extracted_text_layer: showExtractedTextLayer,
       auto_check_updates: autoCheckUpdates,
+      github_release_repo: githubReleaseRepo.trim() || "karsontang/readora",
     });
   };
 
@@ -250,7 +254,8 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     Automatically check for updates
                   </span>
                   <span className="preferences-toggle-sub">
-                    Keep Focus Reader current.
+                    Query GitHub Releases ({githubReleaseRepo}) for new
+                    versions.
                   </span>
                 </div>
                 <input
@@ -258,6 +263,18 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   checked={autoCheckUpdates}
                   onChange={(e) => setAutoCheckUpdates(e.target.checked)}
                   aria-label="Automatically check for updates"
+                />
+              </label>
+
+              <label className="form-field-row">
+                <span>GitHub Release Repository</span>
+                <input
+                  type="text"
+                  aria-label="GitHub Release Repository"
+                  value={githubReleaseRepo}
+                  onChange={(e) => setGithubReleaseRepo(e.target.value)}
+                  placeholder="owner/repo"
+                  className="focus-input"
                 />
               </label>
 
