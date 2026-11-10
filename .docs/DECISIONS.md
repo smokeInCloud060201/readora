@@ -22,10 +22,18 @@
 
 ## ADR-003: PDFium adapter
 
-**Status:** Candidate; not approved for production until validated
+**Status:** Implemented with pure-Rust fallback
 
-**Decision:** Prototype PDFium behind an engine-neutral `pdf-engine` interface.
+**Decision:** Implement `PdfiumEngineAdapter` behind the engine-neutral `pdf-engine` (`PdfEngine` / `PdfDocument`) interface using dynamic native binding (`pdfium-render` `thread_safe` + `pdfium_latest`) from `READORA_PDFIUM_PATH`, `assets/pdfium/`, or system library paths, paired with a built-in pure-Rust PDF parser/renderer fallback (`FallbackPdfDocument`) when `libpdfium` is not installed on the machine.
 
-**Reasoning:** PDFium is widely used and supports high-quality rendering and a broad set of PDF operations.
+**Reasoning:** Allows clean checkouts, CI runners, and developer environments to run full unit, contract, and vertical-slice integration tests without committing native PDFium binaries to source control, while supporting native PDFium rendering wherever `libpdfium` is provisioned.
 
-**Consequences:** Must verify binding coverage, license compatibility, platform binaries, security update cadence, and required advanced features. The adapter must remain replaceable.
+**Consequences:** Must verify binding coverage, license compatibility, platform binaries, security update cadence, and required advanced features before shipping release installers.
+
+## ADR-004: Rendered page IPC transfer and byte-bounded LRU cache
+
+**Status:** Accepted
+
+**Decision:** Encode rendered page bitmaps to PNG and transfer them across the Tauri IPC boundary as compact `data:image/png;base64,...` URLs cached inside a byte-bounded `MemoryRenderCache` keyed by `(DocumentId, PageIndex, ScaleBucket, Rotation, RenderMode)`, paired with a per-document `GenerationCancellationRegistry`.
+
+**Reasoning:** Prevents multi-megabyte raw JSON byte arrays across IPC, guarantees bounded memory consumption (default 64 MiB, configurable 8–512 MiB), and cancels obsolete page render requests when the user navigates, zooms, rotates, or closes a document.

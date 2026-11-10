@@ -74,6 +74,14 @@ These rules apply to coding agents and human contributors.
 - Do not put PDF rendering or large binary payloads in React state. Prefer asset/protocol URLs or bounded transfer mechanisms.
 - Avoid giant components. Separate toolbar, page viewport, thumbnail rail, outline, search, and properties panels.
 
+### Product UI design source
+
+- The approved UI design source is the [Readora Figma file](https://www.figma.com/design/kwbNKB62nq2S9uMZlPBCIE/readora?node-id=0-1&p=f&m=dev). The user has enabled Dev Mode.
+- Before implementing or materially changing a screen, use the connected Figma integration to inspect the relevant page, frame, components, variables, and assets. Follow the actual frames and design system rather than inventing a new visual direction.
+- If Figma is not connected or a referenced frame cannot be read, state that limitation and ask for the integration or frame access needed; do not claim to have inspected the design.
+- Treat Figma as the visual and interaction reference. Keep document rules and state transitions in Rust/application services, and implement the presentation in React/TypeScript within the frontend rules above.
+- When the design and product/security requirements conflict, preserve the architecture and security requirements and call out the specific conflict in the implementation summary.
+
 ## 8. Change hygiene
 
 - Add or update unit tests for domain/application behavior.

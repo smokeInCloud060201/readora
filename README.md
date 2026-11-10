@@ -26,6 +26,23 @@ This is an architecture and repository scaffold, not a finished PDF reader. It i
 
 Build a vertical slice: launch app → open a local PDF → render one page → zoom/scroll → navigate pages → reopen recent document. Do not begin with annotation, OCR, cloud sync, or a plugin system.
 
+## Verification & Development Commands
+
+```bash
+# Rust formatting, strict Clippy lints, and workspace unit/contract/integration tests
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+
+# Frontend (React 19 + TypeScript strict + Vite + Vitest)
+cd apps/desktop/ui
+npm ci
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+```
+
 ## Repository layout
 
 ```text
