@@ -35,17 +35,32 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
     });
 
-    // 2. Navigate to page 2 and verify selectable text updates
-    fireEvent.click(screen.getByLabelText("Next Page"));
+    // 2. Scroll down at the end of page 1 to advance to page 2 and verify selectable text updates
+    const viewport = screen.getByLabelText("Document Page Viewport");
+    fireEvent.wheel(viewport, { deltaY: 120 });
     await waitFor(() => {
       expect(screen.getByText("Page 2 of 5")).toBeInTheDocument();
     });
     expect(screen.getByText(/Hexagonal Architecture/i)).toBeInTheDocument();
 
-    // 3. Step zoom in and verify zoom indicator updates to 125%
+    // 3. Step zoom in and zoom out and verify both zoom indicator and page sheet width scale
+    expect(screen.getByTestId("pdf-page-sheet")).toHaveStyle({
+      width: "680px",
+    });
     fireEvent.click(screen.getByLabelText("Zoom In"));
     await waitFor(() => {
       expect(screen.getByTestId("zoom-indicator")).toHaveTextContent("125%");
+      expect(screen.getByTestId("pdf-page-sheet")).toHaveStyle({
+        width: "832px",
+      });
+    });
+
+    fireEvent.click(screen.getByLabelText("Zoom Out"));
+    await waitFor(() => {
+      expect(screen.getByTestId("zoom-indicator")).toHaveTextContent("100%");
+      expect(screen.getByTestId("pdf-page-sheet")).toHaveStyle({
+        width: "680px",
+      });
     });
 
     // 4. Open Notes & Details panel (Figma Frame 01/09) and add a bookmark on page 2

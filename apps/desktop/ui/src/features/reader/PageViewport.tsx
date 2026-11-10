@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   rotationToDegrees,
@@ -16,6 +16,10 @@ interface PageViewportProps {
   isLoading: boolean;
   annotations?: AnnotationDto[];
   onCopyText: () => void;
+  onNextPage?: () => void;
+  onPrevPage?: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
   onQuickAddNote?: () => void;
   onCreateAnnotation?: (
     kind: AnnotationKind,
@@ -41,15 +45,112 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   isLoading,
   annotations = [],
   onCopyText,
+  onNextPage,
+  onPrevPage,
+  onZoomIn,
+  onZoomOut,
   onQuickAddNote,
   onCreateAnnotation,
 }) => {
   const rotationDeg = rotationToDegrees(viewState.rotation);
+  const viewportRef = useRef<HTMLElement | null>(null);
+  const overscrollDeltaRef = useRef<number>(0);
+  const lastPageTurnTimeRef = useRef<number>(0);
+  const lastWheelZoomTimeRef = useRef<number>(0);
+
   const [showHighlightPopover, setShowHighlightPopover] = useState(false);
   const [selectedColor, setSelectedColor] = useState<string>(
     HIGHLIGHT_SWATCHES[0].hex,
   );
   const [underlineInstead, setUnderlineInstead] = useState(false);
+
+  useEffect(() => {
+    overscrollDeltaRef.current = 0;
+    if (viewportRef.current) {
+      viewportRef.current.scrollTop = 0;
+    }
+  }, [viewState.current_page, viewState.document_id]);
+
+  const aspect =
+    renderedPage && renderedPage.width_px > 0
+      ? renderedPage.height_px / renderedPage.width_px
+      : rotationDeg === 90 || rotationDeg === 270
+        ? 612 / 792
+        : 792 / 612;
+  const basePageWidth = aspect < 1 ? 760 : 608;
+  const displayWidthPx = Math.max(
+    180,
+    Math.round(basePageWidth * viewState.zoom),
+  );
+  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
+  const sheetWidthPx = displayWidthPx + 72;
+
+  const handleViewportWheel = (e: React.WheelEvent<HTMLElement>) => {
+    const now = Date.now();
+
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      if (now - lastWheelZoomTimeRef.current < 160) return;
+      if (e.deltaY < 0 && onZoomIn) {
+        lastWheelZoomTimeRef.current = now;
+        onZoomIn();
+      } else if (e.deltaY > 0 && onZoomOut) {
+        lastWheelZoomTimeRef.current = now;
+        onZoomOut();
+      }
+      return;
+    }
+
+    const el = viewportRef.current;
+    if (!el || isLoading) return;
+
+    const pixelDeltaY =
+      e.deltaMode === 1
+        ? e.deltaY * 18
+        : e.deltaMode === 2
+          ? e.deltaY * 120
+          : e.deltaY;
+
+    if (Math.abs(pixelDeltaY) < Math.abs(e.deltaX)) {
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const isAtBottom = maxScrollTop <= 2 || el.scrollTop >= maxScrollTop - 6;
+    const isAtTop = maxScrollTop <= 2 || el.scrollTop <= 6;
+
+    if (pixelDeltaY > 0 && isAtBottom) {
+      if (
+        onNextPage &&
+        viewState.current_page + 1 < viewState.page_count &&
+        now - lastPageTurnTimeRef.current >= 320
+      ) {
+        overscrollDeltaRef.current =
+          Math.max(0, overscrollDeltaRef.current) + pixelDeltaY;
+        if (overscrollDeltaRef.current >= 40) {
+          overscrollDeltaRef.current = 0;
+          lastPageTurnTimeRef.current = now;
+          onNextPage();
+        }
+      }
+    } else if (pixelDeltaY < 0 && isAtTop) {
+      if (
+        onPrevPage &&
+        viewState.current_page > 0 &&
+        now - lastPageTurnTimeRef.current >= 320
+      ) {
+        overscrollDeltaRef.current =
+          Math.min(0, overscrollDeltaRef.current) + pixelDeltaY;
+        if (overscrollDeltaRef.current <= -40) {
+          overscrollDeltaRef.current = 0;
+          lastPageTurnTimeRef.current = now;
+          onPrevPage();
+        }
+      }
+    } else {
+      overscrollDeltaRef.current = 0;
+    }
+  };
 
   const pageAnnotations = annotations.filter(
     (ann) => ann.page_index === viewState.current_page,
@@ -65,10 +166,17 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   return (
     <main
+      ref={viewportRef}
       className="document-canvas-viewport"
       aria-label="Document Page Viewport"
+      onWheel={handleViewportWheel}
     >
-      <div className="pdf-page-sheet" data-node-id="2:130">
+      <div
+        className="pdf-page-sheet"
+        data-node-id="2:130"
+        data-testid="pdf-page-sheet"
+        style={{ width: `${sheetWidthPx}px` }}
+      >
         <div className="pdf-sheet-running-header">
           <span className="pdf-sheet-kicker" data-node-id="2:131">
             {displayTitle.toUpperCase()}
@@ -89,12 +197,24 @@ export const PageViewport: React.FC<PageViewportProps> = ({
             <img
               src={renderedPage.data_url}
               alt={`Rendered PDF page ${viewState.current_page + 1}`}
-              width={renderedPage.width_px}
-              height={renderedPage.height_px}
+              width={displayWidthPx}
+              height={displayHeightPx}
+              style={{
+                width: `${displayWidthPx}px`,
+                height: `${displayHeightPx}px`,
+              }}
               className="rendered-page-img"
             />
           ) : (
-            <div className="page-placeholder">Preparing page surface...</div>
+            <div
+              className="page-placeholder"
+              style={{
+                width: `${displayWidthPx}px`,
+                minHeight: `${displayHeightPx}px`,
+              }}
+            >
+              Preparing page surface...
+            </div>
           )}
         </div>
 

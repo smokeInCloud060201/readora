@@ -569,12 +569,16 @@ class BrowserFallbackBridge {
       const pageNumber = command.page_index + 1;
       const page = await record.pdfDoc.getPage(pageNumber);
       const totalRotation = (page.rotate + command.rotation_degrees) % 360;
-      const cssViewport = page.getViewport({
-        scale: command.scale,
+      const unscaledViewport = page.getViewport({
+        scale: 1.0,
         rotation: totalRotation,
       });
-      const widthPx = Math.max(1, Math.round(cssViewport.width));
-      const heightPx = Math.max(1, Math.round(cssViewport.height));
+      const aspect =
+        unscaledViewport.height / Math.max(1, unscaledViewport.width);
+      const isLandscape = unscaledViewport.width > unscaledViewport.height;
+      const baseDisplayWidth = isLandscape ? 760 : 608;
+      const widthPx = Math.max(120, Math.round(baseDisplayWidth * command.scale));
+      const heightPx = Math.max(120, Math.round(widthPx * aspect));
 
       if (cachedUrl) {
         return {
@@ -592,8 +596,10 @@ class BrowserFallbackBridge {
         typeof window !== "undefined"
           ? Math.min(2, Math.max(1.25, window.devicePixelRatio || 1.5))
           : 1.5;
+      const effectivePdfScale =
+        (widthPx * dpr) / Math.max(1, unscaledViewport.width);
       const renderViewport = page.getViewport({
-        scale: command.scale * dpr,
+        scale: effectivePdfScale,
         rotation: totalRotation,
       });
 

@@ -689,6 +689,18 @@ export const App: React.FC = () => {
                 isLoading={isRendering}
                 annotations={annotations}
                 onCopyText={() => void handleCopyText()}
+                onNextPage={() =>
+                  void dispatchNavigation({ kind: "next_page" })
+                }
+                onPrevPage={() =>
+                  void dispatchNavigation({ kind: "previous_page" })
+                }
+                onZoomIn={() =>
+                  void dispatchNavigation({ kind: "step_zoom_in" })
+                }
+                onZoomOut={() =>
+                  void dispatchNavigation({ kind: "step_zoom_out" })
+                }
                 onQuickAddNote={() => setActiveSidebar("bookmarks")}
                 onCreateAnnotation={(kind, color, quote, note) =>
                   void handleCreateAnnotation(kind, color, quote, note)
