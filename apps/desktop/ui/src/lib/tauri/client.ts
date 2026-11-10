@@ -229,6 +229,7 @@ class BrowserFallbackBridge {
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
+    show_extracted_text_layer: false,
   };
   private generation = 1;
 
@@ -899,6 +900,9 @@ class BrowserFallbackBridge {
     if (patch.prefetch_window !== undefined) {
       this.settings.prefetch_window = patch.prefetch_window;
     }
+    if (patch.show_extracted_text_layer !== undefined) {
+      this.settings.show_extracted_text_layer = patch.show_extracted_text_layer;
+    }
     return structuredClone(this.settings);
   }
 
@@ -1295,19 +1299,33 @@ export const readoraApi = {
   },
 
   async getSettings(): Promise<AppSettingsDto> {
+    const localSettings = fallbackBridge.getSettings();
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<AppSettingsDto>("settings_get");
+      const remote = await invoke<AppSettingsDto>("settings_get");
+      return {
+        ...remote,
+        show_extracted_text_layer:
+          remote.show_extracted_text_layer ??
+          localSettings.show_extracted_text_layer ??
+          false,
+      };
     }
-    return fallbackBridge.getSettings();
+    return localSettings;
   },
 
   async updateSettings(patch: SettingsPatchDto): Promise<AppSettingsDto> {
+    const localUpdated = fallbackBridge.updateSettings(patch);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<AppSettingsDto>("settings_update", { patch });
+      const remote = await invoke<AppSettingsDto>("settings_update", { patch });
+      return {
+        ...remote,
+        show_extracted_text_layer:
+          localUpdated.show_extracted_text_layer ?? false,
+      };
     }
-    return fallbackBridge.updateSettings(patch);
+    return localUpdated;
   },
 
   async getSystemDiagnostics(): Promise<SystemDiagnosticsDto> {

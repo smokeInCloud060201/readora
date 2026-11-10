@@ -13,6 +13,7 @@ interface PageViewportProps {
   viewState: ViewStateDto;
   renderedPage: RenderedPageResultDto | null;
   pageText: string;
+  showExtractedTextLayer?: boolean;
   isLoading: boolean;
   annotations?: AnnotationDto[];
   onCopyText: () => void;
@@ -42,6 +43,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   viewState,
   renderedPage,
   pageText,
+  showExtractedTextLayer = false,
   isLoading,
   annotations = [],
   onCopyText,
@@ -57,6 +59,10 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const overscrollDeltaRef = useRef<number>(0);
   const lastPageTurnTimeRef = useRef<number>(0);
   const lastWheelZoomTimeRef = useRef<number>(0);
+  const prevPageRef = useRef<number>(viewState.current_page);
+  const [pageTurnDirection, setPageTurnDirection] = useState<
+    "next" | "prev" | null
+  >(null);
 
   const [showHighlightPopover, setShowHighlightPopover] = useState(false);
   const [selectedColor, setSelectedColor] = useState<string>(
@@ -66,8 +72,23 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   useEffect(() => {
     overscrollDeltaRef.current = 0;
-    if (viewportRef.current) {
-      viewportRef.current.scrollTop = 0;
+    if (viewState.current_page > prevPageRef.current) {
+      setPageTurnDirection("next");
+    } else if (viewState.current_page < prevPageRef.current) {
+      setPageTurnDirection("prev");
+    }
+    prevPageRef.current = viewState.current_page;
+
+    const el = viewportRef.current;
+    if (el) {
+      el.scrollTop = 0;
+      if (typeof el.scrollTo === "function") {
+        try {
+          el.scrollTo({ top: 0, behavior: "smooth" });
+        } catch {
+          // Ignore unsupported smooth scroll options in headless environments
+        }
+      }
     }
   }, [viewState.current_page, viewState.document_id]);
 
@@ -123,11 +144,11 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       if (
         onNextPage &&
         viewState.current_page + 1 < viewState.page_count &&
-        now - lastPageTurnTimeRef.current >= 320
+        now - lastPageTurnTimeRef.current >= 240
       ) {
         overscrollDeltaRef.current =
           Math.max(0, overscrollDeltaRef.current) + pixelDeltaY;
-        if (overscrollDeltaRef.current >= 40) {
+        if (overscrollDeltaRef.current >= 28) {
           overscrollDeltaRef.current = 0;
           lastPageTurnTimeRef.current = now;
           onNextPage();
@@ -137,11 +158,11 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       if (
         onPrevPage &&
         viewState.current_page > 0 &&
-        now - lastPageTurnTimeRef.current >= 320
+        now - lastPageTurnTimeRef.current >= 240
       ) {
         overscrollDeltaRef.current =
           Math.min(0, overscrollDeltaRef.current) + pixelDeltaY;
-        if (overscrollDeltaRef.current <= -40) {
+        if (overscrollDeltaRef.current <= -28) {
           overscrollDeltaRef.current = 0;
           lastPageTurnTimeRef.current = now;
           onPrevPage();
@@ -163,6 +184,12 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     ? latestPageAnnotation.kind === "underline"
     : underlineInstead;
   const displayTitle = (documentTitle || "PDF Document").replace(/\.pdf$/i, "");
+  const pageTurnClass =
+    pageTurnDirection === "next"
+      ? "page-turn-next"
+      : pageTurnDirection === "prev"
+        ? "page-turn-prev"
+        : "";
 
   return (
     <main
@@ -172,7 +199,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       onWheel={handleViewportWheel}
     >
       <div
-        className="pdf-page-sheet"
+        key={`sheet-${viewState.document_id}-${viewState.current_page}`}
+        className={`pdf-page-sheet ${pageTurnClass}`.trim()}
         data-node-id="2:130"
         data-testid="pdf-page-sheet"
         style={{ width: `${sheetWidthPx}px` }}
@@ -218,18 +246,23 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           )}
         </div>
 
-        {pageText && (
-          <section
-            className="selectable-text-layer"
-            aria-label="Selectable Page Text"
-            style={{
-              borderLeftColor: activeBorderColor,
-              textDecoration: activeUnderline ? "underline" : "none",
-            }}
-          >
-            <p className="text-layer-content">{pageText}</p>
-          </section>
-        )}
+        {pageText &&
+          (showExtractedTextLayer ? (
+            <section
+              className="selectable-text-layer"
+              aria-label="Selectable Page Text"
+              style={{
+                borderLeftColor: activeBorderColor,
+                textDecoration: activeUnderline ? "underline" : "none",
+              }}
+            >
+              <p className="text-layer-content">{pageText}</p>
+            </section>
+          ) : (
+            <div className="sr-only" aria-label="Extracted Page Text">
+              {pageText}
+            </div>
+          ))}
 
         <div className="pdf-sheet-running-footer">
           <span data-node-id="2:147">{displayTitle.toUpperCase()}</span>

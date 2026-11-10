@@ -177,6 +177,7 @@ export interface AppSettingsDto {
   default_zoom: number;
   render_cache_budget_bytes: number;
   prefetch_window: number;
+  show_extracted_text_layer?: boolean;
 }
 
 export interface SettingsPatchDto {
@@ -186,6 +187,7 @@ export interface SettingsPatchDto {
   default_zoom_factor?: number;
   render_cache_budget_bytes?: number;
   prefetch_window?: number;
+  show_extracted_text_layer?: boolean;
 }
 
 export interface ThirdPartyNoticeDto {

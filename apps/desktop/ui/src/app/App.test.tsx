@@ -35,11 +35,17 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
     });
 
-    // 2. Scroll down at the end of page 1 to advance to page 2 and verify selectable text updates
+    // 2. Scroll down at the end of page 1 to advance to page 2 with smooth page-turn animation
+    expect(
+      screen.queryByLabelText("Selectable Page Text"),
+    ).not.toBeInTheDocument();
     const viewport = screen.getByLabelText("Document Page Viewport");
     fireEvent.wheel(viewport, { deltaY: 120 });
     await waitFor(() => {
       expect(screen.getByText("Page 2 of 5")).toBeInTheDocument();
+      expect(screen.getByTestId("pdf-page-sheet")).toHaveClass(
+        "page-turn-next",
+      );
     });
     expect(screen.getByText(/Hexagonal Architecture/i)).toBeInTheDocument();
 
@@ -126,7 +132,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
     });
 
-    // Open Preferences Dialog and switch to Dark theme
+    // Open Preferences Dialog, switch to Dark theme, and enable extracted text layer below page
     fireEvent.click(screen.getByLabelText("Preferences"));
     expect(
       screen.getByRole("dialog", { name: "Reader Preferences" }),
@@ -134,10 +140,16 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     fireEvent.change(screen.getByLabelText("Preference Theme"), {
       target: { value: "dark" },
     });
+    fireEvent.click(
+      screen.getByLabelText("Show extracted text below page"),
+    );
     fireEvent.click(screen.getByText("Save Preferences"));
 
     await waitFor(() => {
       expect(screen.getByTestId("app-shell")).toHaveClass("theme-dark");
+      expect(
+        screen.getByLabelText("Selectable Page Text"),
+      ).toBeInTheDocument();
     });
   });
 

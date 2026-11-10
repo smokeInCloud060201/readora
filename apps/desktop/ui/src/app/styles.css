@@ -860,7 +860,38 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  transition: width 120ms ease;
+  transition: width 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity, width;
+}
+
+@keyframes pageTurnNext {
+  from {
+    opacity: 0.45;
+    transform: translateY(16px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pageTurnPrev {
+  from {
+    opacity: 0.45;
+    transform: translateY(-16px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.pdf-page-sheet.page-turn-next {
+  animation: pageTurnNext 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pdf-page-sheet.page-turn-prev {
+  animation: pageTurnPrev 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .pdf-sheet-running-header,
@@ -880,6 +911,7 @@ body {
 }
 
 .page-image-frame {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -892,11 +924,28 @@ body {
   overflow: auto;
 }
 
+.render-loading-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(41, 43, 37, 0.78);
+  color: #f6f4ec;
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 4;
+}
+
 .rendered-page-img {
   display: block;
   flex-shrink: 0;
   border-radius: 2px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  transition:
+    width 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .selectable-text-layer {

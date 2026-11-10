@@ -63,6 +63,7 @@ export const App: React.FC = () => {
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
+    show_extracted_text_layer: false,
   });
 
   const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
@@ -133,6 +134,17 @@ export const App: React.FC = () => {
             void readoraApi.renderPage({
               document_id: docId,
               page_index: nextIdx,
+              scale: viewState.zoom,
+              rotation_degrees: rotationDegrees,
+              render_mode: viewState.render_mode,
+              generation: renderResult.generation,
+            });
+          }
+          const prevIdx = viewState.current_page - offset;
+          if (prevIdx >= 0) {
+            void readoraApi.renderPage({
+              document_id: docId,
+              page_index: prevIdx,
               scale: viewState.zoom,
               rotation_degrees: rotationDegrees,
               render_mode: viewState.render_mode,
@@ -682,6 +694,9 @@ export const App: React.FC = () => {
                 viewState={session.view_state}
                 renderedPage={renderedPage}
                 pageText={pageText}
+                showExtractedTextLayer={Boolean(
+                  settings.show_extracted_text_layer,
+                )}
                 documentTitle={
                   session.descriptor.metadata.title ||
                   session.descriptor.file_name

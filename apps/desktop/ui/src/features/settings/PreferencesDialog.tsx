@@ -59,6 +59,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [prefetchWindow, setPrefetchWindow] = useState<number>(
     settings.prefetch_window,
   );
+  const [showExtractedTextLayer, setShowExtractedTextLayer] = useState<boolean>(
+    Boolean(settings.show_extracted_text_layer),
+  );
 
   // Figma Frame 18: General Preferences local toggles
   const [reopenOnLaunch, setReopenOnLaunch] = useState(true);
@@ -83,6 +86,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       render_cache_budget_bytes:
         Math.min(512, Math.max(8, cacheMiB)) * 1024 * 1024,
       prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
+      show_extracted_text_layer: showExtractedTextLayer,
     });
   };
 
@@ -246,6 +250,24 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   checked={autoCheckUpdates}
                   onChange={(e) => setAutoCheckUpdates(e.target.checked)}
                   aria-label="Automatically check for updates"
+                />
+              </label>
+
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Show extracted text below page
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Display the embedded digital text stream beneath the
+                    rendered PDF page.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={showExtractedTextLayer}
+                  onChange={(e) => setShowExtractedTextLayer(e.target.checked)}
+                  aria-label="Show extracted text below page"
                 />
               </label>
 
@@ -472,6 +494,24 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     setPrefetchWindow(Number.parseInt(e.target.value, 10) || 0)
                   }
                   className="focus-input compact"
+                />
+              </label>
+
+              <label className="preferences-toggle-item">
+                <div>
+                  <span className="preferences-toggle-title">
+                    Show extracted text below page
+                  </span>
+                  <span className="preferences-toggle-sub">
+                    Display the embedded digital text stream beneath the
+                    rendered PDF page.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={showExtractedTextLayer}
+                  onChange={(e) => setShowExtractedTextLayer(e.target.checked)}
+                  aria-label="Show extracted text below page"
                 />
               </label>
             </div>
