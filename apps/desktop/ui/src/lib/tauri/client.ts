@@ -224,7 +224,7 @@ class BrowserFallbackBridge {
   private annotations = new Map<string, AnnotationDto[]>();
   private settings: AppSettingsDto = {
     theme: "system",
-    default_layout: "single_page",
+    default_layout: "continuous",
     default_fit_mode: "fit_width",
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,

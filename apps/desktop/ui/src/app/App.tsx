@@ -58,13 +58,15 @@ export const App: React.FC = () => {
   const [recentDocs, setRecentDocs] = useState<RecentDocumentDto[]>([]);
   const [settings, setSettings] = useState<AppSettingsDto>({
     theme: "system",
-    default_layout: "single_page",
+    default_layout: "continuous",
     default_fit_mode: "fit_width",
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
     show_extracted_text_layer: false,
   });
+  const [programmaticScrollTrigger, setProgrammaticScrollTrigger] =
+    useState<number>(0);
 
   const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
   const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
@@ -278,6 +280,13 @@ export const App: React.FC = () => {
         setSession((prev) =>
           prev ? { ...prev, view_state: updatedView } : null,
         );
+        if (
+          action.kind === "go_to_page" ||
+          action.kind === "next_page" ||
+          action.kind === "previous_page"
+        ) {
+          setProgrammaticScrollTrigger((prev) => prev + 1);
+        }
         await loadVisiblePageAndPrefetch(
           session.descriptor.id,
           updatedView,
@@ -287,6 +296,31 @@ export const App: React.FC = () => {
         setErrorBanner(
           isCommandError(err) ? err.message : "Navigation update failed",
         );
+      }
+    },
+    [loadVisiblePageAndPrefetch, session, settings.prefetch_window],
+  );
+
+  const handleVisiblePageChange = useCallback(
+    async (zeroBasedPage: number) => {
+      if (!session || session.view_state.current_page === zeroBasedPage) {
+        return;
+      }
+      try {
+        const updatedView = await readoraApi.navigate(session.descriptor.id, {
+          kind: "go_to_page",
+          value: zeroBasedPage,
+        });
+        setSession((prev) =>
+          prev ? { ...prev, view_state: updatedView } : null,
+        );
+        await loadVisiblePageAndPrefetch(
+          session.descriptor.id,
+          updatedView,
+          settings.prefetch_window,
+        );
+      } catch {
+        // Ignore transient scroll-driven navigation sync errors
       }
     },
     [loadVisiblePageAndPrefetch, session, settings.prefetch_window],
@@ -694,6 +728,8 @@ export const App: React.FC = () => {
                 viewState={session.view_state}
                 renderedPage={renderedPage}
                 pageText={pageText}
+                prefetchWindow={settings.prefetch_window}
+                programmaticScrollTrigger={programmaticScrollTrigger}
                 showExtractedTextLayer={Boolean(
                   settings.show_extracted_text_layer,
                 )}
@@ -704,6 +740,7 @@ export const App: React.FC = () => {
                 isLoading={isRendering}
                 annotations={annotations}
                 onCopyText={() => void handleCopyText()}
+                onVisiblePageChange={(p) => void handleVisiblePageChange(p)}
                 onNextPage={() =>
                   void dispatchNavigation({ kind: "next_page" })
                 }

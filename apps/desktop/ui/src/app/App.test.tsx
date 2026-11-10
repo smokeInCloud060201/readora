@@ -35,16 +35,19 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
     });
 
-    // 2. Scroll down at the end of page 1 to advance to page 2 with smooth page-turn animation
+    // 2. Verify Smooth Continuous Scroll mode is active by default and scrolling advances to page 2
     expect(
       screen.queryByLabelText("Selectable Page Text"),
     ).not.toBeInTheDocument();
     const viewport = screen.getByLabelText("Document Page Viewport");
+    expect(viewport).toHaveClass("continuous-scroll-mode");
+    expect(screen.getByTestId("pdf-page-sheet-2")).toBeInTheDocument();
+
     fireEvent.wheel(viewport, { deltaY: 120 });
     await waitFor(() => {
       expect(screen.getByText("Page 2 of 5")).toBeInTheDocument();
       expect(screen.getByTestId("pdf-page-sheet")).toHaveClass(
-        "page-turn-next",
+        "active-page-sheet",
       );
     });
     expect(screen.getByText(/Hexagonal Architecture/i)).toBeInTheDocument();

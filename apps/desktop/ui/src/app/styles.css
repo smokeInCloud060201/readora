@@ -843,11 +843,21 @@ body {
 .document-canvas-viewport {
   flex: 1;
   overflow: auto;
-  padding: 24px 28px 80px;
+  padding: 28px 28px 88px;
   display: flex;
   flex-direction: column;
   align-items: center;
   position: relative;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.continuous-pages-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  width: 100%;
 }
 
 .pdf-page-sheet {
@@ -860,8 +870,16 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  transition: width 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    width 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms ease-out;
   will-change: transform, opacity, width;
+}
+
+.pdf-page-sheet.active-page-sheet {
+  box-shadow:
+    0 16px 34px rgba(39, 41, 31, 0.2),
+    0 0 0 1px rgba(124, 140, 104, 0.28);
 }
 
 @keyframes pageTurnNext {
