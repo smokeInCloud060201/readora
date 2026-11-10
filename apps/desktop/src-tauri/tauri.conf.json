@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Readora",
+  "version": "0.1.0",
+  "identifier": "com.readora.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix ui run build",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Readora — PDF Reader",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 800,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../../../assets/icons/icon.png"
+    ]
+  }
+}

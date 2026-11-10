@@ -31,3 +31,22 @@ pub enum ApplicationError {
     #[error("operation cancelled")]
     Cancelled,
 }
+
+impl ApplicationError {
+    /// Returns a stable, machine-readable error code for IPC serialization.
+    #[must_use]
+    pub const fn error_code(&self) -> &'static str {
+        match self {
+            Self::PdfEngine(PdfEngineError::PasswordRequired) => "password_required",
+            Self::PdfEngine(PdfEngineError::IncorrectPassword) => "incorrect_password",
+            Self::PdfEngine(PdfEngineError::InvalidPdfFormat(_)) => "invalid_pdf",
+            Self::PdfEngine(PdfEngineError::FileTooLarge { .. }) => "file_too_large",
+            Self::DocumentNotOpen(_) => "document_not_open",
+            Self::Cancelled => "cancelled",
+            Self::Domain(_) => "validation_error",
+            Self::Storage(_) => "storage_error",
+            Self::Platform(_) => "platform_error",
+            Self::PdfEngine(_) => "pdf_engine_error",
+        }
+    }
+}

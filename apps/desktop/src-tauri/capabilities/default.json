@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Minimal capability allowlist for the main reader window. No unrestricted shell, filesystem, or network access.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}
