@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   rotationToDegrees,
   type RenderedPageResultDto,
@@ -161,7 +162,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           title="Select cursor"
           aria-label="Select cursor"
         >
-          ↗
+          <FocusIcon name="pen" size={16} />
         </button>
         <button
           type="button"
@@ -170,7 +171,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           title="Copy Page Text"
           aria-label="Copy Page Text"
         >
-          T
+          <FocusIcon name="text" size={16} />
         </button>
         <button
           type="button"
@@ -179,7 +180,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           title="Highlight Options"
           aria-label="Highlight Options"
         >
-          ✎
+          <FocusIcon name="highlight" size={16} />
         </button>
         <button
           type="button"
@@ -188,7 +189,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           title="Copy Selection"
           aria-label="Copy Selection"
         >
-          □
+          <FocusIcon name="comment" size={16} />
         </button>
       </div>
     </main>

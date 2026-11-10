@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type FitMode,
   type LayoutMode,
@@ -144,7 +145,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 aria-label="Close document"
                 title="Close document"
               >
-                ×
+                <FocusIcon name="close" size={14} />
               </button>
             </div>
           ) : (
@@ -177,7 +178,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
 
           {viewState && (
             <span className="saved-indicator" aria-live="polite">
-              ✓ Saved
+              <FocusIcon name="check" size={13} />
+              <span>Saved</span>
             </span>
           )}
 
@@ -189,7 +191,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               aria-label="Toggle theme"
               title="Toggle theme"
             >
-              ◐
+              <FocusIcon name="moon" size={16} />
             </button>
           )}
 
@@ -200,7 +202,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             aria-label="Preferences"
             title="Preferences"
           >
-            ⚙
+            <FocusIcon name="settings" size={16} />
           </button>
         </div>
       </div>
@@ -228,7 +230,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               title="Toggle Page Sidebar"
               aria-label="Toggle Page Sidebar"
             >
-              ▥
+              <FocusIcon name="panel-left" size={16} />
             </button>
             <button
               type="button"
@@ -280,7 +282,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               disabled={viewState.current_page <= 0}
               aria-label="Previous Page"
             >
-              ‹
+              <FocusIcon name="chevron-left" size={16} />
             </button>
             <div className="page-field-pill" aria-live="polite">
               <span className="sr-only">
@@ -297,7 +299,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               disabled={viewState.current_page + 1 >= viewState.page_count}
               aria-label="Next Page"
             >
-              ›
+              <FocusIcon name="chevron-right" size={16} />
             </button>
             <form onSubmit={handlePageSubmit} className="goto-page-form">
               <input
@@ -324,7 +326,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={onZoomOut}
               aria-label="Zoom Out"
             >
-              −
+              <FocusIcon name="zoom-out" size={16} />
             </button>
 
             <div className="zoom-menu-wrapper">
@@ -335,7 +337,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 onClick={() => setShowZoomMenu((prev) => !prev)}
                 aria-label="Zoom presets"
               >
-                {zoomPercent}%
+                <span>{zoomPercent}%</span>
+                <FocusIcon name="chevron-down" size={12} />
               </button>
 
               {showZoomMenu && (
@@ -409,7 +412,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               onClick={onZoomIn}
               aria-label="Zoom In"
             >
-              +
+              <FocusIcon name="zoom-in" size={16} />
             </button>
 
             <select
@@ -430,7 +433,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               aria-label="Rotate Counter-Clockwise"
               title="Rotate Counter-Clockwise"
             >
-              ⟲
+              <FocusIcon name="arrow-left" size={16} />
             </button>
             <button
               type="button"
@@ -439,7 +442,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
               aria-label="Rotate Clockwise"
               title="Rotate Clockwise"
             >
-              ⟳
+              <FocusIcon name="arrow-right" size={16} />
             </button>
 
             <select
@@ -471,7 +474,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 aria-label="Toggle Notes and Details Panel"
                 title="Toggle Notes and Details Panel"
               >
-                ▤
+                <FocusIcon name="panel-right" size={16} />
               </button>
             )}
 
@@ -483,7 +486,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 aria-label="Print Document"
                 title="Print Document"
               >
-                ⎙
+                <FocusIcon name="print" size={16} />
               </button>
             )}
 
@@ -498,7 +501,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 aria-label="More Document Actions"
                 title="More Document Actions"
               >
-                ⋯
+                <FocusIcon name="more" size={16} />
               </button>
 
               {showMoreActionsMenu && (
@@ -517,6 +520,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     }}
                   >
                     <span>Document properties…</span>
+                    <FocusIcon name="info" size={14} />
                   </button>
                   {onOpenPrint && (
                     <button
@@ -573,9 +577,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                           ? "Remove from favorites"
                           : "Add to favorites"}
                       </span>
-                      <span className="zoom-shortcut">
-                        {isFavorite ? "★" : "☆"}
-                      </span>
+                      <FocusIcon
+                        name="star"
+                        size={14}
+                        filled={Boolean(isFavorite)}
+                      />
                     </button>
                   )}
                   {onArchiveDocument && (
@@ -589,6 +595,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                       }}
                     >
                       <span>Move to archive</span>
+                      <FocusIcon name="archive" size={14} />
                     </button>
                   )}
                 </div>

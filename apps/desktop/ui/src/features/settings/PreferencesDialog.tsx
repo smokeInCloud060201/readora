@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type AppSettingsDto,
   type FitMode,
@@ -117,7 +118,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
               onClick={onClose}
               aria-label="Close preferences"
             >
-              ×
+              <FocusIcon name="close" size={16} />
             </button>
           </div>
 

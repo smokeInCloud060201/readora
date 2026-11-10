@@ -17,6 +17,7 @@ import {
   EmptyWorkspace,
   type LibraryCollectionView,
 } from "../shared/components/EmptyWorkspace";
+import { FocusIcon } from "../shared/components/FocusIcon";
 import {
   rotationToDegrees,
   type AppSettingsDto,
@@ -431,7 +432,7 @@ export const App: React.FC = () => {
             onClick={() => setErrorBanner(null)}
             aria-label="Dismiss error"
           >
-            ×
+            <FocusIcon name="close" size={14} />
           </button>
         </div>
       )}
@@ -454,7 +455,7 @@ export const App: React.FC = () => {
               title="Reader / Documents"
               aria-label="Reader Workspace"
             >
-              □
+              <FocusIcon name="file" size={16} />
             </button>
             <button
               type="button"
@@ -476,7 +477,7 @@ export const App: React.FC = () => {
               title="Notes & Favorites"
               aria-label="Notes and Bookmarks Rail"
             >
-              ☆
+              <FocusIcon name="star" size={16} />
             </button>
             <button
               type="button"
@@ -492,7 +493,7 @@ export const App: React.FC = () => {
               title="Library Home"
               aria-label="Library Home"
             >
-              ⌂
+              <FocusIcon name="grid" size={16} />
             </button>
           </div>
 

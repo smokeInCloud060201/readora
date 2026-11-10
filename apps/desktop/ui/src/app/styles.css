@@ -2236,3 +2236,30 @@ body {
   gap: 10px;
 }
 
+/* Figma Frame 25: SVG Icon Library Alignment & Color Rules */
+.focus-svg-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.icon-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.saved-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.zoom-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+

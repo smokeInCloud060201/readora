@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { type RecentDocumentDto } from "../../types/ipc";
+import { FocusIcon } from "./FocusIcon";
 
 export type LibraryCollectionView = "all" | "favorites" | "archive";
 
@@ -129,7 +130,7 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
 
             <div className="library-search-box">
               <span className="search-glyph" aria-hidden="true">
-                ⌕
+                <FocusIcon name="search" size={14} />
               </span>
               <input
                 type="search"
@@ -149,10 +150,11 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
 
             <button
               type="button"
-              className="focus-btn primary"
+              className="focus-btn primary icon-inline-label"
               onClick={() => setShowImportDialog(true)}
             >
-              + Import PDF
+              <FocusIcon name="plus" size={14} />
+              <span>Import PDF</span>
             </button>
             <button
               type="button"
@@ -303,7 +305,7 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                             aria-label={`Remove ${doc.display_name} from favorites`}
                             title="Remove from favorites"
                           >
-                            ★
+                            <FocusIcon name="star" size={14} filled />
                           </button>
                         )}
                       </div>
@@ -366,13 +368,14 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                       {onDeleteRecentDocument && (
                         <button
                           type="button"
-                          className="focus-btn secondary danger-text"
+                          className="focus-btn secondary danger-text icon-inline-label"
                           onClick={() =>
                             onDeleteRecentDocument(doc.document_id)
                           }
                           aria-label={`Delete ${doc.display_name}`}
                         >
-                          Delete
+                          <FocusIcon name="trash" size={14} />
+                          <span>Delete</span>
                         </button>
                       )}
                     </div>
@@ -504,7 +507,11 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                                 : "Add to favorites"
                             }
                           >
-                            {doc.is_favorite ? "★" : "☆"}
+                            <FocusIcon
+                              name="star"
+                              size={14}
+                              filled={Boolean(doc.is_favorite)}
+                            />
                           </button>
                         )}
                         {onArchiveDocument && (
@@ -515,7 +522,7 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                             aria-label={`Archive ${doc.display_name}`}
                             title="Move to archive"
                           >
-                            ⇣
+                            <FocusIcon name="archive" size={14} />
                           </button>
                         )}
                       </div>
@@ -547,12 +554,14 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                 onClick={() => setShowImportDialog(false)}
                 aria-label="Close import dialog"
               >
-                ×
+                <FocusIcon name="close" size={16} />
               </button>
             </div>
 
             <div className="import-dropzone">
-              <div className="dropzone-badge">PDF</div>
+              <div className="dropzone-badge">
+                <FocusIcon name="download" size={18} />
+              </div>
               <p className="dropzone-title">
                 Select a local PDF file or open the built-in sample guide
               </p>

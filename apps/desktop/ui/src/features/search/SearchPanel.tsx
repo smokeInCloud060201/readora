@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import { type SearchHitDto } from "../../types/ipc";
 
 interface SearchPanelProps {
@@ -38,7 +39,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
     <aside className="search-popover-panel" aria-label="Find in Document">
       <form onSubmit={handleSubmit} className="search-popover-bar">
         <span className="search-popover-icon" aria-hidden="true">
-          ⌕
+          <FocusIcon name="search" size={14} />
         </span>
         <input
           type="search"
@@ -64,7 +65,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           disabled={hits.length === 0}
           aria-label="Previous search match"
         >
-          ‹
+          <FocusIcon name="chevron-left" size={14} />
         </button>
         <button
           type="button"
@@ -73,7 +74,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           disabled={hits.length === 0}
           aria-label="Next search match"
         >
-          ›
+          <FocusIcon name="chevron-right" size={14} />
         </button>
         {onClose && (
           <button
@@ -82,7 +83,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
             onClick={onClose}
             aria-label="Close search popover"
           >
-            ×
+            <FocusIcon name="close" size={14} />
           </button>
         )}
       </form>

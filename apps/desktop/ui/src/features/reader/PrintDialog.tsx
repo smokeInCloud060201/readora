@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type DocumentDescriptorDto,
   type RenderedPageResultDto,
@@ -64,7 +65,7 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
             onClick={onClose}
             aria-label="Close print dialog"
           >
-            ×
+            <FocusIcon name="close" size={16} />
           </button>
         </div>
 

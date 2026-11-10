@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FocusIcon } from "../../shared/components/FocusIcon";
 import { type BookmarkDto, type DocumentDescriptorDto } from "../../types/ipc";
 
 interface BookmarksPanelProps {
@@ -68,7 +69,7 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
             onClick={onClosePanel}
             aria-label="Close Notes Panel"
           >
-            ×
+            <FocusIcon name="close" size={14} />
           </button>
         )}
       </div>
@@ -81,7 +82,10 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
             aria-label="Add Comment Composer"
           >
             <div className="comment-composer-header">
-              <span>□ &nbsp; New comment</span>
+              <span className="icon-inline-label">
+                <FocusIcon name="comment" size={14} />
+                <span>New comment</span>
+              </span>
               <span className="comment-composer-page">
                 Page {currentPage + 1}
               </span>
@@ -109,7 +113,10 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
           {bookmarks.length === 0 ? (
             <div className="note-card highlight-accent">
               <div className="note-card-header">
-                <span>✎ Reading Note</span>
+                <span className="icon-inline-label">
+                  <FocusIcon name="highlight" size={13} />
+                  <span>Reading Note</span>
+                </span>
                 <span className="note-card-time">Page {currentPage + 1}</span>
               </div>
               <blockquote className="note-quote-box">
@@ -131,9 +138,16 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                   }`}
                 >
                   <div className="note-card-header">
-                    <span>
-                      {idx % 2 === 0 ? "✎ Bookmark" : "□ Note"} · Page{" "}
-                      {bm.page_index + 1}
+                    <span className="icon-inline-label">
+                      <FocusIcon
+                        name={idx % 2 === 0 ? "bookmark" : "comment"}
+                        size={13}
+                        filled={idx % 2 === 0}
+                      />
+                      <span>
+                        {idx % 2 === 0 ? "Bookmark" : "Note"} · Page{" "}
+                        {bm.page_index + 1}
+                      </span>
                     </span>
                     <button
                       type="button"
@@ -141,7 +155,7 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                       onClick={() => onDeleteBookmark(bm.id)}
                       aria-label={`Delete bookmark ${bm.label}`}
                     >
-                      ×
+                      <FocusIcon name="trash" size={13} />
                     </button>
                   </div>
                   <button
