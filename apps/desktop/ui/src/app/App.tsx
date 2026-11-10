@@ -75,6 +75,9 @@ export const App: React.FC = () => {
   const [pendingPasswordPath, setPendingPasswordPath] = useState<string | null>(
     null,
   );
+  const [pendingPasswordFile, setPendingPasswordFile] = useState<File | null>(
+    null,
+  );
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [showPreferences, setShowPreferences] = useState<boolean>(false);
   const [preferencesSection, setPreferencesSection] =
@@ -158,6 +161,7 @@ export const App: React.FC = () => {
         const opened = await readoraApi.openDocument({ path, password });
         setSession(opened);
         setPendingPasswordPath(null);
+        setPendingPasswordFile(null);
         setPasswordError(null);
         setSearchHits([]);
         await loadVisiblePageAndPrefetch(
@@ -175,11 +179,58 @@ export const App: React.FC = () => {
         if (isCommandError(err)) {
           if (err.code === "password_required") {
             setPendingPasswordPath(path);
+            setPendingPasswordFile(null);
             setPasswordError(null);
             return;
           }
           if (err.code === "incorrect_password") {
             setPendingPasswordPath(path);
+            setPendingPasswordFile(null);
+            setPasswordError(err.message);
+            return;
+          }
+          setErrorBanner(err.message);
+        } else {
+          setErrorBanner("Failed to open PDF document");
+        }
+      }
+    },
+    [loadVisiblePageAndPrefetch, settings.prefetch_window],
+  );
+
+  const handleOpenFile = useCallback(
+    async (file: File, password: string | null = null) => {
+      setErrorBanner(null);
+      try {
+        const opened = await readoraApi.openDocumentFile(file, password);
+        setSession(opened);
+        setPendingPasswordPath(null);
+        setPendingPasswordFile(null);
+        setPasswordError(null);
+        setSearchHits([]);
+        await loadVisiblePageAndPrefetch(
+          opened.descriptor.id,
+          opened.view_state,
+          settings.prefetch_window,
+        );
+        const [recents, loadedAnnotations] = await Promise.all([
+          readoraApi.listRecentDocuments(20),
+          readoraApi.listAnnotations(opened.descriptor.id),
+        ]);
+        setRecentDocs(recents);
+        setAnnotations(loadedAnnotations);
+      } catch (err) {
+        if (isCommandError(err)) {
+          const fallbackPath = `/documents/${file.name}`;
+          if (err.code === "password_required") {
+            setPendingPasswordPath(fallbackPath);
+            setPendingPasswordFile(file);
+            setPasswordError(null);
+            return;
+          }
+          if (err.code === "incorrect_password") {
+            setPendingPasswordPath(fallbackPath);
+            setPendingPasswordFile(file);
             setPasswordError(err.message);
             return;
           }
@@ -591,6 +642,11 @@ export const App: React.FC = () => {
           <div className="reader-workspace">
             {activeSidebar === "thumbnails" && (
               <ThumbnailsPanel
+                documentId={session.descriptor.id}
+                documentTitle={
+                  session.descriptor.metadata.title ||
+                  session.descriptor.file_name
+                }
                 pageCount={session.descriptor.page_count}
                 currentPage={session.view_state.current_page}
                 onSelectPage={(p) =>
@@ -626,6 +682,10 @@ export const App: React.FC = () => {
                 viewState={session.view_state}
                 renderedPage={renderedPage}
                 pageText={pageText}
+                documentTitle={
+                  session.descriptor.metadata.title ||
+                  session.descriptor.file_name
+                }
                 isLoading={isRendering}
                 annotations={annotations}
                 onCopyText={() => void handleCopyText()}
@@ -664,6 +724,7 @@ export const App: React.FC = () => {
             onChangeCollection={setLibraryCollection}
             onOpenImportDialog={() => setShowImportDialog(true)}
             onOpenRecent={(path) => void handleOpenPath(path)}
+            onOpenFile={(file) => void handleOpenFile(file)}
             onToggleFavorite={(docId, nextFav) =>
               void handleToggleFavorite(docId, nextFav)
             }
@@ -695,9 +756,9 @@ export const App: React.FC = () => {
 
       {showImportDialog && (
         <ImportPdfDialog
-          onImportPath={(p) => {
+          onImportFile={(file) => {
             setShowImportDialog(false);
-            void handleOpenPath(p);
+            void handleOpenFile(file);
           }}
           onClose={() => setShowImportDialog(false)}
         />
@@ -731,11 +792,16 @@ export const App: React.FC = () => {
         <OpenPasswordDialog
           pendingPath={pendingPasswordPath}
           errorMessage={passwordError}
-          onSubmitPassword={(pw) =>
-            void handleOpenPath(pendingPasswordPath, pw)
-          }
+          onSubmitPassword={(pw) => {
+            if (pendingPasswordFile) {
+              void handleOpenFile(pendingPasswordFile, pw);
+            } else {
+              void handleOpenPath(pendingPasswordPath, pw);
+            }
+          }}
           onCancel={() => {
             setPendingPasswordPath(null);
+            setPendingPasswordFile(null);
             setPasswordError(null);
           }}
         />

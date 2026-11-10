@@ -2,8 +2,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { App } from "./App";
 
+function createTestPdfFile(fileName: string): File {
+  return new File(["%PDF-1.7 test document bytes"], fileName, {
+    type: "application/pdf",
+  });
+}
+
 describe("Readora Desktop Reader UI Vertical Slice", () => {
-  it("imports a PDF via Figma Import PDF Dialog, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
+  it("imports a PDF via Figma Import PDF Dialog file picker without manual path input, renders page 1, navigates pages, zooms, searches, bookmarks, and reopens recent", async () => {
     render(<App />);
 
     // 1. Verify Figma Empty Library state (Frame 22) and open Import PDF Dialog (Frame 07)
@@ -14,10 +20,16 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(
       screen.getByRole("dialog", { name: "Import PDF Dialog" }),
     ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
-      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    expect(
+      screen.queryByLabelText("PDF file path to import"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Choose PDF file" }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+      target: { files: [createTestPdfFile("Field-Notes-On-Focus.pdf")] },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
       expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
@@ -77,15 +89,13 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     });
   });
 
-  it("prompts for password when opening an encrypted PDF path and supports preferences theme toggle", async () => {
+  it("prompts for password when opening an encrypted PDF file and supports preferences theme toggle", async () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
-    const pathInput = screen.getByLabelText("PDF file path to import");
-    fireEvent.change(pathInput, {
-      target: { value: "/vault/encrypted-contract.pdf" },
+    fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+      target: { files: [createTestPdfFile("encrypted-contract.pdf")] },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
       expect(
@@ -120,10 +130,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
-    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
-      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+      target: { files: [createTestPdfFile("Field-Notes-On-Focus.pdf")] },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
     await waitFor(() => {
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();
     });
@@ -219,10 +228,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(
       screen.getByRole("dialog", { name: "Import PDF Dialog" }),
     ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("PDF file path to import"), {
-      target: { value: "/documents/Field-Notes-On-Focus.pdf" },
+    fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+      target: { files: [createTestPdfFile("Field-Notes-On-Focus.pdf")] },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Choose PDF file" }));
 
     await waitFor(() => {
       expect(screen.getByText(/Page \d+ of 5/)).toBeInTheDocument();

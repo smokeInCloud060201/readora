@@ -9,6 +9,7 @@ import {
 } from "../../types/ipc";
 
 interface PageViewportProps {
+  documentTitle?: string;
   viewState: ViewStateDto;
   renderedPage: RenderedPageResultDto | null;
   pageText: string;
@@ -33,6 +34,7 @@ const HIGHLIGHT_SWATCHES = [
 ] as const;
 
 export const PageViewport: React.FC<PageViewportProps> = ({
+  documentTitle,
   viewState,
   renderedPage,
   pageText,
@@ -59,6 +61,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const activeUnderline = latestPageAnnotation
     ? latestPageAnnotation.kind === "underline"
     : underlineInstead;
+  const displayTitle = (documentTitle || "PDF Document").replace(/\.pdf$/i, "");
 
   return (
     <main
@@ -68,11 +71,11 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       <div className="pdf-page-sheet" data-node-id="2:130">
         <div className="pdf-sheet-running-header">
           <span className="pdf-sheet-kicker" data-node-id="2:131">
-            FIELD NOTES · 0{Math.min(9, viewState.current_page + 1)}
+            {displayTitle.toUpperCase()}
           </span>
           <span className="pdf-sheet-meta" data-node-id="2:132">
-            CHAPTER I — QUIET INTERFACES · {Math.round(viewState.zoom * 100)}% ·{" "}
-            {rotationDeg}°
+            Page {viewState.current_page + 1} / {viewState.page_count} ·{" "}
+            {Math.round(viewState.zoom * 100)}% · {rotationDeg}°
           </span>
         </div>
 
@@ -95,19 +98,21 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           )}
         </div>
 
-        <section
-          className="selectable-text-layer"
-          aria-label="Selectable Page Text"
-          style={{
-            borderLeftColor: activeBorderColor,
-            textDecoration: activeUnderline ? "underline" : "none",
-          }}
-        >
-          <p className="text-layer-content">{pageText}</p>
-        </section>
+        {pageText && (
+          <section
+            className="selectable-text-layer"
+            aria-label="Selectable Page Text"
+            style={{
+              borderLeftColor: activeBorderColor,
+              textDecoration: activeUnderline ? "underline" : "none",
+            }}
+          >
+            <p className="text-layer-content">{pageText}</p>
+          </section>
+        )}
 
         <div className="pdf-sheet-running-footer">
-          <span data-node-id="2:147">FIELD NOTES ON FOCUS</span>
+          <span data-node-id="2:147">{displayTitle.toUpperCase()}</span>
           <span data-node-id="2:148">{viewState.current_page + 1}</span>
         </div>
       </div>

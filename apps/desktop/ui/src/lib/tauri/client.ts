@@ -1,24 +1,31 @@
+/// <reference types="vite/client" />
 /**
  * Single typed Tauri IPC client module.
  *
  * All UI components and hooks must route backend calls through this client
  * rather than calling Tauri `invoke()` directly. When running in a standalone
- * browser or Vitest environment without the native Tauri bridge, this module
- * falls back to an in-memory simulation that exercises the exact same typed contract.
+ * browser or WebView environment without native PDFium bound, this module
+ * uses Mozilla PDF.js (`pdfjs-dist`) to parse, render, extract text/outlines,
+ * and search real user-selected PDF files locally in memory.
  */
 
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   type AnnotationDto,
   type AppSettingsDto,
   type BookmarkDto,
   type CommandErrorDto,
+  type DocumentMetadataDto,
   type DocumentSessionDto,
   type ExportAnnotationsBundleDto,
   type FitMode,
   type NavigationActionDto,
   type OpenDocumentRequestDto,
+  type OutlineNodeDto,
   type RecentDocumentDto,
   type RenderedPageResultDto,
+  type RenderMode,
   type RenderPageCommandDto,
   type Rotation,
   type SearchHitDto,
@@ -29,6 +36,10 @@ import {
   type UpsertBookmarkCommandDto,
   type ViewStateDto,
 } from "../../types/ipc";
+
+if (typeof window !== "undefined" && pdfjsLib.GlobalWorkerOptions) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+}
 
 type TauriInvokeFn = <T>(
   cmd: string,
@@ -61,12 +72,154 @@ const SAMPLE_PAGES: readonly string[] = [
   "Page 5: Security and Privacy Baseline — Every PDF Treated as Untrusted Input.",
 ];
 
-// 1x1 transparent PNG data URL for lightweight browser/Vitest fallback rendering.
-const FALLBACK_PNG_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+interface StoredPdfRecord {
+  docId: string;
+  filePath: string;
+  fileName: string;
+  fileSizeBytes: number;
+  bytes: Uint8Array | null;
+  pdfDoc: pdfjsLib.PDFDocumentProxy | null;
+  pageTexts: Map<number, string>;
+}
+
+async function readFileToUint8Array(file: File): Promise<Uint8Array> {
+  if (typeof file.arrayBuffer === "function") {
+    const ab = await file.arrayBuffer();
+    return new Uint8Array(ab);
+  }
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(new Uint8Array(reader.result));
+      } else {
+        reject(new Error("Failed to read file bytes"));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("File read error"));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function buildSvgPageDataUrl(
+  widthPx: number,
+  heightPx: number,
+  title: string,
+  pageNumber: number,
+  pageCount: number,
+  pageText: string,
+  renderMode: RenderMode,
+): string {
+  const bg =
+    renderMode === "dark_inversion"
+      ? "#1e201b"
+      : renderMode === "grayscale"
+        ? "#f2f2f2"
+        : "#fdfbf6";
+  const fg =
+    renderMode === "dark_inversion"
+      ? "#e8ebe2"
+      : renderMode === "grayscale"
+        ? "#2b2b2b"
+        : "#292b25";
+  const muted =
+    renderMode === "dark_inversion"
+      ? "#9aa191"
+      : renderMode === "grayscale"
+        ? "#6b6b6b"
+        : "#788467";
+
+  const escapeXml = (str: string) =>
+    str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+
+  const wrappedLines: string[] = [];
+  const rawParagraphs = (pageText || `Page ${pageNumber}`).split(/\r?\n/);
+  for (const para of rawParagraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let currentLine = "";
+    for (const word of words) {
+      if ((currentLine + " " + word).trim().length > 68) {
+        if (currentLine) wrappedLines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = currentLine ? `${currentLine} ${word}` : word;
+      }
+    }
+    if (currentLine) wrappedLines.push(currentLine);
+  }
+
+  const tspans = wrappedLines
+    .slice(0, 26)
+    .map(
+      (line, idx) =>
+        `<tspan x="48" y="${124 + idx * 22}">${escapeXml(line)}</tspan>`,
+    )
+    .join("");
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="0 0 612 792">
+    <rect width="612" height="792" fill="${bg}" />
+    <text x="48" y="54" fill="${muted}" font-family="Georgia, serif" font-size="11" font-weight="700" letter-spacing="1">${escapeXml(title.toUpperCase())}</text>
+    <text x="564" y="54" fill="${muted}" font-family="sans-serif" font-size="11" text-anchor="end">Page ${pageNumber} / ${pageCount}</text>
+    <line x1="48" y1="68" x2="564" y2="68" stroke="${muted}" stroke-opacity="0.25" stroke-width="1" />
+    <text fill="${fg}" font-family="Georgia, serif" font-size="13">${tspans}</text>
+  </svg>`;
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function applyRenderModeToCanvas(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  renderMode: RenderMode,
+): void {
+  if (renderMode === "standard") return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    if (renderMode === "grayscale") {
+      const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      data[i] = lum;
+      data[i + 1] = lum;
+      data[i + 2] = lum;
+    } else if (renderMode === "dark_inversion") {
+      data[i] = 255 - r;
+      data[i + 1] = 255 - g;
+      data[i + 2] = 255 - b;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function hasUsableCanvas2D(): boolean {
+  if (typeof document === "undefined") return false;
+  if (
+    typeof navigator !== "undefined" &&
+    /jsdom/i.test(navigator.userAgent ?? "")
+  ) {
+    return false;
+  }
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(canvas.getContext("2d"));
+  } catch {
+    return false;
+  }
+}
 
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
+  private storedPdfsByDocId = new Map<string, StoredPdfRecord>();
+  private storedPdfsByPath = new Map<string, StoredPdfRecord>();
+  private renderCache = new Map<string, string>();
   private recents: RecentDocumentDto[] = [];
   private annotations = new Map<string, AnnotationDto[]>();
   private settings: AppSettingsDto = {
@@ -79,28 +232,201 @@ class BrowserFallbackBridge {
   };
   private generation = 1;
 
-  openDocument(request: OpenDocumentRequestDto): DocumentSessionDto {
+  async openDocumentFile(
+    file: File,
+    password: string | null = null,
+  ): Promise<DocumentSessionDto> {
+    const fileName = file.name || "Document.pdf";
+    const maybeFileWithPath = file as File & { path?: string };
+    const cleanPath =
+      typeof maybeFileWithPath.path === "string" &&
+      maybeFileWithPath.path.trim().length > 0
+        ? maybeFileWithPath.path.trim()
+        : fileName;
+
+    const bytes = await readFileToUint8Array(file);
+    return this.openFromBytesOrSynthetic(
+      cleanPath,
+      fileName,
+      file.size || bytes.byteLength,
+      bytes,
+      password,
+    );
+  }
+
+  async openDocument(
+    request: OpenDocumentRequestDto,
+  ): Promise<DocumentSessionDto> {
     const cleanPath = request.path.trim();
     if (!cleanPath) {
       throw this.makeError("platform_error", "File path must not be empty");
     }
-    const isEncrypted = cleanPath.toLowerCase().includes("encrypted");
-    if (isEncrypted && !request.password) {
-      throw this.makeError("password_required", "Document is password-protected");
-    }
-    if (isEncrypted && request.password !== "topsecret") {
-      throw this.makeError("incorrect_password", "Incorrect document password");
+
+    const existingRecord = this.storedPdfsByPath.get(cleanPath);
+    if (existingRecord && existingRecord.bytes) {
+      return this.openFromBytesOrSynthetic(
+        cleanPath,
+        existingRecord.fileName,
+        existingRecord.fileSizeBytes,
+        existingRecord.bytes,
+        request.password,
+      );
     }
 
     const parts = cleanPath.split(/[/\\]/);
     const fileName = parts[parts.length - 1] || "Document.pdf";
+    return this.openFromBytesOrSynthetic(
+      cleanPath,
+      fileName,
+      28_672,
+      null,
+      request.password,
+    );
+  }
+
+  private async openFromBytesOrSynthetic(
+    cleanPath: string,
+    fileName: string,
+    fileSizeBytes: number,
+    bytes: Uint8Array | null,
+    password: string | null,
+  ): Promise<DocumentSessionDto> {
+    const isEncryptedByName = cleanPath.toLowerCase().includes("encrypted");
+    if (isEncryptedByName && !password) {
+      throw this.makeError("password_required", "Document is password-protected");
+    }
+    if (isEncryptedByName && password !== "topsecret") {
+      throw this.makeError("incorrect_password", "Incorrect document password");
+    }
+
     const docId = `doc-${fileName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
     const existingRecent = this.recents.find((r) => r.document_id === docId);
 
+    let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
+    let pageCount = SAMPLE_PAGES.length;
+    let metadata: DocumentMetadataDto = {
+      title: fileName.replace(/\.pdf$/i, ""),
+      author: "Local Author",
+      subject: null,
+      creator: null,
+      pdf_version: "1.7",
+      is_encrypted: isEncryptedByName,
+      form_support: "none",
+      form_field_count: 0,
+      signature_status: "no_signatures",
+      signature_field_count: 0,
+    };
+    let outline: OutlineNodeDto[] = [];
+    const pageTexts = new Map<number, string>();
+
+    if (bytes && bytes.byteLength > 0 && hasUsableCanvas2D()) {
+      try {
+        const loadingTask = pdfjsLib.getDocument({
+          data: bytes.slice(),
+          password: password ?? undefined,
+        });
+        pdfDoc = await loadingTask.promise;
+        pageCount = Math.max(1, pdfDoc.numPages);
+
+        try {
+          const metaResult = await pdfDoc.getMetadata();
+          const info = (metaResult?.info ?? {}) as Record<string, unknown>;
+          metadata = {
+            title:
+              typeof info.Title === "string" && info.Title.trim().length > 0
+                ? info.Title.trim()
+                : fileName.replace(/\.pdf$/i, ""),
+            author:
+              typeof info.Author === "string" && info.Author.trim().length > 0
+                ? info.Author.trim()
+                : null,
+            subject:
+              typeof info.Subject === "string" && info.Subject.trim().length > 0
+                ? info.Subject.trim()
+                : null,
+            creator:
+              typeof info.Creator === "string" && info.Creator.trim().length > 0
+                ? info.Creator.trim()
+                : null,
+            pdf_version:
+              typeof info.PDFFormatVersion === "string" &&
+              info.PDFFormatVersion.trim().length > 0
+                ? info.PDFFormatVersion.trim()
+                : "1.7",
+            is_encrypted: Boolean(password) || isEncryptedByName,
+            form_support: info.IsXFAPresent
+              ? "unsupported_xfa"
+              : info.IsAcroFormPresent
+                ? "acro_form_read_only"
+                : "none",
+            form_field_count: info.IsAcroFormPresent ? 1 : 0,
+            signature_status: info.IsSignaturesPresent
+              ? "signature_present_unverified"
+              : "no_signatures",
+            signature_field_count: info.IsSignaturesPresent ? 1 : 0,
+          };
+        } catch {
+          // Keep default metadata if PDF info dictionary is absent
+        }
+
+        try {
+          const rawOutline = await pdfDoc.getOutline();
+          if (Array.isArray(rawOutline) && rawOutline.length > 0) {
+            outline = await this.resolveOutlineNodes(pdfDoc, rawOutline);
+          }
+        } catch {
+          // Keep empty outline if PDF has no bookmarks
+        }
+      } catch (err) {
+        const maybePwErr = err as { name?: string; code?: number };
+        if (maybePwErr?.name === "PasswordException") {
+          if (maybePwErr.code === 2) {
+            throw this.makeError(
+              "incorrect_password",
+              "Incorrect document password",
+            );
+          }
+          throw this.makeError(
+            "password_required",
+            "Document is password-protected",
+          );
+        }
+        throw this.makeError(
+          "invalid_pdf",
+          "Selected file is not a valid or readable PDF document",
+        );
+      }
+    } else {
+      SAMPLE_PAGES.forEach((text, idx) => {
+        pageTexts.set(idx, text);
+      });
+      outline = SAMPLE_PAGES.map((text, idx) => ({
+        title: text.split("—")[0]?.trim() ?? `Section ${idx + 1}`,
+        page_index: idx,
+        children: [],
+      }));
+    }
+
+    const record: StoredPdfRecord = {
+      docId,
+      filePath: cleanPath,
+      fileName,
+      fileSizeBytes,
+      bytes,
+      pdfDoc,
+      pageTexts,
+    };
+    this.storedPdfsByDocId.set(docId, record);
+    this.storedPdfsByPath.set(cleanPath, record);
+
+    const initialPage = existingRecent
+      ? Math.min(existingRecent.last_page, Math.max(0, pageCount - 1))
+      : 0;
+
     const viewState: ViewStateDto = {
       document_id: docId,
-      current_page: existingRecent ? existingRecent.last_page : 0,
-      page_count: SAMPLE_PAGES.length,
+      current_page: initialPage,
+      page_count: pageCount,
       zoom: existingRecent ? existingRecent.last_zoom : this.settings.default_zoom,
       fit_mode: this.settings.default_fit_mode,
       rotation: existingRecent ? existingRecent.last_rotation : "deg0",
@@ -113,29 +439,49 @@ class BrowserFallbackBridge {
       descriptor: {
         id: docId,
         file_name: fileName,
-        file_size_bytes: 28_672,
-        page_count: SAMPLE_PAGES.length,
-        metadata: {
-          title: fileName.replace(/\.pdf$/i, ""),
-          author: "Readora Architecture",
-          subject: "Local-First Desktop PDF Reader",
-          creator: "Readora",
-          pdf_version: "1.7",
-          is_encrypted: isEncrypted,
-        },
+        file_size_bytes: fileSizeBytes,
+        page_count: pageCount,
+        metadata,
       },
       view_state: viewState,
-      outline: SAMPLE_PAGES.map((text, idx) => ({
-        title: text.split("—")[0]?.trim() ?? `Section ${idx + 1}`,
-        page_index: idx,
-        children: [],
-      })),
+      outline,
       bookmarks: existingSession ? existingSession.bookmarks : [],
     };
 
     this.sessions.set(docId, session);
     this.upsertRecent(cleanPath, session);
     return structuredClone(session);
+  }
+
+  private async resolveOutlineNodes(
+    pdfDoc: pdfjsLib.PDFDocumentProxy,
+    items: Awaited<ReturnType<pdfjsLib.PDFDocumentProxy["getOutline"]>>,
+  ): Promise<OutlineNodeDto[]> {
+    const result: OutlineNodeDto[] = [];
+    for (const item of items) {
+      let pageIndex: number | null = null;
+      try {
+        let dest = item.dest;
+        if (typeof dest === "string") {
+          dest = await pdfDoc.getDestination(dest);
+        }
+        if (Array.isArray(dest) && dest[0]) {
+          pageIndex = await pdfDoc.getPageIndex(dest[0]);
+        }
+      } catch {
+        pageIndex = 0;
+      }
+      const children =
+        Array.isArray(item.items) && item.items.length > 0
+          ? await this.resolveOutlineNodes(pdfDoc, item.items)
+          : [];
+      result.push({
+        title: item.title || "Untitled Section",
+        page_index: pageIndex,
+        children,
+      });
+    }
+    return result;
   }
 
   navigate(documentId: string, action: NavigationActionDto): ViewStateDto {
@@ -180,6 +526,11 @@ class BrowserFallbackBridge {
       }
       case "set_fit_mode":
         vs.fit_mode = action.value as FitMode;
+        if (action.value === "fit_page") {
+          vs.zoom = 0.9;
+        } else if (action.value === "fit_width") {
+          vs.zoom = 1.0;
+        }
         break;
       case "rotate_clockwise":
         vs.rotation = this.rotateCw(vs.rotation);
@@ -206,44 +557,207 @@ class BrowserFallbackBridge {
     return structuredClone(vs);
   }
 
-  renderPage(command: RenderPageCommandDto): RenderedPageResultDto {
+  async renderPage(
+    command: RenderPageCommandDto,
+  ): Promise<RenderedPageResultDto> {
+    const cacheKey = `${command.document_id}:${command.page_index}:${command.scale.toFixed(2)}:${command.rotation_degrees}:${command.render_mode}`;
+    const cachedUrl = this.renderCache.get(cacheKey);
+    const record = this.storedPdfsByDocId.get(command.document_id);
+    const session = this.sessions.get(command.document_id);
+
+    if (record?.pdfDoc && hasUsableCanvas2D()) {
+      const pageNumber = command.page_index + 1;
+      const page = await record.pdfDoc.getPage(pageNumber);
+      const totalRotation = (page.rotate + command.rotation_degrees) % 360;
+      const cssViewport = page.getViewport({
+        scale: command.scale,
+        rotation: totalRotation,
+      });
+      const widthPx = Math.max(1, Math.round(cssViewport.width));
+      const heightPx = Math.max(1, Math.round(cssViewport.height));
+
+      if (cachedUrl) {
+        return {
+          document_id: command.document_id,
+          page_index: command.page_index,
+          width_px: widthPx,
+          height_px: heightPx,
+          data_url: cachedUrl,
+          cache_hit: true,
+          generation: command.generation ?? this.generation,
+        };
+      }
+
+      const dpr =
+        typeof window !== "undefined"
+          ? Math.min(2, Math.max(1.25, window.devicePixelRatio || 1.5))
+          : 1.5;
+      const renderViewport = page.getViewport({
+        scale: command.scale * dpr,
+        rotation: totalRotation,
+      });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(renderViewport.width));
+      canvas.height = Math.max(1, Math.round(renderViewport.height));
+      const ctx = canvas.getContext("2d");
+
+      if (ctx) {
+        await page.render({
+          canvasContext: ctx,
+          viewport: renderViewport,
+          canvas,
+        }).promise;
+        applyRenderModeToCanvas(
+          ctx,
+          canvas.width,
+          canvas.height,
+          command.render_mode,
+        );
+        const dataUrl = canvas.toDataURL("image/png");
+        if (this.renderCache.size >= 48) {
+          const oldestKey = this.renderCache.keys().next().value;
+          if (oldestKey) this.renderCache.delete(oldestKey);
+        }
+        this.renderCache.set(cacheKey, dataUrl);
+
+        return {
+          document_id: command.document_id,
+          page_index: command.page_index,
+          width_px: widthPx,
+          height_px: heightPx,
+          data_url: dataUrl,
+          cache_hit: false,
+          generation: command.generation ?? this.generation,
+        };
+      }
+    }
+
     const isRotatedSideways =
       command.rotation_degrees === 90 || command.rotation_degrees === 270;
     const baseW = isRotatedSideways ? 792 : 612;
     const baseH = isRotatedSideways ? 612 : 792;
+    const widthPx = Math.round(baseW * command.scale);
+    const heightPx = Math.round(baseH * command.scale);
+    const text = await this.extractPageText(
+      command.document_id,
+      command.page_index,
+    );
+    const title =
+      session?.descriptor.metadata.title ??
+      session?.descriptor.file_name ??
+      "PDF Document";
+    const pageCount = session?.descriptor.page_count ?? SAMPLE_PAGES.length;
+    const dataUrl = buildSvgPageDataUrl(
+      widthPx,
+      heightPx,
+      title,
+      command.page_index + 1,
+      pageCount,
+      text,
+      command.render_mode,
+    );
+
     return {
       document_id: command.document_id,
       page_index: command.page_index,
-      width_px: Math.round(baseW * command.scale),
-      height_px: Math.round(baseH * command.scale),
-      data_url: FALLBACK_PNG_DATA_URL,
+      width_px: widthPx,
+      height_px: heightPx,
+      data_url: dataUrl,
       cache_hit: false,
       generation: command.generation ?? this.generation,
     };
   }
 
-  extractPageText(pageIndex: number): string {
+  async extractPageText(
+    documentId: string,
+    pageIndex: number,
+  ): Promise<string> {
+    const record = this.storedPdfsByDocId.get(documentId);
+    if (record) {
+      const cached = record.pageTexts.get(pageIndex);
+      if (cached !== undefined) {
+        return cached;
+      }
+      if (record.pdfDoc) {
+        try {
+          const page = await record.pdfDoc.getPage(pageIndex + 1);
+          const textContent = await page.getTextContent();
+          const parts: string[] = [];
+          let lastY: number | null = null;
+          for (const item of textContent.items) {
+            if ("str" in item) {
+              const y = Array.isArray(item.transform)
+                ? Number(item.transform[5])
+                : null;
+              if (
+                lastY !== null &&
+                y !== null &&
+                Math.abs(y - lastY) > 4 &&
+                parts.length > 0
+              ) {
+                parts.push("\n");
+              } else {
+                const lastPart = parts[parts.length - 1];
+                if (lastPart !== undefined && !lastPart.endsWith("\n")) {
+                  parts.push(" ");
+                }
+              }
+              parts.push(item.str);
+              if (item.hasEOL) {
+                parts.push("\n");
+              }
+              if (y !== null) {
+                lastY = y;
+              }
+            }
+          }
+          const extracted = parts.join("").replace(/[ \t]+\n/g, "\n").trim();
+          record.pageTexts.set(pageIndex, extracted);
+          return extracted;
+        } catch {
+          return "";
+        }
+      }
+    }
     return SAMPLE_PAGES[pageIndex] ?? `Page ${pageIndex + 1}`;
   }
 
-  searchDocument(request: SearchRequestDto): SearchHitDto[] {
+  async searchDocument(request: SearchRequestDto): Promise<SearchHitDto[]> {
     const q = request.query.trim();
     if (!q) {
       return [];
     }
     const needle = request.case_sensitive ? q : q.toLowerCase();
     const hits: SearchHitDto[] = [];
-    SAMPLE_PAGES.forEach((text, idx) => {
+    const session = this.sessions.get(request.document_id);
+    const pageCount = session?.descriptor.page_count ?? SAMPLE_PAGES.length;
+
+    for (let idx = 0; idx < pageCount; idx += 1) {
+      const text = await this.extractPageText(request.document_id, idx);
+      if (!text) continue;
       const hay = request.case_sensitive ? text : text.toLowerCase();
-      if (hay.includes(needle)) {
+      let searchFrom = 0;
+      let matchIdx = 0;
+      while (searchFrom < hay.length) {
+        const pos = hay.indexOf(needle, searchFrom);
+        if (pos === -1) break;
+        const start = Math.max(0, pos - 28);
+        const end = Math.min(text.length, pos + needle.length + 42);
+        const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
         hits.push({
           page_index: idx,
-          match_index: 0,
-          snippet: text,
+          match_index: matchIdx,
+          snippet,
         });
+        if (hits.length >= (request.max_hits || 100)) {
+          return hits;
+        }
+        matchIdx += 1;
+        searchFrom = pos + Math.max(1, needle.length);
       }
-    });
-    return hits.slice(0, request.max_hits || 100);
+    }
+    return hits;
   }
 
   upsertBookmark(command: UpsertBookmarkCommandDto): BookmarkDto {
@@ -344,6 +858,14 @@ class BrowserFallbackBridge {
 
   deleteRecentDocument(documentId: string): void {
     this.recents = this.recents.filter((r) => r.document_id !== documentId);
+  }
+
+  hasSession(documentId: string): boolean {
+    return this.sessions.has(documentId) || this.storedPdfsByDocId.has(documentId);
+  }
+
+  hasStoredPath(path: string): boolean {
+    return this.storedPdfsByPath.has(path.trim());
   }
 
   closeDocument(documentId: string): void {
@@ -487,6 +1009,12 @@ class BrowserFallbackBridge {
           role: "Dynamic native PDF rendering engine",
         },
         {
+          name: "pdfjs-dist (Mozilla PDF.js)",
+          version: "6.5.x",
+          license: "Apache-2.0",
+          role: "Local WebView/Canvas PDF parsing, rendering, and text extraction",
+        },
+        {
           name: "rusqlite + SQLite",
           version: "0.32",
           license: "MIT AND Blessing",
@@ -512,9 +1040,19 @@ class BrowserFallbackBridge {
 const fallbackBridge = new BrowserFallbackBridge();
 
 export const readoraApi = {
+  async openDocumentFile(
+    file: File,
+    password: string | null = null,
+  ): Promise<DocumentSessionDto> {
+    return fallbackBridge.openDocumentFile(file, password);
+  },
+
   async openDocument(
     request: OpenDocumentRequestDto,
   ): Promise<DocumentSessionDto> {
+    if (fallbackBridge.hasStoredPath(request.path)) {
+      return fallbackBridge.openDocument(request);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<DocumentSessionDto>("document_open", { request });
@@ -534,6 +1072,10 @@ export const readoraApi = {
   },
 
   async closeDocument(documentId: string): Promise<void> {
+    if (fallbackBridge.hasSession(documentId)) {
+      fallbackBridge.closeDocument(documentId);
+      return;
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       await invoke<void>("document_close", { documentId });
@@ -546,6 +1088,9 @@ export const readoraApi = {
     documentId: string,
     action: NavigationActionDto,
   ): Promise<ViewStateDto> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.navigate(documentId, action);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<ViewStateDto>("document_navigate", { documentId, action });
@@ -556,6 +1101,9 @@ export const readoraApi = {
   async renderPage(
     command: RenderPageCommandDto,
   ): Promise<RenderedPageResultDto> {
+    if (fallbackBridge.hasSession(command.document_id)) {
+      return fallbackBridge.renderPage(command);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<RenderedPageResultDto>("page_render", { command });
@@ -567,14 +1115,20 @@ export const readoraApi = {
     documentId: string,
     pageIndex: number,
   ): Promise<string> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.extractPageText(documentId, pageIndex);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<string>("page_extract_text", { documentId, pageIndex });
     }
-    return fallbackBridge.extractPageText(pageIndex);
+    return fallbackBridge.extractPageText(documentId, pageIndex);
   },
 
   async searchDocument(request: SearchRequestDto): Promise<SearchHitDto[]> {
+    if (fallbackBridge.hasSession(request.document_id)) {
+      return fallbackBridge.searchDocument(request);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<SearchHitDto[]>("document_search", { request });
@@ -583,17 +1137,31 @@ export const readoraApi = {
   },
 
   async listRecentDocuments(limit = 20): Promise<RecentDocumentDto[]> {
+    const localRecents = fallbackBridge.listRecents();
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<RecentDocumentDto[]>("recent_documents_list", { limit });
+      const nativeRecents = await invoke<RecentDocumentDto[]>(
+        "recent_documents_list",
+        { limit },
+      );
+      const merged = [...localRecents];
+      for (const nr of nativeRecents) {
+        if (!merged.some((r) => r.document_id === nr.document_id)) {
+          merged.push(nr);
+        }
+      }
+      return merged.slice(0, limit);
     }
-    return fallbackBridge.listRecents();
+    return localRecents;
   },
 
   async setFavoriteDocument(
     documentId: string,
     isFavorite: boolean,
   ): Promise<RecentDocumentDto | null> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.setFavoriteDocument(documentId, isFavorite);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<RecentDocumentDto | null>("recent_document_set_favorite", {
@@ -608,6 +1176,9 @@ export const readoraApi = {
     documentId: string,
     isArchived: boolean,
   ): Promise<RecentDocumentDto | null> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.setDocumentArchived(documentId, isArchived);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<RecentDocumentDto | null>("recent_document_set_archived", {
@@ -619,6 +1190,10 @@ export const readoraApi = {
   },
 
   async deleteRecentDocument(documentId: string): Promise<void> {
+    if (fallbackBridge.hasSession(documentId)) {
+      fallbackBridge.deleteRecentDocument(documentId);
+      return;
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       await invoke<void>("recent_document_delete", { documentId });
@@ -630,6 +1205,9 @@ export const readoraApi = {
   async upsertBookmark(
     command: UpsertBookmarkCommandDto,
   ): Promise<BookmarkDto> {
+    if (fallbackBridge.hasSession(command.document_id)) {
+      return fallbackBridge.upsertBookmark(command);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<BookmarkDto>("bookmark_upsert", { command });
@@ -638,14 +1216,20 @@ export const readoraApi = {
   },
 
   async deleteBookmark(bookmarkId: string): Promise<boolean> {
+    if (fallbackBridge.deleteBookmark(bookmarkId)) {
+      return true;
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<boolean>("bookmark_delete", { bookmarkId });
     }
-    return fallbackBridge.deleteBookmark(bookmarkId);
+    return false;
   },
 
   async listAnnotations(documentId: string): Promise<AnnotationDto[]> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.listAnnotations(documentId);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<AnnotationDto[]>("annotation_list", { documentId });
@@ -656,6 +1240,9 @@ export const readoraApi = {
   async upsertAnnotation(
     command: UpsertAnnotationCommandDto,
   ): Promise<AnnotationDto> {
+    if (fallbackBridge.hasSession(command.document_id)) {
+      return fallbackBridge.upsertAnnotation(command);
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<AnnotationDto>("annotation_upsert", { command });
@@ -664,11 +1251,14 @@ export const readoraApi = {
   },
 
   async deleteAnnotation(annotationId: string): Promise<boolean> {
+    if (fallbackBridge.deleteAnnotation(annotationId)) {
+      return true;
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<boolean>("annotation_delete", { annotationId });
     }
-    return fallbackBridge.deleteAnnotation(annotationId);
+    return false;
   },
 
   async exportAnnotations(
@@ -676,6 +1266,13 @@ export const readoraApi = {
     includeAnnotations: boolean,
     destinationPath: string | null = null,
   ): Promise<ExportAnnotationsBundleDto> {
+    if (fallbackBridge.hasSession(documentId)) {
+      return fallbackBridge.exportAnnotations(
+        documentId,
+        includeAnnotations,
+        destinationPath,
+      );
+    }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<ExportAnnotationsBundleDto>("annotation_export", {

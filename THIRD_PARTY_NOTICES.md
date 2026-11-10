@@ -54,6 +54,7 @@ this software without specific prior written permission.
 |---|---|---|---|
 | `@tauri-apps/cli` / Tauri | `2.x` | `MIT OR Apache-2.0` | Cross-platform desktop application shell and native bundler |
 | `react` / `react-dom` | `19.x` | `MIT` | User interface component runtime |
+| `pdfjs-dist` | `6.5.x` | `Apache-2.0` | Browser-mode local PDF parsing, text extraction, and HTML canvas rendering |
 | `typescript` | `5.7.x` | `Apache-2.0` | Static type checking |
 | `vite` | `6.x` | `MIT` | Frontend bundler |
 | `vitest` / `@testing-library/react` | `3.x` / `16.x` | `MIT` | Automated UI verification |

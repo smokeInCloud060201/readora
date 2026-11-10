@@ -123,17 +123,13 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
               <div className="note-card-header">
                 <span className="icon-inline-label">
                   <FocusIcon name="highlight" size={13} />
-                  <span>Reading Note</span>
+                  <span>Reading Notes</span>
                 </span>
                 <span className="note-card-time">Page {currentPage + 1}</span>
               </div>
-              <blockquote className="note-quote-box">
-                “Focus rarely arrives by accident. It is cultivated through
-                deliberate choices.”
-              </blockquote>
               <p className="sidebar-empty">
-                No bookmarks saved for this document yet. Add a note above to
-                pin this page.
+                No bookmarks or highlights saved for this document yet. Add a
+                note above to pin this page.
               </p>
             </div>
           ) : (

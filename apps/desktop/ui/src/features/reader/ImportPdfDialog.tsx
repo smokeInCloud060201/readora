@@ -2,38 +2,20 @@ import React, { useRef, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 
 interface ImportPdfDialogProps {
-  onImportPath: (path: string) => void;
+  onImportFile: (file: File) => void;
   onClose: () => void;
 }
 
 export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
-  onImportPath,
+  onImportFile,
   onClose,
 }) => {
-  const [filePath, setFilePath] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const importSelectedFile = (file: File) => {
-    const maybeFileWithPath = file as File & { path?: string };
-    const resolvedPath =
-      typeof maybeFileWithPath.path === "string" &&
-      maybeFileWithPath.path.trim().length > 0
-        ? maybeFileWithPath.path.trim()
-        : `/documents/${file.name}`;
-    onImportPath(resolvedPath);
+  const handleSelectedFile = (file: File) => {
+    onImportFile(file);
     onClose();
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = filePath.trim();
-    if (trimmed) {
-      onImportPath(trimmed);
-      onClose();
-    } else {
-      fileInputRef.current?.click();
-    }
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -41,7 +23,7 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
     setIsDragging(false);
     const droppedFile = e.dataTransfer.files?.[0];
     if (droppedFile) {
-      importSelectedFile(droppedFile);
+      handleSelectedFile(droppedFile);
     }
   };
 
@@ -90,7 +72,7 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
           Drag and drop a file here, or choose one from your computer.
         </p>
 
-        <form onSubmit={handleSubmit} className="import-pdf-form">
+        <div className="import-pdf-form">
           <input
             ref={fileInputRef}
             type="file"
@@ -100,30 +82,22 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
             onChange={(e) => {
               const selected = e.target.files?.[0];
               if (selected) {
-                importSelectedFile(selected);
+                handleSelectedFile(selected);
               }
             }}
           />
 
-          <input
-            type="text"
-            value={filePath}
-            onChange={(e) => setFilePath(e.target.value)}
-            placeholder="/path/to/document.pdf"
-            aria-label="PDF file path to import"
-            className="focus-input import-pdf-path-input"
-          />
-
           <div className="import-pdf-actions">
             <button
-              type="submit"
+              type="button"
               className="focus-btn primary import-choose-btn"
+              onClick={() => fileInputRef.current?.click()}
               data-node-id="5:267"
             >
               Choose PDF file
             </button>
           </div>
-        </form>
+        </div>
 
         <p className="import-pdf-footnote" data-node-id="5:269">
           PDF · Maximum file size 500 MB

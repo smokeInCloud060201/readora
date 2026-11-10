@@ -94,6 +94,13 @@
       "name": "react",
       "version": "19.0.0",
       "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/pdfjs-dist@6.5.438",
+      "name": "pdfjs-dist",
+      "version": "6.5.438",
+      "licenses": [{ "expression": "Apache-2.0" }]
     }
   ]
 }

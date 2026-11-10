@@ -10,6 +10,7 @@ interface EmptyWorkspaceProps {
   onChangeCollection?: (collection: LibraryCollectionView) => void;
   onOpenImportDialog: () => void;
   onOpenRecent: (filePath: string) => void;
+  onOpenFile?: (file: File) => void;
   onToggleFavorite?: (documentId: string, nextFavorite: boolean) => void;
   onRestoreArchived?: (documentId: string) => void;
   onArchiveDocument?: (documentId: string) => void;
@@ -24,6 +25,7 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
   onChangeCollection,
   onOpenImportDialog,
   onOpenRecent,
+  onOpenFile,
   onToggleFavorite,
   onRestoreArchived,
   onArchiveDocument,
@@ -52,6 +54,10 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
     e.preventDefault();
     const droppedFile = e.dataTransfer.files?.[0];
     if (droppedFile) {
+      if (onOpenFile) {
+        onOpenFile(droppedFile);
+        return;
+      }
       const maybeFileWithPath = droppedFile as File & { path?: string };
       const resolvedPath =
         typeof maybeFileWithPath.path === "string" &&
@@ -190,7 +196,8 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
                 {latestDocument.display_name}
               </h2>
               <p className="continue-doc-subtitle" data-node-id="2:197">
-                Chapter 1 · Designing for focus
+                PDF Document · Last opened on Page{" "}
+                {latestDocument.last_page + 1}
               </p>
               <div className="continue-progress-track" data-node-id="2:198">
                 <div
@@ -236,10 +243,10 @@ export const EmptyWorkspace: React.FC<EmptyWorkspaceProps> = ({
               data-node-id="2:200"
             >
               <span className="continue-preview-num" data-node-id="2:201">
-                01
+                {String(latestDocument.last_page + 1).padStart(2, "0")}
               </span>
               <span className="continue-preview-title" data-node-id="2:202">
-                Designing for focus.
+                {latestDocument.display_name}
               </span>
               <span
                 className="continue-preview-accent"
