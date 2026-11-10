@@ -47,6 +47,8 @@ interface ReaderToolbarProps {
   onOpenShare?: () => void;
   onOpenShortcuts?: () => void;
   onCopyPageText?: () => void;
+  hasUpdateAvailable?: boolean;
+  onOpenUpdateDialog?: () => void;
 }
 
 function formatFileSize(bytes?: number | null): string {
@@ -90,6 +92,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onOpenShare,
   onOpenShortcuts,
   onCopyPageText,
+  hasUpdateAvailable = false,
+  onOpenUpdateDialog,
 }) => {
   const [pathInput, setPathInput] = useState("");
   const [pageInput, setPageInput] = useState("");
@@ -519,6 +523,18 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 >
                   <span>Focus Reader Help Guide</span>
                 </button>
+                <div className="zoom-menu-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="doc-action-menu-item"
+                  onClick={() => {
+                    onOpenUpdateDialog?.();
+                    setActiveAppMenu(null);
+                  }}
+                >
+                  <span>Check for Updates…</span>
+                </button>
               </div>
             )}
           </div>
@@ -584,6 +600,24 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
           >
             Open Sample PDF
           </button>
+
+          {hasUpdateAvailable && onOpenUpdateDialog && (
+            <button
+              type="button"
+              className="update-available-btn"
+              onClick={onOpenUpdateDialog}
+              aria-label="Update available"
+              data-node-id="16:175"
+            >
+              <span
+                className="update-notification-dot"
+                aria-hidden="true"
+                data-node-id="16:176"
+              />
+              <FocusIcon name="download" size={13} />
+              <span>Update available</span>
+            </button>
+          )}
 
           {viewState && (
             <span className="saved-indicator" aria-live="polite">

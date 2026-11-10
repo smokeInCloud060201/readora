@@ -259,5 +259,28 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     await waitFor(() => {
       expect(screen.getByText("PDFium")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByLabelText("Close preferences"));
+
+    // 6. Click "Update available" top-right button (Figma Frame 27) and install via Update Dialog (Figma Frame 28)
+    const updateBtn = screen.getByRole("button", { name: "Update available" });
+    expect(updateBtn).toBeInTheDocument();
+    fireEvent.click(updateBtn);
+
+    expect(
+      screen.getByRole("dialog", { name: "Update Available Dialog" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Focus Reader 1.1 is ready")).toBeInTheDocument();
+    expect(
+      screen.getByText("42 MB · Downloaded and verified"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restart and install" }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Focus Reader 1\.1\.0 staged/i),
+      ).toBeInTheDocument();
+    });
   });
 });

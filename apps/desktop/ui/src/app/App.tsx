@@ -12,6 +12,7 @@ import {
 } from "../features/reader/ReaderToolbar";
 import { ShareDialog } from "../features/reader/ShareDialog";
 import { StatusBar } from "../features/reader/StatusBar";
+import { UpdateDialog } from "../features/reader/UpdateDialog";
 import { SearchPanel } from "../features/search/SearchPanel";
 import {
   PreferencesDialog,
@@ -80,6 +81,8 @@ export const App: React.FC = () => {
   const [showPrintDialog, setShowPrintDialog] = useState<boolean>(false);
   const [showImportDialog, setShowImportDialog] = useState<boolean>(false);
   const [showShareDialog, setShowShareDialog] = useState<boolean>(false);
+  const [hasUpdateAvailable, setHasUpdateAvailable] = useState<boolean>(true);
+  const [showUpdateDialog, setShowUpdateDialog] = useState<boolean>(false);
   const [libraryCollection, setLibraryCollection] =
     useState<LibraryCollectionView>("all");
 
@@ -490,6 +493,8 @@ export const App: React.FC = () => {
         onOpenImportDialog={() => setShowImportDialog(true)}
         onOpenShare={session ? () => setShowShareDialog(true) : undefined}
         onCopyPageText={() => void handleCopyText()}
+        hasUpdateAvailable={hasUpdateAvailable}
+        onOpenUpdateDialog={() => setShowUpdateDialog(true)}
         onToggleTheme={() => void handleToggleTheme()}
         isFavorite={currentDocIsFavorite}
         onToggleFavorite={
@@ -724,6 +729,21 @@ export const App: React.FC = () => {
           onExportAnnotations={(inc) => void handleExportAnnotations(inc)}
           onCopyShareLink={(uri) => void handleCopyShareLink(uri)}
           onClose={() => setShowShareDialog(false)}
+        />
+      )}
+
+      {showUpdateDialog && (
+        <UpdateDialog
+          version="1.1.0"
+          sizeLabel="42 MB · Downloaded and verified"
+          onConfirmInstall={(version) => {
+            setShowUpdateDialog(false);
+            setHasUpdateAvailable(false);
+            setStatusMessage(
+              `Focus Reader ${version} staged — will apply on next launch`,
+            );
+          }}
+          onClose={() => setShowUpdateDialog(false)}
         />
       )}
 
