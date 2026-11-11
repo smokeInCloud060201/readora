@@ -23,6 +23,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [internalHitIdx, setInternalHitIdx] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const debounceTimerRef = useRef<number | null>(null);
   const lastSearchedRef = useRef<{ query: string; caseSensitive: boolean }>({
     query: "",
     caseSensitive: false,
@@ -31,6 +32,11 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   useEffect(() => {
     searchInputRef.current?.focus();
     searchInputRef.current?.select();
+    return () => {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
+    };
   }, []);
 
   const currentHitIdx =
@@ -47,6 +53,11 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   };
 
   useEffect(() => {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
     const trimmed = query.trim();
     if (
       lastSearchedRef.current.query === trimmed &&
@@ -54,18 +65,39 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
     ) {
       return;
     }
-    const timer = window.setTimeout(() => {
+
+    if (trimmed.length === 0) {
+      lastSearchedRef.current = { query: "", caseSensitive };
+      updateActiveHitIdx(0);
+      onSearch("", caseSensitive);
+      return;
+    }
+
+    if (trimmed.length < 2) {
+      return;
+    }
+
+    debounceTimerRef.current = window.setTimeout(() => {
+      debounceTimerRef.current = null;
       lastSearchedRef.current = { query: trimmed, caseSensitive };
       updateActiveHitIdx(0);
       onSearch(query, caseSensitive);
-    }, 120);
+    }, 380);
+
     return () => {
-      window.clearTimeout(timer);
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
     };
   }, [query, caseSensitive]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
     const trimmed = query.trim();
     if (
       trimmed.length > 0 &&

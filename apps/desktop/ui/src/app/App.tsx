@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
 import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
@@ -73,6 +73,7 @@ export const App: React.FC = () => {
   const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
   const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
   const [activeSearchHitIndex, setActiveSearchHitIndex] = useState<number>(0);
+  const searchRequestGenRef = useRef<number>(0);
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -416,6 +417,7 @@ export const App: React.FC = () => {
 
   const handleSearch = async (query: string, caseSensitive: boolean) => {
     if (!session) return;
+    const requestGen = ++searchRequestGenRef.current;
     const trimmed = query.trim();
     if (!trimmed) {
       setSearchHits([]);
@@ -428,6 +430,9 @@ export const App: React.FC = () => {
       case_sensitive: caseSensitive,
       max_hits: 100,
     });
+    if (requestGen !== searchRequestGenRef.current) {
+      return;
+    }
     setSearchHits(hits);
     setActiveSearchHitIndex(0);
     setStatusMessage(`Found ${hits.length} match(es)`);

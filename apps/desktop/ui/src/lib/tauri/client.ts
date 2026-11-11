@@ -627,6 +627,7 @@ class BrowserFallbackBridge {
     dismissed_update_version: null,
   };
   private generation = 1;
+  private searchGeneration = 1;
 
   async openDocumentFile(
     file: File,
@@ -1307,6 +1308,7 @@ class BrowserFallbackBridge {
   }
 
   async searchDocument(request: SearchRequestDto): Promise<SearchHitDto[]> {
+    const searchGen = ++this.searchGeneration;
     const q = request.query.trim();
     if (!q) {
       return [];
@@ -1317,6 +1319,9 @@ class BrowserFallbackBridge {
 
     for (let idx = 0; idx < pageCount; idx += 1) {
       const layout = await this.extractPageLayout(request.document_id, idx);
+      if (searchGen !== this.searchGeneration) {
+        return [];
+      }
       const text = layout.fullText;
       if (!text) continue;
       const matches = findMatchesInPageText(text, q, request.case_sensitive);
