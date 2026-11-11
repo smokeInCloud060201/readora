@@ -239,7 +239,7 @@ fn perform_native_self_update(
             }
         }
         let _ = Command::new("/usr/bin/open").arg(&dmg_url).spawn();
-        return r#"{"status":"opened_release"}"#;
+        r#"{"status":"opened_release"}"#
     }
 
     #[cfg(target_os = "windows")]
@@ -263,7 +263,7 @@ fn perform_native_self_update(
         let _ = Command::new("cmd")
             .args(["/C", "start", "", &msi_url])
             .spawn();
-        return r#"{"status":"opened_release"}"#;
+        r#"{"status":"opened_release"}"#
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -291,7 +291,7 @@ fn handle_http_connection(
     let raw_target = request_line.split_whitespace().nth(1).unwrap_or("/");
 
     if raw_target.starts_with("/__readora_update") {
-        let query = raw_target.splitn(2, '?').nth(1).unwrap_or("");
+        let query = raw_target.split_once('?').map_or("", |(_, q)| q);
         let version = extract_query_param(query, "version").unwrap_or_default();
         let repo = extract_query_param(query, "repo")
             .unwrap_or_else(|| "smokeInCloud060201/readora".to_owned());
