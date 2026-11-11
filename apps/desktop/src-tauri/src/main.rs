@@ -451,7 +451,7 @@ fn main() {
       });
     "#;
 
-    let _webview = match WebViewBuilder::new()
+    let webview = match WebViewBuilder::new()
         .with_url(&url)
         .with_initialization_script(init_script)
         .with_ipc_handler(move |request| {
@@ -468,16 +468,23 @@ fn main() {
         }
     };
 
+    let mut webview = Some(webview);
+    let mut window = Some(window);
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
             Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
+                event: WindowEvent::CloseRequested | WindowEvent::Destroyed,
                 ..
             }
-            | Event::UserEvent(DesktopUserEvent::Quit) => {
+            | Event::UserEvent(DesktopUserEvent::Quit)
+            | Event::LoopDestroyed => {
+                drop(webview.take());
+                drop(window.take());
                 *control_flow = ControlFlow::Exit;
+                std::process::exit(0);
             }
             _ => {}
         }
