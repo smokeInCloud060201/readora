@@ -102,9 +102,10 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     fireEvent.click(screen.getByText("Details"));
     expect(screen.getByLabelText("Document Details")).toBeInTheDocument();
 
-    // 5. Search in document for "SQLite" and jump to matching page 4
-    fireEvent.click(screen.getByLabelText("Find in Document"));
+    // 5. Search in document for "SQLite" via keyboard shortcut (Cmd/Win/Super+F) and jump to matching page 4
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
     const searchInput = screen.getByLabelText("Search query");
+    expect(searchInput).toHaveFocus();
     fireEvent.change(searchInput, { target: { value: "SQLite" } });
     fireEvent.click(screen.getByText("Search"));
 

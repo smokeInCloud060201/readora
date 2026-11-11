@@ -26,8 +26,8 @@ interface PreferencesDialogProps {
 }
 
 const SHORTCUT_ITEMS: readonly { label: string; keys: string }[] = [
-  { label: "Open document", keys: "⌘  O" },
-  { label: "Search document", keys: "⌘  F" },
+  { label: "Open document", keys: "⌘ / Win / Super + O" },
+  { label: "Search document", keys: "⌘ / Win / Super / Ctrl + F" },
   { label: "Toggle page sidebar", keys: "⌘  \\" },
   { label: "Toggle notes panel", keys: "⇧  ⌘  \\" },
   { label: "Zoom in / out", keys: "⌘  + / −" },

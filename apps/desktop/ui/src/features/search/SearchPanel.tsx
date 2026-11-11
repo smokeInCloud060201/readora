@@ -22,10 +22,16 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [internalHitIdx, setInternalHitIdx] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const lastSearchedRef = useRef<{ query: string; caseSensitive: boolean }>({
     query: "",
     caseSensitive: false,
   });
+
+  useEffect(() => {
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+  }, []);
 
   const currentHitIdx =
     hits.length > 0
@@ -92,10 +98,16 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           <FocusIcon name="search" size={14} />
         </span>
         <input
+          ref={searchInputRef}
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
+            if (e.key === "Escape" && onClose) {
+              e.preventDefault();
+              onClose();
+              return;
+            }
             if (e.key === "Enter" && e.shiftKey && hits.length > 0) {
               e.preventDefault();
               stepHit(-1);

@@ -601,6 +601,65 @@ export const App: React.FC = () => {
         ?.is_favorite,
   );
 
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      const hasCommandOrSuperOrCtrl = event.metaKey || event.ctrlKey;
+      if (!hasCommandOrSuperOrCtrl || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "f") {
+        event.preventDefault();
+        if (session) {
+          setActiveSidebar("search");
+          const existingInput = document.querySelector<HTMLInputElement>(
+            ".search-popover-input",
+          );
+          if (existingInput) {
+            existingInput.focus();
+            existingInput.select();
+          }
+        } else {
+          const librarySearch = document.querySelector<HTMLInputElement>(
+            'input[aria-label="Search library documents"]',
+          );
+          librarySearch?.focus();
+          librarySearch?.select();
+        }
+        return;
+      }
+
+      if (key === "o") {
+        event.preventDefault();
+        setShowImportDialog(true);
+        return;
+      }
+
+      if (key === "p" && session) {
+        event.preventDefault();
+        setShowPrintDialog(true);
+        return;
+      }
+
+      if (event.key === "\\" && session) {
+        event.preventDefault();
+        if (event.shiftKey) {
+          setShowRightPanel((prev) => !prev);
+        } else {
+          setActiveSidebar((prev) =>
+            prev === "thumbnails" ? null : "thumbnails",
+          );
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, [session]);
+
   const showBookmarksPanel =
     activeSidebar === "bookmarks" || showRightPanel;
 
