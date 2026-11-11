@@ -413,6 +413,29 @@ fn main() {
     };
 
     let init_script = r#"
+      if (typeof globalThis.Iterator === 'undefined') {
+        var IterProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+        function Iterator() {}
+        Iterator.prototype = IterProto;
+        globalThis.Iterator = Iterator;
+      }
+      if (typeof globalThis.Iterator.prototype.join !== 'function') {
+        globalThis.Iterator.prototype.join = function(sep) {
+          return Array.from(this).join(sep);
+        };
+      }
+      if (typeof Promise.withResolvers !== 'function') {
+        Promise.withResolvers = function() {
+          var resolve, reject;
+          var promise = new Promise(function(res, rej) { resolve = res; reject = rej; });
+          return { promise: promise, resolve: resolve, reject: reject };
+        };
+      }
+      if (typeof URL.parse !== 'function') {
+        URL.parse = function(url, base) {
+          try { return new URL(url, base); } catch (_) { return null; }
+        };
+      }
       window.close = function() {
         if (window.ipc && typeof window.ipc.postMessage === 'function') {
           window.ipc.postMessage('quit');
