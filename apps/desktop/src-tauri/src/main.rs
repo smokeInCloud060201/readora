@@ -196,8 +196,8 @@ fn perform_native_self_update(
                             None
                         }
                     });
-                    let target_app =
-                        current_bundle.unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
+                    let target_app = current_bundle
+                        .unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
 
                     let _ = std::fs::remove_dir_all(&target_app);
                     let moved = Command::new("/bin/mv")
@@ -210,7 +210,10 @@ fn perform_native_self_update(
                     if moved {
                         let target_str = target_app.to_string_lossy().into_owned();
                         let _ = Command::new("/bin/sh")
-                            .args(["-c", &format!("sleep 0.6 && /usr/bin/open -n \"{target_str}\"")])
+                            .args([
+                                "-c",
+                                &format!("sleep 0.6 && /usr/bin/open -n \"{target_str}\""),
+                            ])
                             .spawn();
                         let _ = proxy.send_event(DesktopUserEvent::Quit);
                         return r#"{"status":"restarting"}"#;
@@ -253,14 +256,13 @@ fn perform_native_self_update(
             .map(|s| s.success())
             .unwrap_or(false);
         if curl_ok {
-            let _ = Command::new("msiexec.exe")
-                .arg("/i")
-                .arg(&msi_dest)
-                .spawn();
+            let _ = Command::new("msiexec.exe").arg("/i").arg(&msi_dest).spawn();
             let _ = proxy.send_event(DesktopUserEvent::Quit);
             return r#"{"status":"restarting"}"#;
         }
-        let _ = Command::new("cmd").args(["/C", "start", "", &msi_url]).spawn();
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "", &msi_url])
+            .spawn();
         return r#"{"status":"opened_release"}"#;
     }
 
