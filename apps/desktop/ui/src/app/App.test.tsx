@@ -115,6 +115,10 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Page 4 of 5")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("search-highlights-page-4"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("active-search-highlight")).toBeInTheDocument();
     });
 
     // 6. Close document, verify Continue Reading banner and Recent Documents card at page 4, and reopen it

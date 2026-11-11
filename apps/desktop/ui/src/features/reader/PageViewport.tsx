@@ -6,6 +6,8 @@ import {
   type AnnotationDto,
   type AnnotationKind,
   type RenderedPageResultDto,
+  type SearchBoundingBoxDto,
+  type SearchHitDto,
   type ViewStateDto,
 } from "../../types/ipc";
 
@@ -19,6 +21,8 @@ interface PageViewportProps {
   showExtractedTextLayer?: boolean;
   isLoading: boolean;
   annotations?: AnnotationDto[];
+  searchHits?: SearchHitDto[];
+  activeSearchHitIndex?: number;
   onCopyText: () => void;
   onVisiblePageChange?: (zeroBasedPage: number) => void;
   onNextPage?: () => void;
@@ -42,6 +46,38 @@ const HIGHLIGHT_SWATCHES = [
   { id: "lavender", label: "Lavender", hex: "#c9afe2" },
 ] as const;
 
+function rotateBoundingBox(
+  box: SearchBoundingBoxDto,
+  rotationDeg: number,
+): SearchBoundingBoxDto {
+  const normalized = ((rotationDeg % 360) + 360) % 360;
+  if (normalized === 90) {
+    return {
+      x_ratio: Math.max(0, 1 - box.y_ratio - box.height_ratio),
+      y_ratio: box.x_ratio,
+      width_ratio: box.height_ratio,
+      height_ratio: box.width_ratio,
+    };
+  }
+  if (normalized === 180) {
+    return {
+      x_ratio: Math.max(0, 1 - box.x_ratio - box.width_ratio),
+      y_ratio: Math.max(0, 1 - box.y_ratio - box.height_ratio),
+      width_ratio: box.width_ratio,
+      height_ratio: box.height_ratio,
+    };
+  }
+  if (normalized === 270) {
+    return {
+      x_ratio: box.y_ratio,
+      y_ratio: Math.max(0, 1 - box.x_ratio - box.width_ratio),
+      width_ratio: box.height_ratio,
+      height_ratio: box.width_ratio,
+    };
+  }
+  return box;
+}
+
 export const PageViewport: React.FC<PageViewportProps> = ({
   documentTitle,
   viewState,
@@ -52,6 +88,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   showExtractedTextLayer = false,
   isLoading,
   annotations = [],
+  searchHits = [],
+  activeSearchHitIndex = 0,
   onCopyText,
   onVisiblePageChange,
   onNextPage,
@@ -438,6 +476,9 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           const pageBitmap =
             renderedPagesMap[pageIdx] ??
             (isCurrentPage ? renderedPage : null);
+          const pageSearchEntries = searchHits
+            .map((hit, globalIdx) => ({ hit, globalIdx }))
+            .filter((entry) => entry.hit.page_index === pageIdx);
 
           return (
             <div
@@ -480,17 +521,68 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                   </div>
                 )}
                 {pageBitmap ? (
-                  <img
-                    src={pageBitmap.data_url}
-                    alt={`Rendered PDF page ${pageIdx + 1}`}
-                    width={displayWidthPx}
-                    height={displayHeightPx}
+                  <div
+                    className="rendered-page-stage"
                     style={{
                       width: `${displayWidthPx}px`,
                       height: `${displayHeightPx}px`,
                     }}
-                    className="rendered-page-img"
-                  />
+                  >
+                    <img
+                      src={pageBitmap.data_url}
+                      alt={`Rendered PDF page ${pageIdx + 1}`}
+                      width={displayWidthPx}
+                      height={displayHeightPx}
+                      style={{
+                        width: `${displayWidthPx}px`,
+                        height: `${displayHeightPx}px`,
+                      }}
+                      className="rendered-page-img"
+                    />
+                    {pageSearchEntries.length > 0 && (
+                      <div
+                        className="pdf-search-highlight-layer"
+                        aria-label={`Search highlights on page ${pageIdx + 1}`}
+                        data-testid={`search-highlights-page-${pageIdx + 1}`}
+                      >
+                        {pageSearchEntries.map(({ hit, globalIdx }) => {
+                          const rawBox = hit.bounding_box ?? {
+                            x_ratio: 0.08,
+                            y_ratio: 0.16,
+                            width_ratio: 0.18,
+                            height_ratio: 0.026,
+                          };
+                          const box = rotateBoundingBox(rawBox, rotationDeg);
+                          const isFocusedMatch =
+                            globalIdx === activeSearchHitIndex;
+                          return (
+                            <mark
+                              key={`hl-${pageIdx}-${hit.match_index}-${globalIdx}`}
+                              className={`pdf-search-highlight-box ${
+                                isFocusedMatch ? "active" : ""
+                              }`}
+                              data-testid={
+                                isFocusedMatch
+                                  ? "active-search-highlight"
+                                  : "search-highlight"
+                              }
+                              title={hit.snippet}
+                              style={{
+                                left: `${(box.x_ratio * 100).toFixed(2)}%`,
+                                top: `${(box.y_ratio * 100).toFixed(2)}%`,
+                                width: `${(box.width_ratio * 100).toFixed(2)}%`,
+                                height: `${(box.height_ratio * 100).toFixed(2)}%`,
+                              }}
+                            >
+                              <span className="sr-only">
+                                {hit.match_text || hit.snippet}
+                              </span>
+                            </mark>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div
                     className="page-placeholder"

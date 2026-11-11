@@ -72,6 +72,7 @@ export const App: React.FC = () => {
   const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
   const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
   const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
+  const [activeSearchHitIndex, setActiveSearchHitIndex] = useState<number>(0);
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -415,6 +416,12 @@ export const App: React.FC = () => {
 
   const handleSearch = async (query: string, caseSensitive: boolean) => {
     if (!session) return;
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setSearchHits([]);
+      setActiveSearchHitIndex(0);
+      return;
+    }
     const hits = await readoraApi.searchDocument({
       document_id: session.descriptor.id,
       query,
@@ -422,6 +429,7 @@ export const App: React.FC = () => {
       max_hits: 100,
     });
     setSearchHits(hits);
+    setActiveSearchHitIndex(0);
     setStatusMessage(`Found ${hits.length} match(es)`);
   };
 
@@ -795,11 +803,17 @@ export const App: React.FC = () => {
               {activeSidebar === "search" && (
                 <SearchPanel
                   hits={searchHits}
+                  activeHitIndex={activeSearchHitIndex}
+                  onActiveHitChange={(idx) => setActiveSearchHitIndex(idx)}
                   onSearch={(q, cs) => void handleSearch(q, cs)}
                   onSelectHit={(p) =>
                     void dispatchNavigation({ kind: "go_to_page", value: p })
                   }
-                  onClose={() => setActiveSidebar("thumbnails")}
+                  onClose={() => {
+                    setSearchHits([]);
+                    setActiveSearchHitIndex(0);
+                    setActiveSidebar("thumbnails");
+                  }}
                 />
               )}
 
@@ -818,6 +832,8 @@ export const App: React.FC = () => {
                 }
                 isLoading={isRendering}
                 annotations={annotations}
+                searchHits={searchHits}
+                activeSearchHitIndex={activeSearchHitIndex}
                 onCopyText={() => void handleCopyText()}
                 onVisiblePageChange={(p) => void handleVisiblePageChange(p)}
                 onNextPage={() =>

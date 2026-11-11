@@ -957,6 +957,12 @@ body {
   z-index: 4;
 }
 
+.rendered-page-stage {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
 .rendered-page-img {
   display: block;
   flex-shrink: 0;
@@ -965,6 +971,39 @@ body {
   transition:
     width 150ms cubic-bezier(0.22, 1, 0.36, 1),
     height 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pdf-search-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.pdf-search-highlight-box {
+  position: absolute;
+  display: block;
+  background: rgba(243, 217, 107, 0.44);
+  border: 1px solid rgba(212, 160, 23, 0.65);
+  border-radius: 3px;
+  color: transparent;
+  mix-blend-mode: multiply;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.theme-dark .pdf-search-highlight-box {
+  mix-blend-mode: normal;
+  background: rgba(243, 217, 107, 0.34);
+}
+
+.pdf-search-highlight-box.active {
+  background: rgba(240, 152, 72, 0.52);
+  border-color: #d96b1f;
+  box-shadow: 0 0 0 2px rgba(217, 107, 31, 0.35);
+  z-index: 4;
 }
 
 .selectable-text-layer {

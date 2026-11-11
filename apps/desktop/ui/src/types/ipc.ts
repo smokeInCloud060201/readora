@@ -114,10 +114,19 @@ export interface SearchRequestDto {
   max_hits: number;
 }
 
+export interface SearchBoundingBoxDto {
+  x_ratio: number;
+  y_ratio: number;
+  width_ratio: number;
+  height_ratio: number;
+}
+
 export interface SearchHitDto {
   page_index: number;
   match_index: number;
   snippet: string;
+  match_text?: string;
+  bounding_box?: SearchBoundingBoxDto;
 }
 
 export interface RecentDocumentDto {

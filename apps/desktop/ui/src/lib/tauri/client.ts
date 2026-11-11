@@ -31,6 +31,7 @@ import {
   type RenderMode,
   type RenderPageCommandDto,
   type Rotation,
+  type SearchBoundingBoxDto,
   type SearchHitDto,
   type SearchRequestDto,
   type SettingsPatchDto,
@@ -75,6 +76,21 @@ const SAMPLE_PAGES: readonly string[] = [
   "Page 5: Security and Privacy Baseline — Every PDF Treated as Untrusted Input.",
 ];
 
+interface PageTextSpan {
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  x_ratio: number;
+  y_ratio: number;
+  width_ratio: number;
+  height_ratio: number;
+}
+
+interface PageTextLayout {
+  fullText: string;
+  spans: PageTextSpan[];
+}
+
 interface StoredPdfRecord {
   docId: string;
   filePath: string;
@@ -83,6 +99,97 @@ interface StoredPdfRecord {
   bytes: Uint8Array | null;
   pdfDoc: pdfjsLib.PDFDocumentProxy | null;
   pageTexts: Map<number, string>;
+  pageLayouts: Map<number, PageTextLayout>;
+}
+
+function buildSyntheticPageLayout(pageText: string): PageTextLayout {
+  const spans: PageTextSpan[] = [];
+  const rawParagraphs = (pageText || "").split(/\r?\n/);
+  const wrappedLines: string[] = [];
+  for (const para of rawParagraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let currentLine = "";
+    for (const word of words) {
+      if ((currentLine + " " + word).trim().length > 68) {
+        if (currentLine) wrappedLines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = currentLine ? `${currentLine} ${word}` : word;
+      }
+    }
+    if (currentLine) wrappedLines.push(currentLine);
+  }
+
+  let cursor = 0;
+  const fullParts: string[] = [];
+  wrappedLines.slice(0, 26).forEach((line, idx) => {
+    if (idx > 0) {
+      fullParts.push(" ");
+      cursor += 1;
+    }
+    const startOffset = cursor;
+    fullParts.push(line);
+    cursor += line.length;
+    const endOffset = cursor;
+    const x_ratio = 48 / 612;
+    const y_ratio = Math.max(0.02, (124 + idx * 22 - 12) / 792);
+    const width_ratio = Math.min(0.84, Math.max(0.04, (line.length * 7.05) / 612));
+    const height_ratio = 18 / 792;
+    spans.push({
+      text: line,
+      startOffset,
+      endOffset,
+      x_ratio,
+      y_ratio,
+      width_ratio,
+      height_ratio,
+    });
+  });
+
+  return {
+    fullText: fullParts.join("") || pageText,
+    spans,
+  };
+}
+
+function computeMatchBoundingBox(
+  layout: PageTextLayout,
+  matchStart: number,
+  matchLength: number,
+): SearchBoundingBoxDto {
+  const matchEnd = matchStart + Math.max(1, matchLength);
+  const overlapping = layout.spans.find(
+    (span) => span.endOffset > matchStart && span.startOffset < matchEnd,
+  );
+  if (overlapping && overlapping.text.length > 0) {
+    const spanLen = Math.max(1, overlapping.text.length);
+    const localStart = Math.max(0, matchStart - overlapping.startOffset);
+    const localEnd = Math.min(spanLen, matchEnd - overlapping.startOffset);
+    const subLen = Math.max(1, localEnd - localStart);
+    const x_ratio = Math.min(
+      0.96,
+      overlapping.x_ratio + overlapping.width_ratio * (localStart / spanLen),
+    );
+    const width_ratio = Math.min(
+      1 - x_ratio,
+      Math.max(0.018, overlapping.width_ratio * (subLen / spanLen)),
+    );
+    return {
+      x_ratio,
+      y_ratio: overlapping.y_ratio,
+      width_ratio,
+      height_ratio: overlapping.height_ratio,
+    };
+  }
+
+  const totalLen = Math.max(1, layout.fullText.length);
+  const ratioInPage = matchStart / totalLen;
+  return {
+    x_ratio: 0.08 + (ratioInPage % 0.25),
+    y_ratio: 0.14 + Math.min(0.74, ratioInPage * 0.68),
+    width_ratio: Math.min(0.35, Math.max(0.045, matchLength * 0.011)),
+    height_ratio: 0.024,
+  };
 }
 
 async function readFileToUint8Array(file: File): Promise<Uint8Array> {
@@ -434,6 +541,7 @@ class BrowserFallbackBridge {
     };
     let outline: OutlineNodeDto[] = [];
     const pageTexts = new Map<number, string>();
+    const pageLayouts = new Map<number, PageTextLayout>();
 
     if (bytes && bytes.byteLength > 0 && hasUsableCanvas2D()) {
       try {
@@ -515,6 +623,7 @@ class BrowserFallbackBridge {
     } else {
       SAMPLE_PAGES.forEach((text, idx) => {
         pageTexts.set(idx, text);
+        pageLayouts.set(idx, buildSyntheticPageLayout(text));
       });
       outline = SAMPLE_PAGES.map((text, idx) => ({
         title: text.split("—")[0]?.trim() ?? `Section ${idx + 1}`,
@@ -531,9 +640,11 @@ class BrowserFallbackBridge {
       bytes,
       pdfDoc,
       pageTexts,
+      pageLayouts,
     };
     this.storedPdfsByDocId.set(docId, record);
     this.storedPdfsByPath.set(cleanPath, record);
+    this.warmDocumentTextIndex(docId, pageCount);
 
     const initialPage = existingRecent
       ? Math.min(existingRecent.last_page, Math.max(0, pageCount - 1))
@@ -791,6 +902,165 @@ class BrowserFallbackBridge {
     };
   }
 
+  private warmDocumentTextIndex(documentId: string, pageCount: number): void {
+    const record = this.storedPdfsByDocId.get(documentId);
+    if (!record || !record.pdfDoc) {
+      return;
+    }
+    const maxBackgroundPages = Math.min(pageCount, 150);
+    let nextPage = 0;
+    const step = () => {
+      const currentRecord = this.storedPdfsByDocId.get(documentId);
+      if (!currentRecord || !this.sessions.has(documentId)) {
+        return;
+      }
+      if (nextPage >= maxBackgroundPages) {
+        return;
+      }
+      const pageIdx = nextPage;
+      nextPage += 1;
+      void this.extractPageLayout(documentId, pageIdx).finally(() => {
+        if (nextPage < maxBackgroundPages) {
+          setTimeout(step, 4);
+        }
+      });
+    };
+    setTimeout(step, 12);
+  }
+
+  private async extractPageLayout(
+    documentId: string,
+    pageIndex: number,
+  ): Promise<PageTextLayout> {
+    const record = this.storedPdfsByDocId.get(documentId);
+    if (record) {
+      const cachedLayout = record.pageLayouts.get(pageIndex);
+      if (cachedLayout !== undefined) {
+        return cachedLayout;
+      }
+      if (record.pdfDoc) {
+        try {
+          const page = await record.pdfDoc.getPage(pageIndex + 1);
+          const viewport = page.getViewport({ scale: 1.0 });
+          const pageW = Math.max(1, viewport.width || 612);
+          const pageH = Math.max(1, viewport.height || 792);
+          const textContent = await page.getTextContent();
+          const parts: string[] = [];
+          const spans: PageTextSpan[] = [];
+          let cursor = 0;
+          let lastY: number | null = null;
+
+          for (const item of textContent.items) {
+            if ("str" in item) {
+              const rawStr = item.str;
+              const y = Array.isArray(item.transform)
+                ? Number(item.transform[5])
+                : null;
+              if (
+                lastY !== null &&
+                y !== null &&
+                Math.abs(y - lastY) > 4 &&
+                parts.length > 0
+              ) {
+                parts.push("\n");
+                cursor += 1;
+              } else {
+                const lastPart = parts[parts.length - 1];
+                if (lastPart !== undefined && !lastPart.endsWith("\n")) {
+                  parts.push(" ");
+                  cursor += 1;
+                }
+              }
+
+              const startOffset = cursor;
+              parts.push(rawStr);
+              cursor += rawStr.length;
+              const endOffset = cursor;
+
+              if (rawStr.trim().length > 0 && Array.isArray(item.transform)) {
+                const fontH = Math.max(
+                  8,
+                  Math.hypot(
+                    Number(item.transform[2]) || 0,
+                    Number(item.transform[3]) || 0,
+                  ) || Math.abs(Number(item.transform[0]) || 12),
+                );
+                const itemW = Math.max(
+                  fontH * 0.45,
+                  typeof item.width === "number" && item.width > 0
+                    ? item.width
+                    : rawStr.length * fontH * 0.52,
+                );
+                const tx =
+                  typeof item.transform[4] === "number"
+                    ? item.transform[4]
+                    : 48;
+                const ty =
+                  typeof item.transform[5] === "number"
+                    ? item.transform[5]
+                    : pageH - 124;
+
+                const x_ratio = Math.min(0.98, Math.max(0.01, tx / pageW));
+                const y_ratio = Math.min(
+                  0.98,
+                  Math.max(0.01, (pageH - ty - fontH * 0.92) / pageH),
+                );
+                const width_ratio = Math.min(
+                  1 - x_ratio,
+                  Math.max(0.012, itemW / pageW),
+                );
+                const height_ratio = Math.min(
+                  1 - y_ratio,
+                  Math.max(0.016, (fontH * 1.28) / pageH),
+                );
+
+                spans.push({
+                  text: rawStr,
+                  startOffset,
+                  endOffset,
+                  x_ratio,
+                  y_ratio,
+                  width_ratio,
+                  height_ratio,
+                });
+              }
+
+              if (item.hasEOL) {
+                parts.push("\n");
+                cursor += 1;
+              }
+              if (y !== null) {
+                lastY = y;
+              }
+            }
+          }
+
+          const extracted = parts.join("");
+          const layout: PageTextLayout = {
+            fullText: extracted.trim().length > 0 ? extracted : "",
+            spans,
+          };
+          record.pageTexts.set(pageIndex, extracted.replace(/[ \t]+\n/g, "\n").trim());
+          record.pageLayouts.set(pageIndex, layout);
+          return layout;
+        } catch {
+          const emptyLayout: PageTextLayout = { fullText: "", spans: [] };
+          return emptyLayout;
+        }
+      }
+      const existingText =
+        record.pageTexts.get(pageIndex) ??
+        SAMPLE_PAGES[pageIndex] ??
+        `Page ${pageIndex + 1}`;
+      const synthetic = buildSyntheticPageLayout(existingText);
+      record.pageLayouts.set(pageIndex, synthetic);
+      return synthetic;
+    }
+
+    const fallbackText = SAMPLE_PAGES[pageIndex] ?? `Page ${pageIndex + 1}`;
+    return buildSyntheticPageLayout(fallbackText);
+  }
+
   async extractPageText(
     documentId: string,
     pageIndex: number,
@@ -802,44 +1072,8 @@ class BrowserFallbackBridge {
         return cached;
       }
       if (record.pdfDoc) {
-        try {
-          const page = await record.pdfDoc.getPage(pageIndex + 1);
-          const textContent = await page.getTextContent();
-          const parts: string[] = [];
-          let lastY: number | null = null;
-          for (const item of textContent.items) {
-            if ("str" in item) {
-              const y = Array.isArray(item.transform)
-                ? Number(item.transform[5])
-                : null;
-              if (
-                lastY !== null &&
-                y !== null &&
-                Math.abs(y - lastY) > 4 &&
-                parts.length > 0
-              ) {
-                parts.push("\n");
-              } else {
-                const lastPart = parts[parts.length - 1];
-                if (lastPart !== undefined && !lastPart.endsWith("\n")) {
-                  parts.push(" ");
-                }
-              }
-              parts.push(item.str);
-              if (item.hasEOL) {
-                parts.push("\n");
-              }
-              if (y !== null) {
-                lastY = y;
-              }
-            }
-          }
-          const extracted = parts.join("").replace(/[ \t]+\n/g, "\n").trim();
-          record.pageTexts.set(pageIndex, extracted);
-          return extracted;
-        } catch {
-          return "";
-        }
+        await this.extractPageLayout(documentId, pageIndex);
+        return record.pageTexts.get(pageIndex) ?? "";
       }
     }
     return SAMPLE_PAGES[pageIndex] ?? `Page ${pageIndex + 1}`;
@@ -856,7 +1090,8 @@ class BrowserFallbackBridge {
     const pageCount = session?.descriptor.page_count ?? SAMPLE_PAGES.length;
 
     for (let idx = 0; idx < pageCount; idx += 1) {
-      const text = await this.extractPageText(request.document_id, idx);
+      const layout = await this.extractPageLayout(request.document_id, idx);
+      const text = layout.fullText;
       if (!text) continue;
       const hay = request.case_sensitive ? text : text.toLowerCase();
       let searchFrom = 0;
@@ -867,10 +1102,18 @@ class BrowserFallbackBridge {
         const start = Math.max(0, pos - 28);
         const end = Math.min(text.length, pos + needle.length + 42);
         const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
+        const matchText = text.slice(pos, pos + needle.length);
+        const boundingBox = computeMatchBoundingBox(
+          layout,
+          pos,
+          needle.length,
+        );
         hits.push({
           page_index: idx,
           match_index: matchIdx,
           snippet,
+          match_text: matchText,
+          bounding_box: boundingBox,
         });
         if (hits.length >= (request.max_hits || 100)) {
           return hits;
@@ -880,6 +1123,49 @@ class BrowserFallbackBridge {
       }
     }
     return hits;
+  }
+
+  async enrichSearchHits(
+    request: SearchRequestDto,
+    rawHits: SearchHitDto[],
+  ): Promise<SearchHitDto[]> {
+    const q = request.query.trim();
+    if (!q || rawHits.length === 0) {
+      return rawHits;
+    }
+    const needle = request.case_sensitive ? q : q.toLowerCase();
+    const enriched: SearchHitDto[] = [];
+    for (const hit of rawHits) {
+      if (hit.bounding_box) {
+        enriched.push(hit);
+        continue;
+      }
+      const text = await readoraApi.extractPageText(
+        request.document_id,
+        hit.page_index,
+      );
+      const layout = buildSyntheticPageLayout(text);
+      const hay = request.case_sensitive ? text : text.toLowerCase();
+      let searchFrom = 0;
+      let currentIdx = 0;
+      let foundPos = 0;
+      while (searchFrom < hay.length) {
+        const pos = hay.indexOf(needle, searchFrom);
+        if (pos === -1) break;
+        foundPos = pos;
+        if (currentIdx === hit.match_index) {
+          break;
+        }
+        currentIdx += 1;
+        searchFrom = pos + Math.max(1, needle.length);
+      }
+      enriched.push({
+        ...hit,
+        match_text: hit.match_text ?? q,
+        bounding_box: computeMatchBoundingBox(layout, foundPos, needle.length),
+      });
+    }
+    return enriched;
   }
 
   upsertBookmark(command: UpsertBookmarkCommandDto): BookmarkDto {
@@ -1403,7 +1689,10 @@ export const readoraApi = {
     }
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<SearchHitDto[]>("document_search", { request });
+      const rawHits = await invoke<SearchHitDto[]>("document_search", {
+        request,
+      });
+      return fallbackBridge.enrichSearchHits(request, rawHits);
     }
     return fallbackBridge.searchDocument(request);
   },
