@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readoraApi } from "../lib/tauri/client";
+import {
+  findMatchesInPageText,
+  normalizePdfGlyphText,
+  readoraApi,
+} from "../lib/tauri/client";
 import { App } from "./App";
 
 function createTestPdfFile(fileName: string): File {
@@ -454,5 +458,46 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       ).toBeInTheDocument();
       expect(screen.getByText("Your library")).toBeInTheDocument();
     });
+  });
+
+  it("matches PDF words split by kerning, Unicode ligatures, soft hyphens, and line wraps", () => {
+    const rawPdfStream = normalizePdfGlyphText(
+      "Ef\uFB01cient con\uFB02ow architec\u00ADture with De vel op ment and perfor-\nmance metrics.",
+    );
+    expect(rawPdfStream).toContain("Efficient");
+    expect(rawPdfStream).toContain("conflow");
+    expect(rawPdfStream).toContain("architecture");
+
+    // 1. Ligature & soft-hyphen normalized matches
+    expect(findMatchesInPageText(rawPdfStream, "efficient", false)).toHaveLength(1);
+    expect(findMatchesInPageText(rawPdfStream, "architecture", false)).toHaveLength(1);
+
+    // 2. Kerning-split word ("De vel op ment" matched when searching "Development")
+    const kerningMatches = findMatchesInPageText(
+      rawPdfStream,
+      "Development",
+      false,
+    );
+    expect(kerningMatches).toHaveLength(1);
+    expect(
+      rawPdfStream.slice(
+        kerningMatches[0]!.origStart,
+        kerningMatches[0]!.origEnd,
+      ),
+    ).toBe("De vel op ment");
+
+    // 3. Hyphenated line-wrap ("perfor-\nmance" matched when searching "performance")
+    const wrappedMatches = findMatchesInPageText(
+      rawPdfStream,
+      "performance",
+      false,
+    );
+    expect(wrappedMatches).toHaveLength(1);
+    expect(
+      rawPdfStream.slice(
+        wrappedMatches[0]!.origStart,
+        wrappedMatches[0]!.origEnd,
+      ),
+    ).toBe("perfor-\nmance");
   });
 });

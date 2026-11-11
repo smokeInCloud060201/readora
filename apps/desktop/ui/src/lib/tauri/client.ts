@@ -91,6 +91,122 @@ interface PageTextLayout {
   spans: PageTextSpan[];
 }
 
+export function normalizePdfGlyphText(raw: string): string {
+  return raw
+    .normalize("NFKC")
+    .replace(/[\u00AD\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/\u00A0/g, " ");
+}
+
+interface PageMatchRange {
+  origStart: number;
+  origEnd: number;
+}
+
+export function findMatchesInPageText(
+  fullText: string,
+  rawQuery: string,
+  caseSensitive: boolean,
+): PageMatchRange[] {
+  const normalizedQuery = normalizePdfGlyphText(rawQuery)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedQuery || !fullText) {
+    return [];
+  }
+
+  const needle = caseSensitive
+    ? normalizedQuery
+    : normalizedQuery.toLowerCase();
+
+  // 1. Build whitespace-normalized haystack (collapsing runs of whitespace & hyphenated line wraps) with offset map
+  const normChars: string[] = [];
+  const normToOrig: number[] = [];
+  let inWhitespace = false;
+  for (let i = 0; i < fullText.length; i += 1) {
+    const ch = fullText[i] ?? "";
+    // Skip hyphen immediately followed by newline (line-break word wrap: "architec-\nture")
+    if (
+      ch === "-" &&
+      (fullText[i + 1] === "\n" ||
+        (fullText[i + 1] === "\r" && fullText[i + 2] === "\n"))
+    ) {
+      while (i + 1 < fullText.length && /\s/.test(fullText[i + 1] ?? "")) {
+        i += 1;
+      }
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (!inWhitespace && normChars.length > 0) {
+        normChars.push(" ");
+        normToOrig.push(i);
+        inWhitespace = true;
+      }
+    } else {
+      normChars.push(caseSensitive ? ch : ch.toLowerCase());
+      normToOrig.push(i);
+      inWhitespace = false;
+    }
+  }
+
+  const normHay = normChars.join("");
+  const results: PageMatchRange[] = [];
+
+  let searchFrom = 0;
+  while (searchFrom < normHay.length) {
+    const pos = normHay.indexOf(needle, searchFrom);
+    if (pos === -1) break;
+    const origStart = normToOrig[pos] ?? 0;
+    const lastNormIdx = pos + needle.length - 1;
+    const origEnd = (normToOrig[lastNormIdx] ?? origStart) + 1;
+    results.push({ origStart, origEnd });
+    searchFrom = pos + Math.max(1, needle.length);
+  }
+
+  // 2. Fallback compact/spaceless stream for words split by wide kerning/tracking in PDF fonts (e.g. "D e v e l o p m e n t")
+  const compactNeedle = needle.replace(/\s+/g, "");
+  if (compactNeedle.length >= 2) {
+    const compactChars: string[] = [];
+    const compactToOrig: number[] = [];
+    for (let i = 0; i < fullText.length; i += 1) {
+      const ch = fullText[i] ?? "";
+      if (/\s/.test(ch)) continue;
+      if (
+        ch === "-" &&
+        (fullText[i + 1] === "\n" ||
+          (fullText[i + 1] === "\r" && fullText[i + 2] === "\n"))
+      ) {
+        continue;
+      }
+      compactChars.push(caseSensitive ? ch : ch.toLowerCase());
+      compactToOrig.push(i);
+    }
+    const compactHay = compactChars.join("");
+    let cFrom = 0;
+    const maxAllowedSpan = compactNeedle.length * 2 + 4;
+    while (cFrom < compactHay.length) {
+      const cPos = compactHay.indexOf(compactNeedle, cFrom);
+      if (cPos === -1) break;
+      const origStart = compactToOrig[cPos] ?? 0;
+      const origEnd =
+        (compactToOrig[cPos + compactNeedle.length - 1] ?? origStart) + 1;
+      const spanLength = origEnd - origStart;
+      const alreadyCovered = results.some(
+        (r) => r.origStart < origEnd && r.origEnd > origStart,
+      );
+      if (!alreadyCovered && spanLength <= maxAllowedSpan) {
+        results.push({ origStart, origEnd });
+      }
+      cFrom = cPos + Math.max(1, compactNeedle.length);
+    }
+    results.sort((a, b) => a.origStart - b.origStart);
+  }
+
+  return results;
+}
+
 interface StoredPdfRecord {
   docId: string;
   filePath: string;
@@ -158,27 +274,44 @@ function computeMatchBoundingBox(
   matchLength: number,
 ): SearchBoundingBoxDto {
   const matchEnd = matchStart + Math.max(1, matchLength);
-  const overlapping = layout.spans.find(
+  const overlapping = layout.spans.filter(
     (span) => span.endOffset > matchStart && span.startOffset < matchEnd,
   );
-  if (overlapping && overlapping.text.length > 0) {
-    const spanLen = Math.max(1, overlapping.text.length);
-    const localStart = Math.max(0, matchStart - overlapping.startOffset);
-    const localEnd = Math.min(spanLen, matchEnd - overlapping.startOffset);
-    const subLen = Math.max(1, localEnd - localStart);
-    const x_ratio = Math.min(
-      0.96,
-      overlapping.x_ratio + overlapping.width_ratio * (localStart / spanLen),
+  const firstSpan = overlapping[0];
+  if (firstSpan && firstSpan.text.length > 0) {
+    const sameLineSpans = overlapping.filter(
+      (s) => Math.abs(s.y_ratio - firstSpan.y_ratio) < 0.025,
     );
+    const lastSpan = sameLineSpans[sameLineSpans.length - 1] ?? firstSpan;
+
+    const firstLen = Math.max(1, firstSpan.text.length);
+    const firstLocalStart = Math.max(0, matchStart - firstSpan.startOffset);
+    const leftEdge = Math.min(
+      0.96,
+      firstSpan.x_ratio + firstSpan.width_ratio * (firstLocalStart / firstLen),
+    );
+
+    const lastLen = Math.max(1, lastSpan.text.length);
+    const lastLocalEnd = Math.min(lastLen, matchEnd - lastSpan.startOffset);
+    const rightEdge = Math.min(
+      0.99,
+      lastSpan.x_ratio +
+        lastSpan.width_ratio * (Math.max(1, lastLocalEnd) / lastLen),
+    );
+
     const width_ratio = Math.min(
-      1 - x_ratio,
-      Math.max(0.018, overlapping.width_ratio * (subLen / spanLen)),
+      1 - leftEdge,
+      Math.max(0.018, rightEdge - leftEdge),
+    );
+    const height_ratio = Math.max(
+      firstSpan.height_ratio,
+      lastSpan.height_ratio,
     );
     return {
-      x_ratio,
-      y_ratio: overlapping.y_ratio,
+      x_ratio: leftEdge,
+      y_ratio: Math.min(firstSpan.y_ratio, lastSpan.y_ratio),
       width_ratio,
-      height_ratio: overlapping.height_ratio,
+      height_ratio,
     };
   }
 
@@ -949,26 +1082,73 @@ class BrowserFallbackBridge {
           const spans: PageTextSpan[] = [];
           let cursor = 0;
           let lastY: number | null = null;
+          let lastEndX: number | null = null;
+          let lastFontH = 12;
 
           for (const item of textContent.items) {
             if ("str" in item) {
-              const rawStr = item.str;
-              const y = Array.isArray(item.transform)
-                ? Number(item.transform[5])
-                : null;
+              const rawStr = normalizePdfGlyphText(item.str);
+              if (rawStr.length === 0) {
+                if (item.hasEOL && parts.length > 0) {
+                  parts.push("\n");
+                  cursor += 1;
+                  lastEndX = null;
+                }
+                continue;
+              }
+
+              const hasTransform = Array.isArray(item.transform);
+              const fontH = hasTransform
+                ? Math.max(
+                    8,
+                    Math.hypot(
+                      Number(item.transform[2]) || 0,
+                      Number(item.transform[3]) || 0,
+                    ) || Math.abs(Number(item.transform[0]) || 12),
+                  )
+                : lastFontH;
+              const itemW = Math.max(
+                fontH * 0.35,
+                typeof item.width === "number" && item.width > 0
+                  ? item.width
+                  : rawStr.length * fontH * 0.52,
+              );
+              const tx =
+                hasTransform && typeof item.transform[4] === "number"
+                  ? item.transform[4]
+                  : null;
+              const ty =
+                hasTransform && typeof item.transform[5] === "number"
+                  ? Number(item.transform[5])
+                  : null;
+
+              const lineThreshold = Math.max(4, Math.min(fontH, lastFontH) * 0.45);
               if (
                 lastY !== null &&
-                y !== null &&
-                Math.abs(y - lastY) > 4 &&
+                ty !== null &&
+                Math.abs(ty - lastY) > lineThreshold &&
                 parts.length > 0
               ) {
-                parts.push("\n");
-                cursor += 1;
-              } else {
-                const lastPart = parts[parts.length - 1];
-                if (lastPart !== undefined && !lastPart.endsWith("\n")) {
-                  parts.push(" ");
+                const lastPart = parts[parts.length - 1] ?? "";
+                if (!lastPart.endsWith("\n")) {
+                  parts.push("\n");
                   cursor += 1;
+                }
+                lastEndX = null;
+              } else if (parts.length > 0) {
+                const lastPart = parts[parts.length - 1] ?? "";
+                const prevEndsWithSpace = /\s$/.test(lastPart);
+                const currStartsWithSpace = /^\s/.test(rawStr);
+                if (!prevEndsWithSpace && !currStartsWithSpace) {
+                  // Only insert a space when the horizontal gap between PDF text runs exceeds a kerning threshold
+                  const shouldInsertSpace =
+                    tx !== null && lastEndX !== null
+                      ? tx - lastEndX > fontH * 0.16
+                      : false;
+                  if (shouldInsertSpace) {
+                    parts.push(" ");
+                    cursor += 1;
+                  }
                 }
               }
 
@@ -977,33 +1157,19 @@ class BrowserFallbackBridge {
               cursor += rawStr.length;
               const endOffset = cursor;
 
-              if (rawStr.trim().length > 0 && Array.isArray(item.transform)) {
-                const fontH = Math.max(
-                  8,
-                  Math.hypot(
-                    Number(item.transform[2]) || 0,
-                    Number(item.transform[3]) || 0,
-                  ) || Math.abs(Number(item.transform[0]) || 12),
+              if (rawStr.trim().length > 0 && hasTransform) {
+                const effectiveTx = tx ?? 48;
+                const effectiveTy = ty ?? pageH - 124;
+                const x_ratio = Math.min(
+                  0.98,
+                  Math.max(0.01, effectiveTx / pageW),
                 );
-                const itemW = Math.max(
-                  fontH * 0.45,
-                  typeof item.width === "number" && item.width > 0
-                    ? item.width
-                    : rawStr.length * fontH * 0.52,
-                );
-                const tx =
-                  typeof item.transform[4] === "number"
-                    ? item.transform[4]
-                    : 48;
-                const ty =
-                  typeof item.transform[5] === "number"
-                    ? item.transform[5]
-                    : pageH - 124;
-
-                const x_ratio = Math.min(0.98, Math.max(0.01, tx / pageW));
                 const y_ratio = Math.min(
                   0.98,
-                  Math.max(0.01, (pageH - ty - fontH * 0.92) / pageH),
+                  Math.max(
+                    0.01,
+                    (pageH - effectiveTy - fontH * 0.92) / pageH,
+                  ),
                 );
                 const width_ratio = Math.min(
                   1 - x_ratio,
@@ -1025,12 +1191,18 @@ class BrowserFallbackBridge {
                 });
               }
 
+              if (tx !== null) {
+                lastEndX = tx + itemW;
+              }
+              if (ty !== null) {
+                lastY = ty;
+              }
+              lastFontH = fontH;
+
               if (item.hasEOL) {
                 parts.push("\n");
                 cursor += 1;
-              }
-              if (y !== null) {
-                lastY = y;
+                lastEndX = null;
               }
             }
           }
@@ -1084,7 +1256,6 @@ class BrowserFallbackBridge {
     if (!q) {
       return [];
     }
-    const needle = request.case_sensitive ? q : q.toLowerCase();
     const hits: SearchHitDto[] = [];
     const session = this.sessions.get(request.document_id);
     const pageCount = session?.descriptor.page_count ?? SAMPLE_PAGES.length;
@@ -1093,21 +1264,17 @@ class BrowserFallbackBridge {
       const layout = await this.extractPageLayout(request.document_id, idx);
       const text = layout.fullText;
       if (!text) continue;
-      const hay = request.case_sensitive ? text : text.toLowerCase();
-      let searchFrom = 0;
-      let matchIdx = 0;
-      while (searchFrom < hay.length) {
-        const pos = hay.indexOf(needle, searchFrom);
-        if (pos === -1) break;
+      const matches = findMatchesInPageText(text, q, request.case_sensitive);
+      for (let matchIdx = 0; matchIdx < matches.length; matchIdx += 1) {
+        const range = matches[matchIdx];
+        if (!range) continue;
+        const pos = range.origStart;
+        const matchLen = Math.max(1, range.origEnd - range.origStart);
         const start = Math.max(0, pos - 28);
-        const end = Math.min(text.length, pos + needle.length + 42);
+        const end = Math.min(text.length, pos + matchLen + 42);
         const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
-        const matchText = text.slice(pos, pos + needle.length);
-        const boundingBox = computeMatchBoundingBox(
-          layout,
-          pos,
-          needle.length,
-        );
+        const matchText = text.slice(pos, pos + matchLen);
+        const boundingBox = computeMatchBoundingBox(layout, pos, matchLen);
         hits.push({
           page_index: idx,
           match_index: matchIdx,
@@ -1118,8 +1285,6 @@ class BrowserFallbackBridge {
         if (hits.length >= (request.max_hits || 100)) {
           return hits;
         }
-        matchIdx += 1;
-        searchFrom = pos + Math.max(1, needle.length);
       }
     }
     return hits;
