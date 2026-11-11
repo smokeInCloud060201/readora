@@ -603,7 +603,7 @@ export function parseGithubReleasePayload(
 }
 
 const DEFAULT_APP_VERSION: string =
-  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.4";
+  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.5";
 
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
