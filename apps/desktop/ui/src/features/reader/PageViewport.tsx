@@ -545,40 +545,49 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                         aria-label={`Search highlights on page ${pageIdx + 1}`}
                         data-testid={`search-highlights-page-${pageIdx + 1}`}
                       >
-                        {pageSearchEntries.map(({ hit, globalIdx }) => {
-                          const rawBox = hit.bounding_box ?? {
-                            x_ratio: 0.08,
-                            y_ratio: 0.16,
-                            width_ratio: 0.18,
-                            height_ratio: 0.026,
-                          };
-                          const box = rotateBoundingBox(rawBox, rotationDeg);
+                        {pageSearchEntries.flatMap(({ hit, globalIdx }) => {
+                          const rawBoxes =
+                            hit.bounding_boxes && hit.bounding_boxes.length > 0
+                              ? hit.bounding_boxes
+                              : [
+                                  hit.bounding_box ?? {
+                                    x_ratio: 0.08,
+                                    y_ratio: 0.16,
+                                    width_ratio: 0.18,
+                                    height_ratio: 0.026,
+                                  },
+                                ];
                           const isFocusedMatch =
                             globalIdx === activeSearchHitIndex;
-                          return (
-                            <mark
-                              key={`hl-${pageIdx}-${hit.match_index}-${globalIdx}`}
-                              className={`pdf-search-highlight-box ${
-                                isFocusedMatch ? "active" : ""
-                              }`}
-                              data-testid={
-                                isFocusedMatch
-                                  ? "active-search-highlight"
-                                  : "search-highlight"
-                              }
-                              title={hit.snippet}
-                              style={{
-                                left: `${(box.x_ratio * 100).toFixed(2)}%`,
-                                top: `${(box.y_ratio * 100).toFixed(2)}%`,
-                                width: `${(box.width_ratio * 100).toFixed(2)}%`,
-                                height: `${(box.height_ratio * 100).toFixed(2)}%`,
-                              }}
-                            >
-                              <span className="sr-only">
-                                {hit.match_text || hit.snippet}
-                              </span>
-                            </mark>
-                          );
+                          return rawBoxes.map((rawBox, lineIdx) => {
+                            const box = rotateBoundingBox(rawBox, rotationDeg);
+                            return (
+                              <mark
+                                key={`hl-${pageIdx}-${hit.match_index}-${globalIdx}-${lineIdx}`}
+                                className={`pdf-search-highlight-box ${
+                                  isFocusedMatch ? "active" : ""
+                                }`}
+                                data-testid={
+                                  isFocusedMatch && lineIdx === 0
+                                    ? "active-search-highlight"
+                                    : "search-highlight"
+                                }
+                                title={hit.snippet}
+                                style={{
+                                  left: `${(box.x_ratio * 100).toFixed(2)}%`,
+                                  top: `${(box.y_ratio * 100).toFixed(2)}%`,
+                                  width: `${(box.width_ratio * 100).toFixed(2)}%`,
+                                  height: `${(box.height_ratio * 100).toFixed(2)}%`,
+                                }}
+                              >
+                                {lineIdx === 0 && (
+                                  <span className="sr-only">
+                                    {hit.match_text || hit.snippet}
+                                  </span>
+                                )}
+                              </mark>
+                            );
+                          });
                         })}
                       </div>
                     )}

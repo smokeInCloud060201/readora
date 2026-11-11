@@ -268,61 +268,79 @@ function buildSyntheticPageLayout(pageText: string): PageTextLayout {
   };
 }
 
-function computeMatchBoundingBox(
+export function computeMatchBoundingBoxes(
   layout: PageTextLayout,
   matchStart: number,
   matchLength: number,
-): SearchBoundingBoxDto {
+): SearchBoundingBoxDto[] {
   const matchEnd = matchStart + Math.max(1, matchLength);
   const overlapping = layout.spans.filter(
-    (span) => span.endOffset > matchStart && span.startOffset < matchEnd,
+    (span) =>
+      span.endOffset > matchStart &&
+      span.startOffset < matchEnd &&
+      span.text.length > 0,
   );
-  const firstSpan = overlapping[0];
-  if (firstSpan && firstSpan.text.length > 0) {
-    const sameLineSpans = overlapping.filter(
-      (s) => Math.abs(s.y_ratio - firstSpan.y_ratio) < 0.025,
-    );
-    const lastSpan = sameLineSpans[sameLineSpans.length - 1] ?? firstSpan;
+  if (overlapping.length > 0) {
+    const lineGroups: PageTextSpan[][] = [];
+    for (const span of overlapping) {
+      const lastGroup = lineGroups[lineGroups.length - 1];
+      const refSpan = lastGroup?.[0];
+      if (
+        lastGroup &&
+        refSpan &&
+        Math.abs(span.y_ratio - refSpan.y_ratio) < 0.018
+      ) {
+        lastGroup.push(span);
+      } else {
+        lineGroups.push([span]);
+      }
+    }
 
-    const firstLen = Math.max(1, firstSpan.text.length);
-    const firstLocalStart = Math.max(0, matchStart - firstSpan.startOffset);
-    const leftEdge = Math.min(
-      0.96,
-      firstSpan.x_ratio + firstSpan.width_ratio * (firstLocalStart / firstLen),
-    );
+    return lineGroups.map((group) => {
+      const firstSpan = group[0]!;
+      const lastSpan = group[group.length - 1] ?? firstSpan;
 
-    const lastLen = Math.max(1, lastSpan.text.length);
-    const lastLocalEnd = Math.min(lastLen, matchEnd - lastSpan.startOffset);
-    const rightEdge = Math.min(
-      0.99,
-      lastSpan.x_ratio +
-        lastSpan.width_ratio * (Math.max(1, lastLocalEnd) / lastLen),
-    );
+      const firstLen = Math.max(1, firstSpan.text.length);
+      const firstLocalStart = Math.max(0, matchStart - firstSpan.startOffset);
+      const leftEdge = Math.min(
+        0.96,
+        firstSpan.x_ratio +
+          firstSpan.width_ratio * (firstLocalStart / firstLen),
+      );
 
-    const width_ratio = Math.min(
-      1 - leftEdge,
-      Math.max(0.018, rightEdge - leftEdge),
-    );
-    const height_ratio = Math.max(
-      firstSpan.height_ratio,
-      lastSpan.height_ratio,
-    );
-    return {
-      x_ratio: leftEdge,
-      y_ratio: Math.min(firstSpan.y_ratio, lastSpan.y_ratio),
-      width_ratio,
-      height_ratio,
-    };
+      const lastLen = Math.max(1, lastSpan.text.length);
+      const lastLocalEnd = Math.min(lastLen, matchEnd - lastSpan.startOffset);
+      const rightEdge = Math.min(
+        0.99,
+        lastSpan.x_ratio +
+          lastSpan.width_ratio * (Math.max(1, lastLocalEnd) / lastLen),
+      );
+
+      const width_ratio = Math.min(
+        1 - leftEdge,
+        Math.max(0.018, rightEdge - leftEdge),
+      );
+      const minY = Math.min(...group.map((s) => s.y_ratio));
+      const maxH = Math.max(...group.map((s) => s.height_ratio));
+      return {
+        x_ratio: leftEdge,
+        y_ratio: minY,
+        width_ratio,
+        height_ratio: maxH,
+      };
+    });
   }
 
   const totalLen = Math.max(1, layout.fullText.length);
   const ratioInPage = matchStart / totalLen;
-  return {
-    x_ratio: 0.08 + (ratioInPage % 0.25),
-    y_ratio: 0.14 + Math.min(0.74, ratioInPage * 0.68),
-    width_ratio: Math.min(0.35, Math.max(0.045, matchLength * 0.011)),
-    height_ratio: 0.024,
-  };
+  return [
+    {
+      x_ratio: 0.08 + (ratioInPage % 0.25),
+      y_ratio: 0.14 + Math.min(0.74, ratioInPage * 0.68),
+      width_ratio: Math.min(0.35, Math.max(0.045, matchLength * 0.011)),
+      height_ratio: 0.024,
+    },
+  ];
 }
 
 async function readFileToUint8Array(file: File): Promise<Uint8Array> {
@@ -1274,13 +1292,14 @@ class BrowserFallbackBridge {
         const end = Math.min(text.length, pos + matchLen + 42);
         const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
         const matchText = text.slice(pos, pos + matchLen);
-        const boundingBox = computeMatchBoundingBox(layout, pos, matchLen);
+        const boundingBoxes = computeMatchBoundingBoxes(layout, pos, matchLen);
         hits.push({
           page_index: idx,
           match_index: matchIdx,
           snippet,
           match_text: matchText,
-          bounding_box: boundingBox,
+          bounding_box: boundingBoxes[0],
+          bounding_boxes: boundingBoxes,
         });
         if (hits.length >= (request.max_hits || 100)) {
           return hits;
@@ -1324,10 +1343,12 @@ class BrowserFallbackBridge {
         currentIdx += 1;
         searchFrom = pos + Math.max(1, needle.length);
       }
+      const boxes = computeMatchBoundingBoxes(layout, foundPos, needle.length);
       enriched.push({
         ...hit,
         match_text: hit.match_text ?? q,
-        bounding_box: computeMatchBoundingBox(layout, foundPos, needle.length),
+        bounding_box: boxes[0],
+        bounding_boxes: boxes,
       });
     }
     return enriched;

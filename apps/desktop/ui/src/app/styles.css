@@ -983,15 +983,15 @@ body {
 .pdf-search-highlight-box {
   position: absolute;
   display: block;
-  background: rgba(243, 217, 107, 0.44);
-  border: 1px solid rgba(212, 160, 23, 0.65);
-  border-radius: 3px;
+  box-sizing: content-box;
+  padding: 4px;
+  transform: translate(-4px, -4px);
+  background: rgba(243, 217, 107, 0.42);
+  border: none;
+  border-radius: 4px;
   color: transparent;
   mix-blend-mode: multiply;
-  transition:
-    transform 140ms ease,
-    background-color 140ms ease,
-    box-shadow 140ms ease;
+  transition: background-color 140ms ease;
 }
 
 .theme-dark .pdf-search-highlight-box {
@@ -1000,9 +1000,9 @@ body {
 }
 
 .pdf-search-highlight-box.active {
-  background: rgba(240, 152, 72, 0.52);
-  border-color: #d96b1f;
-  box-shadow: 0 0 0 2px rgba(217, 107, 31, 0.35);
+  background: rgba(243, 198, 68, 0.62);
+  border: none;
+  box-shadow: none;
   z-index: 4;
 }
 

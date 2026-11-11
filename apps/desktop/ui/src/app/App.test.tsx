@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  computeMatchBoundingBoxes,
   findMatchesInPageText,
   normalizePdfGlyphText,
   readoraApi,
@@ -499,5 +500,44 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
         wrappedMatches[0]!.origEnd,
       ),
     ).toBe("perfor-\nmance");
+
+    // 4. Multi-word phrase wrapping across 2 lines emits 2 highlight boxes (1 per line)
+    const twoLineText = " End of first line memory\nbounded cache on second line";
+    const multiLineLayout = {
+      fullText: twoLineText,
+      spans: [
+        {
+          text: "End of first line memory",
+          startOffset: 1,
+          endOffset: 25,
+          x_ratio: 0.08,
+          y_ratio: 0.2,
+          width_ratio: 0.72,
+          height_ratio: 0.022,
+        },
+        {
+          text: "bounded cache on second line",
+          startOffset: 26,
+          endOffset: 54,
+          x_ratio: 0.08,
+          y_ratio: 0.24,
+          width_ratio: 0.78,
+          height_ratio: 0.022,
+        },
+      ],
+    };
+    const phraseMatch = findMatchesInPageText(
+      twoLineText,
+      "memory bounded cache",
+      false,
+    )[0]!;
+    const boxes = computeMatchBoundingBoxes(
+      multiLineLayout,
+      phraseMatch.origStart,
+      phraseMatch.origEnd - phraseMatch.origStart,
+    );
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0]!.y_ratio).toBeCloseTo(0.2, 3);
+    expect(boxes[1]!.y_ratio).toBeCloseTo(0.24, 3);
   });
 });

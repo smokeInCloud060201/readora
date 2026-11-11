@@ -127,6 +127,7 @@ export interface SearchHitDto {
   snippet: string;
   match_text?: string;
   bounding_box?: SearchBoundingBoxDto;
+  bounding_boxes?: SearchBoundingBoxDto[];
 }
 
 export interface RecentDocumentDto {
