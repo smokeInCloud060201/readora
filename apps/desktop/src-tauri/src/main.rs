@@ -175,6 +175,15 @@ fn perform_native_self_update(
                         .args(["--force", "--deep", "--sign", "-"])
                         .arg(&extracted_app)
                         .status();
+                    let verified_sig = Command::new("/usr/bin/codesign")
+                        .args(["--verify", "--deep", "--strict"])
+                        .arg(&extracted_app)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    if !verified_sig {
+                        return r#"{"status":"signature_verification_failed"}"#;
+                    }
 
                     let current_bundle = std::env::current_exe().ok().and_then(|exe| {
                         let contents_dir = exe.parent()?.parent()?;

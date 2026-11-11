@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   package:
@@ -70,6 +72,14 @@ jobs:
         env:
           ARTIFACT_LABEL: ${{ matrix.artifact_label }}
           MATRIX_PLATFORM: ${{ matrix.platform }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           test -f THIRD_PARTY_NOTICES.md
@@ -144,7 +154,17 @@ jobs:
           PLIST
 
             xattr -cr "dist-macos/Readora.app"
-            codesign --force --deep --sign - --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+            if [[ -n "${APPLE_CERTIFICATE:-}" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+              echo "${APPLE_CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/build_cert.p12"
+              security create-keychain -p "readora-ci" "${RUNNER_TEMP}/build.keychain"
+              security default-keychain -s "${RUNNER_TEMP}/build.keychain"
+              security unlock-keychain -p "readora-ci" "${RUNNER_TEMP}/build.keychain"
+              security import "${RUNNER_TEMP}/build_cert.p12" -k "${RUNNER_TEMP}/build.keychain" -P "${APPLE_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign
+              security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "readora-ci" "${RUNNER_TEMP}/build.keychain"
+              codesign --force --deep --options runtime --timestamp --sign "${APPLE_SIGNING_IDENTITY}" --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+            else
+              codesign --force --deep --sign - --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+            fi
             codesign --verify --deep --strict --verbose=2 "dist-macos/Readora.app"
 
             ln -s /Applications "dist-macos/Applications"
@@ -154,6 +174,11 @@ jobs:
 
             PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.dmg"
             hdiutil create -volname "Readora" -srcfolder dist-macos -ov -format UDZO "${PRIMARY_ASSET}"
+            if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+              codesign --force --sign "${APPLE_SIGNING_IDENTITY}" --timestamp "${PRIMARY_ASSET}"
+              xcrun notarytool submit "${PRIMARY_ASSET}" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+              xcrun stapler staple "${PRIMARY_ASSET}"
+            fi
             tar -czf "release-artifacts/Readora_${CLEAN_VERSION}_macos-aarch64.app.tar.gz" -C dist-macos Readora.app
 
           elif [[ "${MATRIX_PLATFORM}" == "ubuntu-latest" ]]; then
@@ -194,6 +219,10 @@ jobs:
           else
             WIN_STAGE="dist-windows/Readora"
             mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/installer"
+            if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
+              echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/win_cert.pfx"
+              signtool.exe sign /f "${RUNNER_TEMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe || true
+            fi
             cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
             cp target/release/readora-desktop.exe "release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64.exe"
             cp -R apps/desktop/ui/dist/* "${WIN_STAGE}/ui/"
@@ -224,6 +253,12 @@ jobs:
             "download_url": "https://github.com/${REPO_SLUG}/releases/download/${RAW_TAG}/${ASSET_BASENAME}"
           }
           EOF
+
+      - name: Attest Cryptographic Build Provenance (Free GitHub Sigstore SLSA)
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: "release-artifacts/*"
 
       - name: Upload Installer Artifacts to Workflow Run
         uses: actions/upload-artifact@v4
