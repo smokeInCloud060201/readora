@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
 import type { AppUpdateStatusDto } from "../../types/ipc";
@@ -57,6 +57,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
   onCheckAgain,
   onClose,
 }) => {
+  const [isInstalling, setIsInstalling] = useState(false);
   const targetVersion =
     updateStatus.latest_version ?? updateStatus.current_version;
   const isAvailable = updateStatus.update_available;
@@ -173,6 +174,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               <button
                 type="button"
                 className="focus-btn secondary"
+                disabled={isInstalling}
                 onClick={() => onDismiss(targetVersion)}
               >
                 Later
@@ -180,9 +182,15 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               <button
                 type="button"
                 className="focus-btn primary"
-                onClick={() => onConfirmInstall(targetVersion)}
+                disabled={isInstalling}
+                onClick={() => {
+                  setIsInstalling(true);
+                  onConfirmInstall(targetVersion);
+                }}
               >
-                Restart and install
+                {isInstalling
+                  ? "Downloading & installing…"
+                  : "Restart and install"}
               </button>
             </>
           ) : (

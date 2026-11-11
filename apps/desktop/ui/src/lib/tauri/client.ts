@@ -1761,6 +1761,7 @@ class BrowserFallbackBridge {
         `Target version ${trimmed} is not newer than installed version ${currentVersion}`,
       );
     }
+    const stagedDownloadUrl = this.stagedManifest?.download_url ?? null;
     this.settings.installed_version = trimmed;
     this.settings.dismissed_update_version = null;
     this.stagedManifest = null;
@@ -1772,7 +1773,7 @@ class BrowserFallbackBridge {
       release_notes: null,
       package_size_bytes: null,
       sha256_checksum: null,
-      download_url: null,
+      download_url: stagedDownloadUrl,
       github_repo: githubRepo,
       verified: true,
       staged_for_restart: true,
@@ -2184,6 +2185,46 @@ export const readoraApi = {
     if (invoke) {
       return invoke<AppUpdateStatusDto>("app_install_update", { version });
     }
+
+    const isJsdomTest =
+      typeof navigator !== "undefined" &&
+      /jsdom/i.test(navigator.userAgent ?? "");
+    if (!isJsdomTest && typeof fetch === "function") {
+      let handledByNativeBridge = false;
+      try {
+        const cleanVersion = version.trim().replace(/^[vV]/, "");
+        const repo = localStatus.github_repo || "smokeInCloud060201/readora";
+        const resp = await fetch(
+          `/__readora_update?version=${encodeURIComponent(cleanVersion)}&repo=${encodeURIComponent(repo)}`,
+          { method: "GET" },
+        );
+        if (resp.ok) {
+          const text = await resp.text();
+          if (text.trim().startsWith("{")) {
+            handledByNativeBridge = true;
+          }
+        }
+      } catch {
+        // Ignore when running outside native loopback server
+      }
+
+      if (
+        !handledByNativeBridge &&
+        localStatus.download_url &&
+        localStatus.download_url.startsWith("https://") &&
+        typeof document !== "undefined"
+      ) {
+        const link = document.createElement("a");
+        link.href = localStatus.download_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.setAttribute("download", "");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    }
+
     return localStatus;
   },
 

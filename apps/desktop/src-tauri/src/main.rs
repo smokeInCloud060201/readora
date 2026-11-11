@@ -6,12 +6,13 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use app_core::AppCore;
 use readora_desktop_lib::{DesktopCommandHandler, init_tracing};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
 
@@ -89,7 +90,185 @@ fn sanitize_relative_path(raw_target: &str) -> PathBuf {
     }
 }
 
-fn handle_http_connection(mut stream: TcpStream, ui_root: &Path) {
+fn extract_query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        let mut iter = pair.splitn(2, '=');
+        let k = iter.next().unwrap_or("");
+        let v = iter.next().unwrap_or("");
+        if k == key {
+            let decoded = v
+                .replace("%2F", "/")
+                .replace("%2f", "/")
+                .replace("%3A", ":")
+                .replace("%3a", ":");
+            return Some(decoded);
+        }
+    }
+    None
+}
+
+fn is_safe_semver(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 32
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+fn is_safe_github_repo(repo: &str) -> bool {
+    let parts: Vec<&str> = repo.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= 64
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        })
+}
+
+fn perform_native_self_update(
+    version: &str,
+    repo: &str,
+    proxy: &EventLoopProxy<DesktopUserEvent>,
+) -> &'static str {
+    if !is_safe_semver(version) || !is_safe_github_repo(repo) {
+        return r#"{"status":"invalid_parameters"}"#;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let tar_url = format!(
+            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_macos-aarch64.app.tar.gz"
+        );
+        let dmg_url = format!(
+            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_macos-aarch64.dmg"
+        );
+        let staging_dir = std::env::temp_dir().join(format!("readora-update-{version}"));
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        if std::fs::create_dir_all(&staging_dir).is_ok() {
+            let tar_path = staging_dir.join("Readora.app.tar.gz");
+            let curl_ok = Command::new("/usr/bin/curl")
+                .args(["-fSL", "--retry", "2", "-o"])
+                .arg(&tar_path)
+                .arg(&tar_url)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if curl_ok {
+                let untar_ok = Command::new("/usr/bin/tar")
+                    .args(["-xzf"])
+                    .arg(&tar_path)
+                    .arg("-C")
+                    .arg(&staging_dir)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+
+                let extracted_app = staging_dir.join("Readora.app");
+                if untar_ok && extracted_app.is_dir() {
+                    let _ = Command::new("/usr/bin/xattr")
+                        .args(["-cr"])
+                        .arg(&extracted_app)
+                        .status();
+                    let _ = Command::new("/usr/bin/codesign")
+                        .args(["--force", "--deep", "--sign", "-"])
+                        .arg(&extracted_app)
+                        .status();
+
+                    let current_bundle = std::env::current_exe().ok().and_then(|exe| {
+                        let contents_dir = exe.parent()?.parent()?;
+                        let app_dir = contents_dir.parent()?;
+                        if app_dir.extension().and_then(|e| e.to_str()) == Some("app")
+                            && !app_dir.to_string_lossy().starts_with("/Volumes/")
+                        {
+                            Some(app_dir.to_path_buf())
+                        } else {
+                            None
+                        }
+                    });
+                    let target_app =
+                        current_bundle.unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
+
+                    let _ = std::fs::remove_dir_all(&target_app);
+                    let moved = Command::new("/bin/mv")
+                        .arg(&extracted_app)
+                        .arg(&target_app)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+
+                    if moved {
+                        let target_str = target_app.to_string_lossy().into_owned();
+                        let _ = Command::new("/bin/sh")
+                            .args(["-c", &format!("sleep 0.6 && /usr/bin/open -n \"{target_str}\"")])
+                            .spawn();
+                        let _ = proxy.send_event(DesktopUserEvent::Quit);
+                        return r#"{"status":"restarting"}"#;
+                    }
+                }
+            }
+
+            // Fallback: download .dmg to Downloads and open it in Finder
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+            let dmg_dest = PathBuf::from(home)
+                .join("Downloads")
+                .join(format!("Readora_{version}_macos-aarch64.dmg"));
+            let dmg_ok = Command::new("/usr/bin/curl")
+                .args(["-fSL", "--retry", "2", "-o"])
+                .arg(&dmg_dest)
+                .arg(&dmg_url)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if dmg_ok {
+                let _ = Command::new("/usr/bin/open").arg(&dmg_dest).spawn();
+                return r#"{"status":"downloaded_installer"}"#;
+            }
+        }
+        let _ = Command::new("/usr/bin/open").arg(&dmg_url).spawn();
+        return r#"{"status":"opened_release"}"#;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let msi_url = format!(
+            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_windows-x86_64.msi"
+        );
+        let msi_dest = std::env::temp_dir().join(format!("Readora_{version}_windows-x86_64.msi"));
+        let curl_ok = Command::new("curl.exe")
+            .args(["-fSL", "--retry", "2", "-o"])
+            .arg(&msi_dest)
+            .arg(&msi_url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if curl_ok {
+            let _ = Command::new("msiexec.exe")
+                .arg("/i")
+                .arg(&msi_dest)
+                .spawn();
+            let _ = proxy.send_event(DesktopUserEvent::Quit);
+            return r#"{"status":"restarting"}"#;
+        }
+        let _ = Command::new("cmd").args(["/C", "start", "", &msi_url]).spawn();
+        return r#"{"status":"opened_release"}"#;
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = proxy;
+        let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
+        let _ = Command::new("xdg-open").arg(&release_url).spawn();
+        r#"{"status":"opened_release"}"#
+    }
+}
+
+fn handle_http_connection(
+    mut stream: TcpStream,
+    ui_root: &Path,
+    proxy: &EventLoopProxy<DesktopUserEvent>,
+) {
     let mut buffer = [0_u8; 4096];
     let bytes_read = match stream.read(&mut buffer) {
         Ok(n) if n > 0 => n,
@@ -99,6 +278,21 @@ fn handle_http_connection(mut stream: TcpStream, ui_root: &Path) {
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
     let request_line = request.lines().next().unwrap_or("GET / HTTP/1.1");
     let raw_target = request_line.split_whitespace().nth(1).unwrap_or("/");
+
+    if raw_target.starts_with("/__readora_update") {
+        let query = raw_target.splitn(2, '?').nth(1).unwrap_or("");
+        let version = extract_query_param(query, "version").unwrap_or_default();
+        let repo = extract_query_param(query, "repo")
+            .unwrap_or_else(|| "smokeInCloud060201/readora".to_owned());
+        let body = perform_native_self_update(&version, &repo, proxy);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(body.as_bytes());
+        return;
+    }
 
     let rel_path = sanitize_relative_path(raw_target);
     let full_path = ui_root.join(&rel_path);
@@ -180,17 +374,19 @@ fn main() {
     let url = format!("http://127.0.0.1:{}/", local_addr.port());
     tracing::info!("Serving Readora UI on {url}");
 
+    let event_loop = EventLoopBuilder::<DesktopUserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    let http_proxy = proxy.clone();
+
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let ui_dir = ui_root.clone();
+            let stream_proxy = http_proxy.clone();
             std::thread::spawn(move || {
-                handle_http_connection(stream, &ui_dir);
+                handle_http_connection(stream, &ui_dir, &stream_proxy);
             });
         }
     });
-
-    let event_loop = EventLoopBuilder::<DesktopUserEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
 
     let window = match WindowBuilder::new()
         .with_title("Readora — PDF Reader")
