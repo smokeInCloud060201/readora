@@ -84,6 +84,7 @@ interface PageTextSpan {
   y_ratio: number;
   width_ratio: number;
   height_ratio: number;
+  lineIndex?: number;
 }
 
 interface PageTextLayout {
@@ -259,6 +260,7 @@ function buildSyntheticPageLayout(pageText: string): PageTextLayout {
       y_ratio,
       width_ratio,
       height_ratio,
+      lineIndex: idx,
     });
   });
 
@@ -285,10 +287,30 @@ export function computeMatchBoundingBoxes(
     for (const span of overlapping) {
       const lastGroup = lineGroups[lineGroups.length - 1];
       const refSpan = lastGroup?.[0];
+      const prevSpan = lastGroup?.[lastGroup.length - 1];
+      const hasDifferentLineIndex =
+        span.lineIndex !== undefined &&
+        refSpan?.lineIndex !== undefined &&
+        span.lineIndex !== refSpan.lineIndex;
+      const yThreshold = refSpan
+        ? Math.max(
+            0.004,
+            Math.min(span.height_ratio, refSpan.height_ratio) * 0.35,
+          )
+        : 0.005;
+      const hasDifferentY = refSpan
+        ? Math.abs(span.y_ratio - refSpan.y_ratio) > yThreshold
+        : true;
+      const wrappedLeftToNewRow = prevSpan
+        ? span.x_ratio + 0.015 < prevSpan.x_ratio
+        : false;
+
       if (
         lastGroup &&
         refSpan &&
-        Math.abs(span.y_ratio - refSpan.y_ratio) < 0.018
+        !hasDifferentLineIndex &&
+        !hasDifferentY &&
+        !wrappedLeftToNewRow
       ) {
         lastGroup.push(span);
       } else {
@@ -1102,6 +1124,7 @@ class BrowserFallbackBridge {
           let lastY: number | null = null;
           let lastEndX: number | null = null;
           let lastFontH = 12;
+          let currentLineIndex = 0;
 
           for (const item of textContent.items) {
             if ("str" in item) {
@@ -1111,6 +1134,7 @@ class BrowserFallbackBridge {
                   parts.push("\n");
                   cursor += 1;
                   lastEndX = null;
+                  currentLineIndex += 1;
                 }
                 continue;
               }
@@ -1140,11 +1164,21 @@ class BrowserFallbackBridge {
                   ? Number(item.transform[5])
                   : null;
 
-              const lineThreshold = Math.max(4, Math.min(fontH, lastFontH) * 0.45);
-              if (
+              const lineThreshold = Math.max(
+                3,
+                Math.min(fontH, lastFontH) * 0.35,
+              );
+              const isVerticalLineBreak =
                 lastY !== null &&
                 ty !== null &&
-                Math.abs(ty - lastY) > lineThreshold &&
+                Math.abs(ty - lastY) > lineThreshold;
+              const isCarriageReturnWrap =
+                tx !== null &&
+                lastEndX !== null &&
+                tx < lastEndX - fontH * 1.4;
+
+              if (
+                (isVerticalLineBreak || isCarriageReturnWrap) &&
                 parts.length > 0
               ) {
                 const lastPart = parts[parts.length - 1] ?? "";
@@ -1153,6 +1187,7 @@ class BrowserFallbackBridge {
                   cursor += 1;
                 }
                 lastEndX = null;
+                currentLineIndex += 1;
               } else if (parts.length > 0) {
                 const lastPart = parts[parts.length - 1] ?? "";
                 const prevEndsWithSpace = /\s$/.test(lastPart);
@@ -1206,6 +1241,7 @@ class BrowserFallbackBridge {
                   y_ratio,
                   width_ratio,
                   height_ratio,
+                  lineIndex: currentLineIndex,
                 });
               }
 
@@ -1221,6 +1257,7 @@ class BrowserFallbackBridge {
                 parts.push("\n");
                 cursor += 1;
                 lastEndX = null;
+                currentLineIndex += 1;
               }
             }
           }

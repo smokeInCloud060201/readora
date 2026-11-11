@@ -501,7 +501,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       ),
     ).toBe("perfor-\nmance");
 
-    // 4. Multi-word phrase wrapping across 2 lines emits 2 highlight boxes (1 per line)
+    // 4. Multi-word phrase wrapping across 2 lines with realistic 12pt PDF line spacing (delta y_ratio = 0.015) emits 2 highlight boxes
     const twoLineText = " End of first line memory\nbounded cache on second line";
     const multiLineLayout = {
       fullText: twoLineText,
@@ -513,16 +513,18 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
           x_ratio: 0.08,
           y_ratio: 0.2,
           width_ratio: 0.72,
-          height_ratio: 0.022,
+          height_ratio: 0.016,
+          lineIndex: 0,
         },
         {
           text: "bounded cache on second line",
           startOffset: 26,
           endOffset: 54,
           x_ratio: 0.08,
-          y_ratio: 0.24,
+          y_ratio: 0.215,
           width_ratio: 0.78,
-          height_ratio: 0.022,
+          height_ratio: 0.016,
+          lineIndex: 1,
         },
       ],
     };
@@ -538,6 +540,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     );
     expect(boxes).toHaveLength(2);
     expect(boxes[0]!.y_ratio).toBeCloseTo(0.2, 3);
-    expect(boxes[1]!.y_ratio).toBeCloseTo(0.24, 3);
+    expect(boxes[0]!.x_ratio).toBeGreaterThan(0.5);
+    expect(boxes[1]!.y_ratio).toBeCloseTo(0.215, 3);
+    expect(boxes[1]!.x_ratio).toBeCloseTo(0.08, 3);
+    expect(boxes[1]!.width_ratio).toBeGreaterThan(0.3);
   });
 });
