@@ -603,7 +603,7 @@ export function parseGithubReleasePayload(
 }
 
 const DEFAULT_APP_VERSION: string =
-  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.5";
+  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.6";
 
 const LIBRARY_STATE_STORAGE_KEY = "readora.library.state.v1";
 const PDF_IDB_NAME = "readora_pdf_store_v1";

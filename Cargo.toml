@@ -16,7 +16,7 @@ members = [
 edition = "2024"
 license = "UNLICENSED"
 rust-version = "1.85"
-version = "1.0.5"
+version = "1.0.6"
 authors = ["Readora Contributors"]
 
 [workspace.dependencies]
