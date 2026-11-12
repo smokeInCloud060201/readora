@@ -275,20 +275,136 @@ fn perform_native_self_update(
     }
 }
 
+fn is_safe_doc_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+fn resolve_library_dir() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("READORA_DATA_DIR") {
+        let trimmed = override_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("library");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("com.readora.desktop")
+                .join("library");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("Readora").join("library");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            let trimmed = xdg.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("readora").join("library");
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("readora")
+                .join("library");
+        }
+    }
+
+    std::env::temp_dir().join("readora-data").join("library")
+}
+
+const MAX_HTTP_BODY_BYTES: usize = 128 * 1024 * 1024;
+
+fn read_http_request(stream: &mut TcpStream) -> Option<(String, String, Vec<u8>)> {
+    let mut header_buf = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            if header_buf.is_empty() {
+                return None;
+            }
+            break header_buf.len();
+        }
+        header_buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = header_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        if header_buf.len() >= 16_384 {
+            return None;
+        }
+    };
+
+    let header_str = String::from_utf8_lossy(&header_buf[..header_end]);
+    let mut lines = header_str.lines();
+    let request_line = lines.next().unwrap_or("GET / HTTP/1.1");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("GET").to_ascii_uppercase();
+    let raw_target = parts.next().unwrap_or("/").to_owned();
+
+    let mut content_length = 0_usize;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("content-length")
+            && let Ok(parsed) = v.trim().parse::<usize>()
+        {
+            content_length = parsed;
+        }
+    }
+
+    if content_length > MAX_HTTP_BODY_BYTES {
+        return None;
+    }
+
+    let mut body = Vec::with_capacity(content_length);
+    if header_buf.len() > header_end {
+        body.extend_from_slice(&header_buf[header_end..]);
+    }
+    while body.len() < content_length {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(content_length);
+
+    Some((method, raw_target, body))
+}
+
+fn write_json_response(stream: &mut TcpStream, status: &str, body: &[u8]) {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
 fn handle_http_connection(
     mut stream: TcpStream,
     ui_root: &Path,
     proxy: &EventLoopProxy<DesktopUserEvent>,
 ) {
-    let mut buffer = [0_u8; 4096];
-    let bytes_read = match stream.read(&mut buffer) {
-        Ok(n) if n > 0 => n,
-        _ => return,
+    let Some((method, raw_target, req_body)) = read_http_request(&mut stream) else {
+        return;
     };
-
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let request_line = request.lines().next().unwrap_or("GET / HTTP/1.1");
-    let raw_target = request_line.split_whitespace().nth(1).unwrap_or("/");
 
     if raw_target.starts_with("/__readora_update") {
         let query = raw_target.split_once('?').map_or("", |(_, q)| q);
@@ -296,16 +412,91 @@ fn handle_http_connection(
         let repo = extract_query_param(query, "repo")
             .unwrap_or_else(|| "smokeInCloud060201/readora".to_owned());
         let body = perform_native_self_update(&version, &repo, proxy);
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(header.as_bytes());
-        let _ = stream.write_all(body.as_bytes());
+        write_json_response(&mut stream, "200 OK", body.as_bytes());
         return;
     }
 
-    let rel_path = sanitize_relative_path(raw_target);
+    if raw_target.starts_with("/__readora_state") {
+        let lib_dir = resolve_library_dir();
+        let state_file = lib_dir.join("state.json");
+        match method.as_str() {
+            "GET" => {
+                if let Ok(bytes) = std::fs::read(&state_file) {
+                    write_json_response(&mut stream, "200 OK", &bytes);
+                } else {
+                    write_json_response(&mut stream, "200 OK", b"{}");
+                }
+            }
+            "POST" => {
+                if std::fs::create_dir_all(&lib_dir).is_ok() {
+                    let tmp_file = lib_dir.join("state.json.tmp");
+                    if std::fs::write(&tmp_file, &req_body).is_ok()
+                        && std::fs::rename(&tmp_file, &state_file).is_ok()
+                    {
+                        write_json_response(&mut stream, "200 OK", br#"{"ok":true}"#);
+                        return;
+                    }
+                }
+                write_json_response(&mut stream, "500 Internal Server Error", br#"{"ok":false}"#);
+            }
+            "DELETE" => {
+                let _ = std::fs::remove_dir_all(&lib_dir);
+                write_json_response(&mut stream, "200 OK", br#"{"ok":true}"#);
+            }
+            _ => {
+                write_json_response(&mut stream, "405 Method Not Allowed", br#"{"ok":false}"#);
+            }
+        }
+        return;
+    }
+
+    if raw_target.starts_with("/__readora_pdf") {
+        let query = raw_target.split_once('?').map_or("", |(_, q)| q);
+        let doc_id = extract_query_param(query, "id").unwrap_or_default();
+        if !is_safe_doc_id(&doc_id) {
+            write_json_response(&mut stream, "400 Bad Request", br#"{"ok":false}"#);
+            return;
+        }
+        let pdf_dir = resolve_library_dir().join("pdfs");
+        let pdf_file = pdf_dir.join(format!("{doc_id}.pdf"));
+        match method.as_str() {
+            "GET" => match std::fs::read(&pdf_file) {
+                Ok(bytes) => {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(&bytes);
+                }
+                Err(_) => {
+                    write_json_response(&mut stream, "404 Not Found", br#"{"ok":false}"#);
+                }
+            },
+            "POST" => {
+                if std::fs::create_dir_all(&pdf_dir).is_ok() {
+                    let tmp_file = pdf_dir.join(format!("{doc_id}.pdf.tmp"));
+                    if std::fs::write(&tmp_file, &req_body).is_ok()
+                        && std::fs::rename(&tmp_file, &pdf_file).is_ok()
+                    {
+                        write_json_response(&mut stream, "200 OK", br#"{"ok":true}"#);
+                        return;
+                    }
+                }
+                write_json_response(&mut stream, "500 Internal Server Error", br#"{"ok":false}"#);
+            }
+            "DELETE" => {
+                let _ = std::fs::remove_file(&pdf_file);
+                write_json_response(&mut stream, "200 OK", br#"{"ok":true}"#);
+            }
+            _ => {
+                write_json_response(&mut stream, "405 Method Not Allowed", br#"{"ok":false}"#);
+            }
+        }
+        return;
+    }
+
+    let rel_path = sanitize_relative_path(&raw_target);
     let full_path = ui_root.join(&rel_path);
     let resolved_path = if full_path.is_file() {
         full_path
@@ -373,7 +564,10 @@ fn main() {
         return;
     };
 
-    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+    let listener = (41937..=41946)
+        .find_map(|port| TcpListener::bind(("127.0.0.1", port)).ok())
+        .or_else(|| TcpListener::bind("127.0.0.1:0").ok());
+    let Some(listener) = listener else {
         tracing::error!("Failed to bind local loopback listener for Readora UI");
         std::process::exit(1);
     };

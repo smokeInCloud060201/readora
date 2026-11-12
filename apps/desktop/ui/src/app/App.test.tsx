@@ -545,4 +545,57 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(boxes[1]!.x_ratio).toBeCloseTo(0.08, 3);
     expect(boxes[1]!.width_ratio).toBeGreaterThan(0.3);
   });
+
+  it("persists imported PDFs, reading progress, bookmarks, and annotations in localStorage", async () => {
+    const session = await readoraApi.openDocument({
+      path: "/docs/Persisted-Research-Paper.pdf",
+      password: null,
+    });
+    await readoraApi.navigate(session.descriptor.id, {
+      kind: "go_to_page",
+      value: 2,
+    });
+    await readoraApi.upsertBookmark({
+      document_id: session.descriptor.id,
+      page_index: 2,
+      label: "Methodology Bookmark",
+    });
+    await readoraApi.upsertAnnotation({
+      document_id: session.descriptor.id,
+      page_index: 2,
+      kind: "highlight",
+      color_hex: "#fef08a",
+      quote_text: "Deterministic rendering pipeline",
+      note_text: "Key invariant",
+    });
+
+    const rawState = window.localStorage.getItem("readora.library.state.v1");
+    expect(rawState).toBeTruthy();
+    const parsed = JSON.parse(rawState!) as {
+      recents: Array<{
+        document_id: string;
+        display_name: string;
+        last_page: number;
+      }>;
+      bookmarks: Record<string, Array<{ label: string; page_index: number }>>;
+      annotations: Record<string, Array<{ note_text: string }>>;
+    };
+    expect(
+      parsed.recents.some(
+        (r) =>
+          r.document_id === session.descriptor.id &&
+          r.display_name === "Persisted-Research-Paper.pdf" &&
+          r.last_page === 2,
+      ),
+    ).toBe(true);
+    expect(parsed.bookmarks[session.descriptor.id]?.[0]?.label).toBe(
+      "Methodology Bookmark",
+    );
+    expect(parsed.annotations[session.descriptor.id]?.[0]?.note_text).toBe(
+      "Key invariant",
+    );
+
+    await readoraApi.cleanupApplicationData();
+    expect(window.localStorage.getItem("readora.library.state.v1")).toBeNull();
+  });
 });

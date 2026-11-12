@@ -605,14 +605,206 @@ export function parseGithubReleasePayload(
 const DEFAULT_APP_VERSION: string =
   (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.5";
 
+const LIBRARY_STATE_STORAGE_KEY = "readora.library.state.v1";
+const PDF_IDB_NAME = "readora_pdf_store_v1";
+const PDF_IDB_STORE = "pdfs";
+
+interface PersistedLibraryState {
+  recents?: RecentDocumentDto[];
+  bookmarks?: Record<string, BookmarkDto[]>;
+  annotations?: Record<string, AnnotationDto[]>;
+  settings?: Partial<AppSettingsDto>;
+}
+
+function isJsdomEnvironment(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    /jsdom/i.test(navigator.userAgent ?? "")
+  );
+}
+
+function openPdfIndexedDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === "undefined" || isJsdomEnvironment()) {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(PDF_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(PDF_IDB_STORE)) {
+          db.createObjectStore(PDF_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function savePdfBytesToIndexedDb(
+  docId: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const db = await openPdfIndexedDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(PDF_IDB_STORE, "readwrite");
+      tx.objectStore(PDF_IDB_STORE).put(bytes.slice(), docId);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    } catch {
+      db.close();
+      resolve();
+    }
+  });
+}
+
+async function loadPdfBytesFromIndexedDb(
+  docId: string,
+): Promise<Uint8Array | null> {
+  const db = await openPdfIndexedDb();
+  if (!db) return null;
+  return new Promise<Uint8Array | null>((resolve) => {
+    try {
+      const tx = db.transaction(PDF_IDB_STORE, "readonly");
+      const req = tx.objectStore(PDF_IDB_STORE).get(docId);
+      req.onsuccess = () => {
+        db.close();
+        const res = req.result;
+        if (res instanceof Uint8Array) {
+          resolve(res);
+        } else if (res instanceof ArrayBuffer) {
+          resolve(new Uint8Array(res));
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+    } catch {
+      db.close();
+      resolve(null);
+    }
+  });
+}
+
+async function deletePdfBytesFromIndexedDb(docId: string): Promise<void> {
+  const db = await openPdfIndexedDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(PDF_IDB_STORE, "readwrite");
+      tx.objectStore(PDF_IDB_STORE).delete(docId);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    } catch {
+      db.close();
+      resolve();
+    }
+  });
+}
+
+async function clearPdfIndexedDb(): Promise<void> {
+  const db = await openPdfIndexedDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(PDF_IDB_STORE, "readwrite");
+      tx.objectStore(PDF_IDB_STORE).clear();
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    } catch {
+      db.close();
+      resolve();
+    }
+  });
+}
+
+async function savePdfBytesToNativeServer(
+  docId: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  if (isJsdomEnvironment() || typeof fetch !== "function") return;
+  try {
+    const bodyBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    await fetch(`/__readora_pdf?id=${encodeURIComponent(docId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: bodyBuffer,
+    });
+  } catch {
+    // Ignore when running in standalone browser dev server
+  }
+}
+
+async function loadPdfBytesFromNativeServer(
+  docId: string,
+): Promise<Uint8Array | null> {
+  if (isJsdomEnvironment() || typeof fetch !== "function") return null;
+  try {
+    const resp = await fetch(`/__readora_pdf?id=${encodeURIComponent(docId)}`, {
+      method: "GET",
+    });
+    if (!resp.ok) return null;
+    const contentType = resp.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/pdf")) {
+      return null;
+    }
+    const buf = await resp.arrayBuffer();
+    return buf.byteLength > 0 ? new Uint8Array(buf) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function deletePdfBytesFromNativeServer(docId: string): Promise<void> {
+  if (isJsdomEnvironment() || typeof fetch !== "function") return;
+  try {
+    await fetch(`/__readora_pdf?id=${encodeURIComponent(docId)}`, {
+      method: "DELETE",
+    });
+  } catch {
+    // Ignore when running in standalone browser dev server
+  }
+}
+
 class BrowserFallbackBridge {
   private sessions = new Map<string, DocumentSessionDto>();
   private storedPdfsByDocId = new Map<string, StoredPdfRecord>();
   private storedPdfsByPath = new Map<string, StoredPdfRecord>();
   private renderCache = new Map<string, string>();
   private recents: RecentDocumentDto[] = [];
+  private bookmarks = new Map<string, BookmarkDto[]>();
   private annotations = new Map<string, AnnotationDto[]>();
   private stagedManifest: ReleaseManifestDto | null = null;
+  private hydratedFromNative = false;
   private settings: AppSettingsDto = {
     theme: "system",
     default_layout: "continuous",
@@ -628,6 +820,124 @@ class BrowserFallbackBridge {
   };
   private generation = 1;
   private searchGeneration = 1;
+
+  constructor() {
+    this.loadFromLocalStorage();
+  }
+
+  private applyPersistedState(parsed: PersistedLibraryState): void {
+    if (Array.isArray(parsed.recents)) {
+      this.recents = parsed.recents;
+    }
+    if (parsed.bookmarks && typeof parsed.bookmarks === "object") {
+      this.bookmarks = new Map(Object.entries(parsed.bookmarks));
+    }
+    if (parsed.annotations && typeof parsed.annotations === "object") {
+      this.annotations = new Map(Object.entries(parsed.annotations));
+    }
+    if (parsed.settings && typeof parsed.settings === "object") {
+      this.settings = {
+        ...this.settings,
+        ...parsed.settings,
+        installed_version: DEFAULT_APP_VERSION,
+      };
+    }
+  }
+
+  private loadFromLocalStorage(): void {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    try {
+      const raw = window.localStorage.getItem(LIBRARY_STATE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as PersistedLibraryState;
+      if (parsed && typeof parsed === "object") {
+        this.applyPersistedState(parsed);
+      }
+    } catch {
+      // Ignore malformed localStorage state
+    }
+  }
+
+  private serializeState(): string {
+    const payload: PersistedLibraryState = {
+      recents: this.recents,
+      bookmarks: Object.fromEntries(this.bookmarks.entries()),
+      annotations: Object.fromEntries(this.annotations.entries()),
+      settings: this.settings,
+    };
+    return JSON.stringify(payload);
+  }
+
+  private persistState(): void {
+    const json = this.serializeState();
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        window.localStorage.setItem(LIBRARY_STATE_STORAGE_KEY, json);
+      } catch {
+        // Ignore quota errors
+      }
+    }
+    if (!isJsdomEnvironment() && typeof fetch === "function") {
+      void fetch("/__readora_state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json,
+      }).catch(() => {});
+    }
+  }
+
+  async ensureHydrated(): Promise<void> {
+    if (this.recents.length === 0) {
+      this.loadFromLocalStorage();
+    }
+    if (
+      this.hydratedFromNative ||
+      isJsdomEnvironment() ||
+      typeof fetch !== "function"
+    ) {
+      return;
+    }
+    this.hydratedFromNative = true;
+    try {
+      const resp = await fetch("/__readora_state", { method: "GET" });
+      if (!resp.ok) return;
+      const text = await resp.text();
+      if (!text.trim().startsWith("{")) return;
+      const parsed = JSON.parse(text) as PersistedLibraryState;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        Array.isArray(parsed.recents) &&
+        parsed.recents.length > 0
+      ) {
+        if (this.recents.length === 0) {
+          this.applyPersistedState(parsed);
+          if (typeof window !== "undefined" && window.localStorage) {
+            window.localStorage.setItem(
+              LIBRARY_STATE_STORAGE_KEY,
+              this.serializeState(),
+            );
+          }
+        } else {
+          // Merge any native recents not already in memory
+          let changed = false;
+          for (const item of parsed.recents) {
+            if (!this.recents.some((r) => r.document_id === item.document_id)) {
+              this.recents.push(item);
+              changed = true;
+            }
+          }
+          if (changed) {
+            this.persistState();
+          }
+        }
+      } else if (this.recents.length > 0) {
+        this.persistState();
+      }
+    } catch {
+      // Ignore when running outside native loopback server
+    }
+  }
 
   async openDocumentFile(
     file: File,
@@ -671,7 +981,37 @@ class BrowserFallbackBridge {
     }
 
     const parts = cleanPath.split(/[/\\]/);
-    const fileName = parts[parts.length - 1] || "Document.pdf";
+    const recent = this.recents.find((r) => r.file_path === cleanPath);
+    const fileName =
+      recent?.display_name || parts[parts.length - 1] || "Document.pdf";
+    const docId =
+      recent?.document_id ||
+      `doc-${fileName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+
+    const byDocRecord = this.storedPdfsByDocId.get(docId);
+    if (byDocRecord && byDocRecord.bytes) {
+      return this.openFromBytesOrSynthetic(
+        cleanPath,
+        byDocRecord.fileName,
+        byDocRecord.fileSizeBytes,
+        byDocRecord.bytes,
+        request.password,
+      );
+    }
+
+    const persistedBytes =
+      (await loadPdfBytesFromIndexedDb(docId)) ??
+      (await loadPdfBytesFromNativeServer(docId));
+    if (persistedBytes && persistedBytes.byteLength > 0) {
+      return this.openFromBytesOrSynthetic(
+        cleanPath,
+        fileName,
+        persistedBytes.byteLength,
+        persistedBytes,
+        request.password,
+      );
+    }
+
     return this.openFromBytesOrSynthetic(
       cleanPath,
       fileName,
@@ -818,6 +1158,10 @@ class BrowserFallbackBridge {
     };
     this.storedPdfsByDocId.set(docId, record);
     this.storedPdfsByPath.set(cleanPath, record);
+    if (bytes && bytes.byteLength > 0) {
+      void savePdfBytesToIndexedDb(docId, bytes);
+      void savePdfBytesToNativeServer(docId, bytes);
+    }
     this.warmDocumentTextIndex(docId, pageCount);
 
     const initialPage = existingRecent
@@ -836,6 +1180,9 @@ class BrowserFallbackBridge {
     };
 
     const existingSession = this.sessions.get(docId);
+    const savedBookmarks =
+      this.bookmarks.get(docId) ??
+      (existingSession ? existingSession.bookmarks : []);
     const session: DocumentSessionDto = {
       descriptor: {
         id: docId,
@@ -846,9 +1193,10 @@ class BrowserFallbackBridge {
       },
       view_state: viewState,
       outline,
-      bookmarks: existingSession ? existingSession.bookmarks : [],
+      bookmarks: structuredClone(savedBookmarks),
     };
 
+    this.bookmarks.set(docId, structuredClone(session.bookmarks));
     this.sessions.set(docId, session);
     this.upsertRecent(cleanPath, session);
     return structuredClone(session);
@@ -955,6 +1303,7 @@ class BrowserFallbackBridge {
       recent.last_rotation = vs.rotation;
       recent.last_opened_unix_ms = Date.now();
     }
+    this.persistState();
     return structuredClone(vs);
   }
 
@@ -1421,14 +1770,30 @@ class BrowserFallbackBridge {
       session.bookmarks.push(bm);
       session.bookmarks.sort((a, b) => a.page_index - b.page_index);
     }
+    this.bookmarks.set(
+      command.document_id,
+      structuredClone(session.bookmarks),
+    );
+    this.persistState();
     return structuredClone(bm);
   }
 
   deleteBookmark(bookmarkId: string): boolean {
-    for (const session of this.sessions.values()) {
+    for (const [docId, session] of this.sessions.entries()) {
       const idx = session.bookmarks.findIndex((b) => b.id === bookmarkId);
       if (idx >= 0) {
         session.bookmarks.splice(idx, 1);
+        this.bookmarks.set(docId, structuredClone(session.bookmarks));
+        this.persistState();
+        return true;
+      }
+    }
+    for (const [docId, list] of this.bookmarks.entries()) {
+      const idx = list.findIndex((b) => b.id === bookmarkId);
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        this.bookmarks.set(docId, list);
+        this.persistState();
         return true;
       }
     }
@@ -1453,6 +1818,7 @@ class BrowserFallbackBridge {
     };
     const next = [...list, created].sort((a, b) => a.page_index - b.page_index);
     this.annotations.set(command.document_id, next);
+    this.persistState();
     return structuredClone(created);
   }
 
@@ -1462,6 +1828,7 @@ class BrowserFallbackBridge {
       if (idx >= 0) {
         list.splice(idx, 1);
         this.annotations.set(docId, list);
+        this.persistState();
         return true;
       }
     }
@@ -1479,6 +1846,7 @@ class BrowserFallbackBridge {
     const rec = this.recents.find((r) => r.document_id === documentId);
     if (!rec) return null;
     rec.is_favorite = isFavorite;
+    this.persistState();
     return structuredClone(rec);
   }
 
@@ -1489,19 +1857,38 @@ class BrowserFallbackBridge {
     const rec = this.recents.find((r) => r.document_id === documentId);
     if (!rec) return null;
     rec.is_archived = isArchived;
+    this.persistState();
     return structuredClone(rec);
   }
 
   deleteRecentDocument(documentId: string): void {
+    const existing = this.recents.find((r) => r.document_id === documentId);
+    if (existing) {
+      this.storedPdfsByPath.delete(existing.file_path);
+    }
     this.recents = this.recents.filter((r) => r.document_id !== documentId);
+    this.storedPdfsByDocId.delete(documentId);
+    this.bookmarks.delete(documentId);
+    this.annotations.delete(documentId);
+    void deletePdfBytesFromIndexedDb(documentId);
+    void deletePdfBytesFromNativeServer(documentId);
+    this.persistState();
   }
 
   hasSession(documentId: string): boolean {
-    return this.sessions.has(documentId) || this.storedPdfsByDocId.has(documentId);
+    return (
+      this.sessions.has(documentId) ||
+      this.storedPdfsByDocId.has(documentId) ||
+      this.recents.some((r) => r.document_id === documentId)
+    );
   }
 
   hasStoredPath(path: string): boolean {
-    return this.storedPdfsByPath.has(path.trim());
+    const trimmed = path.trim();
+    return (
+      this.storedPdfsByPath.has(trimmed) ||
+      this.recents.some((r) => r.file_path === trimmed)
+    );
   }
 
   closeDocument(documentId: string): void {
@@ -1541,6 +1928,7 @@ class BrowserFallbackBridge {
     ) {
       this.settings.github_release_repo = patch.github_release_repo.trim();
     }
+    this.persistState();
     return structuredClone(this.settings);
   }
 
@@ -1554,7 +1942,8 @@ class BrowserFallbackBridge {
     const fileName =
       session?.descriptor.file_name ?? recent?.display_name ?? "Document.pdf";
     const stem = fileName.replace(/\.pdf$/i, "");
-    const bookmarks = session?.bookmarks ?? [];
+    const bookmarks =
+      session?.bookmarks ?? this.bookmarks.get(documentId) ?? [];
     const annotations = includeAnnotations
       ? (this.annotations.get(documentId) ?? [])
       : [];
@@ -1608,6 +1997,7 @@ class BrowserFallbackBridge {
       entry,
       ...this.recents.filter((r) => r.document_id !== entry.document_id),
     ];
+    this.persistState();
   }
 
   private rotateCw(r: Rotation): Rotation {
@@ -1765,6 +2155,7 @@ class BrowserFallbackBridge {
     this.settings.installed_version = trimmed;
     this.settings.dismissed_update_version = null;
     this.stagedManifest = null;
+    this.persistState();
     return {
       current_version: trimmed,
       update_available: false,
@@ -1784,6 +2175,7 @@ class BrowserFallbackBridge {
   dismissUpdate(version: string): AppUpdateStatusDto {
     const trimmed = version.trim();
     this.settings.dismissed_update_version = trimmed || null;
+    this.persistState();
     return this.checkForUpdates(false);
   }
 
@@ -1796,6 +2188,7 @@ class BrowserFallbackBridge {
     this.storedPdfsByDocId.clear();
     this.storedPdfsByPath.clear();
     this.recents = [];
+    this.bookmarks.clear();
     this.annotations.clear();
     this.renderCache.clear();
     this.stagedManifest = null;
@@ -1812,6 +2205,19 @@ class BrowserFallbackBridge {
       installed_version: DEFAULT_APP_VERSION,
       dismissed_update_version: null,
     };
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.removeItem(LIBRARY_STATE_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    void clearPdfIndexedDb();
+    if (!isJsdomEnvironment() && typeof fetch === "function") {
+      void fetch("/__readora_state", { method: "DELETE" }).catch(() => {
+        // Ignore when native server is not running
+      });
+    }
     return {
       removed_database_files: 1,
       removed_cache_entries: removedCacheItems,
@@ -1837,6 +2243,7 @@ export const readoraApi = {
   async openDocument(
     request: OpenDocumentRequestDto,
   ): Promise<DocumentSessionDto> {
+    await fallbackBridge.ensureHydrated();
     if (fallbackBridge.hasStoredPath(request.path)) {
       return fallbackBridge.openDocument(request);
     }
@@ -1927,6 +2334,7 @@ export const readoraApi = {
   },
 
   async listRecentDocuments(limit = 20): Promise<RecentDocumentDto[]> {
+    await fallbackBridge.ensureHydrated();
     const localRecents = fallbackBridge.listRecents();
     const invoke = getNativeTauriInvoke();
     if (invoke) {
@@ -2079,6 +2487,7 @@ export const readoraApi = {
   },
 
   async getSettings(): Promise<AppSettingsDto> {
+    await fallbackBridge.ensureHydrated();
     const localSettings = fallbackBridge.getSettings();
     const invoke = getNativeTauriInvoke();
     if (invoke) {
