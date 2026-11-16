@@ -1,10 +1,13 @@
 //! Pure-Rust PDF parser and synthetic page renderer used when the native PDFium
 //! shared library (`libpdfium`) is not installed on the host machine.
 
+use std::io::Read as _;
+
 use app_domain::{
     DocumentMetadata, FormSupportStatus, OutlineNode, PageDimensions, PageIndex, Rotation,
     SearchHit, SignaturePresenceStatus,
 };
+use flate2::read::ZlibDecoder;
 use pdf_engine::{
     EngineDocumentInfo, OpenDocumentOptions, PageGeometry, PdfDocument, PdfEngineError,
     RenderPageRequest, RenderedPage,
@@ -58,12 +61,24 @@ impl FallbackPdfDocument {
             pdf_version
         };
 
-        let full_text = String::from_utf8_lossy(bytes);
-        if !full_text.contains("%%EOF") {
+        let raw_lossy = String::from_utf8_lossy(bytes);
+        if !raw_lossy.contains("%%EOF") {
             return Err(PdfEngineError::InvalidPdfFormat(
                 "missing %%EOF trailer marker (truncated PDF)".to_owned(),
             ));
         }
+
+        let decompressed_extra = decompress_flate_streams_bounded(bytes, 8 * 1024 * 1024);
+        let full_text = if decompressed_extra.is_empty() {
+            raw_lossy.into_owned()
+        } else {
+            let mut combined =
+                String::with_capacity(raw_lossy.len() + decompressed_extra.len() + 1);
+            combined.push_str(&raw_lossy);
+            combined.push('\n');
+            combined.push_str(&decompressed_extra);
+            combined
+        };
 
         let is_encrypted = full_text.contains("/Encrypt");
         if is_encrypted {
@@ -329,24 +344,107 @@ fn render_synthetic_page_rgba(
     buf
 }
 
+fn decompress_flate_streams_bounded(bytes: &[u8], max_total_out: usize) -> String {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    let stream_tag = b"stream";
+    let endstream_tag = b"endstream";
+
+    while cursor + stream_tag.len() < bytes.len() && out.len() < max_total_out {
+        let Some(rel_start) = bytes[cursor..]
+            .windows(stream_tag.len())
+            .position(|w| w == stream_tag)
+        else {
+            break;
+        };
+        let mut data_start = cursor + rel_start + stream_tag.len();
+        if bytes.get(data_start) == Some(&b'\r') {
+            data_start += 1;
+        }
+        if bytes.get(data_start) == Some(&b'\n') {
+            data_start += 1;
+        } else {
+            cursor = data_start;
+            continue;
+        }
+
+        let Some(rel_end) = bytes[data_start..]
+            .windows(endstream_tag.len())
+            .position(|w| w == endstream_tag)
+        else {
+            break;
+        };
+        let data_end = data_start + rel_end;
+        let compressed = &bytes[data_start..data_end];
+        let remaining_budget = max_total_out.saturating_sub(out.len());
+        if !compressed.is_empty() && remaining_budget > 0 {
+            let decoder = ZlibDecoder::new(compressed);
+            let mut chunk = Vec::new();
+            if decoder
+                .take(remaining_budget as u64)
+                .read_to_end(&mut chunk)
+                .is_ok()
+                && !chunk.is_empty()
+            {
+                out.push(b'\n');
+                out.extend_from_slice(&chunk);
+            }
+        }
+        cursor = data_end + endstream_tag.len();
+    }
+
+    if out.is_empty() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&out).into_owned()
+    }
+}
+
 fn parse_page_count(text: &str) -> u32 {
-    if let Some(pos) = text.find("/Count ") {
-        let tail = &text[pos + 7..];
-        let digits: String = tail
+    let mut max_count = 0u32;
+    let mut search_from = 0usize;
+    while let Some(rel) = text[search_from..].find("/Count") {
+        let after = &text[search_from + rel + 6..];
+        let trimmed = after.trim_start();
+        let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(parsed) = digits.parse::<u32>() {
+            max_count = max_count.max(parsed);
+        }
+        search_from += rel + 6;
+    }
+    if max_count > 0 {
+        return max_count;
+    }
+
+    let page_markers = text.matches("/Type /Page").count() + text.matches("/Type/Page").count();
+    let pages_markers = text.matches("/Type /Pages").count() + text.matches("/Type/Pages").count();
+    let count = page_markers.saturating_sub(pages_markers);
+    if count > 0 {
+        return u32::try_from(count).unwrap_or(0);
+    }
+
+    // Check linearized PDF header (`/Linearized ... /N <pages>`)
+    if text.contains("/Linearized")
+        && let Some(pos) = text.find("/N ")
+    {
+        let digits: String = text[pos + 3..]
             .trim_start()
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
-        if let Ok(count) = digits.parse::<u32>() {
-            if count > 0 {
-                return count;
-            }
+        if let Ok(n) = digits.parse::<u32>()
+            && n > 0
+        {
+            return n;
         }
     }
-    let page_markers = text.matches("/Type /Page").count();
-    let pages_markers = text.matches("/Type /Pages").count();
-    let count = page_markers.saturating_sub(pages_markers);
-    u32::try_from(count).unwrap_or(0)
+
+    // If compressed xref/object streams exist (`startxref` present without explicit `/Count 0`), default to 1
+    if !text.contains("/Count 0") && text.contains("startxref") {
+        return 1;
+    }
+
+    0
 }
 
 fn parse_media_box(text: &str) -> Option<PageDimensions> {
@@ -470,18 +568,36 @@ fn extract_outline_nodes(text: &str, page_count: u32) -> Vec<OutlineNode> {
     nodes
 }
 
-/// Inspects raw PDF dictionary markers for interactive forms (`/AcroForm`, `/XFA`)
-/// and digital signature fields (`/FT /Sig`, `/Type /Sig`).
+fn count_byte_subslice(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i + needle.len() <= haystack.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            count += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+/// Zero-allocation byte-level inspection of raw PDF dictionary markers for interactive
+/// forms (`/AcroForm`, `/XFA`) and digital signature fields (`/FT /Sig`, `/Type /Sig`).
 #[must_use]
-pub fn inspect_advanced_pdf_capabilities(
-    text: &str,
+pub fn inspect_advanced_pdf_capabilities_bytes(
+    bytes: &[u8],
 ) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
-    let has_xfa = text.contains("/XFA");
-    let has_acroform = text.contains("/AcroForm");
-    let tx_fields = text.matches("/FT /Tx").count()
-        + text.matches("/FT /Btn").count()
-        + text.matches("/FT /Ch").count();
-    let sig_fields = text.matches("/FT /Sig").count() + text.matches("/Type /Sig").count();
+    let has_xfa = count_byte_subslice(bytes, b"/XFA") > 0;
+    let has_acroform = count_byte_subslice(bytes, b"/AcroForm") > 0;
+    let tx_fields = count_byte_subslice(bytes, b"/FT /Tx")
+        + count_byte_subslice(bytes, b"/FT /Btn")
+        + count_byte_subslice(bytes, b"/FT /Ch");
+    let sig_fields =
+        count_byte_subslice(bytes, b"/FT /Sig") + count_byte_subslice(bytes, b"/Type /Sig");
 
     let form_field_count = u32::try_from(tx_fields).unwrap_or(0);
     let form_support = if has_xfa {
@@ -509,4 +625,13 @@ pub fn inspect_advanced_pdf_capabilities(
         signature_status,
         signature_field_count,
     )
+}
+
+/// Inspects raw PDF dictionary markers for interactive forms (`/AcroForm`, `/XFA`)
+/// and digital signature fields (`/FT /Sig`, `/Type /Sig`).
+#[must_use]
+pub fn inspect_advanced_pdf_capabilities(
+    text: &str,
+) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
+    inspect_advanced_pdf_capabilities_bytes(text.as_bytes())
 }

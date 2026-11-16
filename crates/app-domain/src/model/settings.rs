@@ -101,7 +101,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: ThemePreference::System,
-            default_layout: LayoutMode::SinglePage,
+            default_layout: LayoutMode::Continuous,
             default_fit_mode: FitMode::FitWidth,
             default_zoom: ZoomLevel::ONE_HUNDRED_PERCENT,
             render_cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,

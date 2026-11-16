@@ -4,64 +4,97 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use app_domain::{DocumentMetadata, OutlineNode, PageDimensions, PageIndex, Rotation, SearchHit};
+use bytes::Bytes;
 use pdf_engine::{
     EngineDocumentInfo, OpenDocumentOptions, PageGeometry, PdfDocument, PdfEngineError,
     RenderPageRequest, RenderedPage,
 };
 use pdfium_render::prelude::*;
 
-use crate::fallback_engine::inspect_advanced_pdf_capabilities;
+use crate::fallback_engine::inspect_advanced_pdf_capabilities_bytes;
 use crate::png_encoder::{apply_render_mode_rgba, encode_rgba_to_png};
 
-/// Attempts to locate and bind to a native PDFium shared library.
+fn try_bind_in_dir(dir: &Path) -> Option<Pdfium> {
+    if !dir.exists() {
+        return None;
+    }
+    let lib_path = if dir.is_dir() {
+        Pdfium::pdfium_platform_library_name_at_path(dir)
+    } else {
+        dir.to_path_buf()
+    };
+    Pdfium::bind_to_library(&lib_path).ok().map(Pdfium::new)
+}
+
+/// Attempts to locate and bind to a native PDFium shared library across environment overrides,
+/// application bundle resource directories, workspace assets, and system library paths.
+#[must_use]
 pub fn try_bind_pdfium(custom_dir: Option<&Path>) -> Option<Pdfium> {
     if let Ok(env_dir) = std::env::var("READORA_PDFIUM_PATH") {
         let trimmed = env_dir.trim();
-        if !trimmed.is_empty() {
-            let path = Path::new(trimmed);
-            let lib_path = if path.is_dir() {
-                Pdfium::pdfium_platform_library_name_at_path(path)
-            } else {
-                PathBuf::from(path)
-            };
-            if let Ok(bindings) = Pdfium::bind_to_library(&lib_path) {
-                return Some(Pdfium::new(bindings));
+        if !trimmed.is_empty()
+            && let Some(bound) = try_bind_in_dir(Path::new(trimmed))
+        {
+            return Some(bound);
+        }
+    }
+
+    if let Some(dir) = custom_dir
+        && let Some(bound) = try_bind_in_dir(dir)
+    {
+        return Some(bound);
+    }
+
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        let bundle_candidates = [
+            exe_dir.join("../Resources/pdfium"),
+            exe_dir.join("../Frameworks"),
+            exe_dir.join("pdfium"),
+            exe_dir.to_path_buf(),
+            exe_dir.join("../share/readora/pdfium"),
+            exe_dir.join("../lib/readora"),
+            PathBuf::from("/usr/share/readora/pdfium"),
+        ];
+        for candidate in bundle_candidates {
+            if let Some(bound) = try_bind_in_dir(&candidate) {
+                return Some(bound);
             }
         }
     }
 
-    if let Some(dir) = custom_dir {
-        let lib_path = Pdfium::pdfium_platform_library_name_at_path(dir);
-        if let Ok(bindings) = Pdfium::bind_to_library(&lib_path) {
-            return Some(Pdfium::new(bindings));
-        }
-    }
-
-    let default_assets = Path::new("assets/pdfium");
-    if default_assets.exists() {
-        let lib_path = Pdfium::pdfium_platform_library_name_at_path(default_assets);
-        if let Ok(bindings) = Pdfium::bind_to_library(&lib_path) {
-            return Some(Pdfium::new(bindings));
-        }
+    if let Some(bound) = try_bind_in_dir(Path::new("assets/pdfium")) {
+        return Some(bound);
     }
 
     Pdfium::bind_to_system_library().ok().map(Pdfium::new)
 }
 
-/// PDFium-backed document wrapper that serializes access to the underlying PDFium bindings
-/// and holds the raw document bytes for on-demand operations.
+/// PDFium-backed document wrapper that serializes PDFium calls, stores shared `Bytes`,
+/// and zeroizes any password buffer on drop.
 pub struct DynamicPdfiumDocument {
     info: EngineDocumentInfo,
-    pdf_bytes: Vec<u8>,
-    password: Option<String>,
+    pdf_bytes: Bytes,
+    password_utf8: Vec<u8>,
     library_dir: Option<PathBuf>,
     render_lock: Mutex<()>,
+}
+
+impl Drop for DynamicPdfiumDocument {
+    fn drop(&mut self) {
+        for byte in &mut self.password_utf8 {
+            *byte = 0;
+        }
+        std::hint::black_box(&mut self.password_utf8);
+        self.password_utf8.clear();
+    }
 }
 
 impl DynamicPdfiumDocument {
     /// Opens and validates a PDF byte buffer using the dynamically loaded PDFium library.
     pub fn open(
-        bytes: Vec<u8>,
+        bytes: Bytes,
         options: &OpenDocumentOptions,
         library_dir: Option<PathBuf>,
     ) -> Result<Self, PdfEngineError> {
@@ -89,9 +122,8 @@ impl DynamicPdfiumDocument {
                 ));
             }
 
-            let raw_text = String::from_utf8_lossy(&bytes);
             let (form_support, form_field_count, signature_status, signature_field_count) =
-                inspect_advanced_pdf_capabilities(&raw_text);
+                inspect_advanced_pdf_capabilities_bytes(&bytes);
 
             let version_str = format!("{:?}", doc.version());
             let metadata = DocumentMetadata {
@@ -121,13 +153,18 @@ impl DynamicPdfiumDocument {
             (page_count, metadata)
         };
 
+        let password_utf8 = options
+            .password
+            .as_deref()
+            .map_or_else(Vec::new, |pw| pw.as_bytes().to_vec());
+
         Ok(Self {
             info: EngineDocumentInfo {
                 page_count,
                 metadata,
             },
             pdf_bytes: bytes,
-            password: options.password.clone(),
+            password_utf8,
             library_dir,
             render_lock: Mutex::new(()),
         })
@@ -137,6 +174,14 @@ impl DynamicPdfiumDocument {
         try_bind_pdfium(self.library_dir.as_deref()).ok_or_else(|| {
             PdfEngineError::EngineUnavailable("native PDFium library became unavailable".to_owned())
         })
+    }
+
+    fn password_str(&self) -> Option<&str> {
+        if self.password_utf8.is_empty() {
+            None
+        } else {
+            std::str::from_utf8(&self.password_utf8).ok()
+        }
     }
 }
 
@@ -151,9 +196,10 @@ impl PdfDocument for DynamicPdfiumDocument {
             .lock()
             .map_err(|_| PdfEngineError::Internal("PDFium lock poisoned".to_owned()))?;
         let pdfium = self.bind()?;
+        let pw = self.password_str();
         let doc = pdfium
-            .load_pdf_from_byte_slice(&self.pdf_bytes, self.password.as_deref())
-            .map_err(|e| map_pdfium_error(e, self.password.is_some()))?;
+            .load_pdf_from_byte_slice(&self.pdf_bytes, pw)
+            .map_err(|e| map_pdfium_error(e, pw.is_some()))?;
 
         let idx_u16 = u16::try_from(page_index.zero_based()).map_err(|_| {
             PdfEngineError::PageOutOfBounds {
@@ -169,9 +215,7 @@ impl PdfDocument for DynamicPdfiumDocument {
                 page_count: self.info.page_count,
             })?;
 
-        let width_pt = page.width().value;
-        let height_pt = page.height().value;
-        let dimensions = PageDimensions::new(width_pt, height_pt)
+        let dimensions = PageDimensions::new(page.width().value, page.height().value)
             .map_err(|e| PdfEngineError::InvalidPdfFormat(e.to_string()))?;
 
         let intrinsic_rotation = match page.rotation() {
@@ -194,9 +238,10 @@ impl PdfDocument for DynamicPdfiumDocument {
             .lock()
             .map_err(|_| PdfEngineError::Internal("PDFium lock poisoned".to_owned()))?;
         let pdfium = self.bind()?;
+        let pw = self.password_str();
         let doc = pdfium
-            .load_pdf_from_byte_slice(&self.pdf_bytes, self.password.as_deref())
-            .map_err(|e| map_pdfium_error(e, self.password.is_some()))?;
+            .load_pdf_from_byte_slice(&self.pdf_bytes, pw)
+            .map_err(|e| map_pdfium_error(e, pw.is_some()))?;
 
         let mut nodes = Vec::new();
         for bookmark in doc.bookmarks().iter() {
@@ -221,9 +266,10 @@ impl PdfDocument for DynamicPdfiumDocument {
             .lock()
             .map_err(|_| PdfEngineError::Internal("PDFium lock poisoned".to_owned()))?;
         let pdfium = self.bind()?;
+        let pw = self.password_str();
         let doc = pdfium
-            .load_pdf_from_byte_slice(&self.pdf_bytes, self.password.as_deref())
-            .map_err(|e| map_pdfium_error(e, self.password.is_some()))?;
+            .load_pdf_from_byte_slice(&self.pdf_bytes, pw)
+            .map_err(|e| map_pdfium_error(e, pw.is_some()))?;
 
         let idx_u16 = u16::try_from(page_index.zero_based()).map_err(|_| {
             PdfEngineError::PageOutOfBounds {
@@ -260,10 +306,29 @@ impl PdfDocument for DynamicPdfiumDocument {
             trimmed.to_lowercase()
         };
 
+        let _guard = self
+            .render_lock
+            .lock()
+            .map_err(|_| PdfEngineError::Internal("PDFium lock poisoned".to_owned()))?;
+        let pdfium = self.bind()?;
+        let pw = self.password_str();
+        let doc = pdfium
+            .load_pdf_from_byte_slice(&self.pdf_bytes, pw)
+            .map_err(|e| map_pdfium_error(e, pw.is_some()))?;
+
         let mut hits = Vec::new();
         for idx in 0..self.info.page_count {
+            let Ok(idx_u16) = u16::try_from(idx) else {
+                break;
+            };
+            let Ok(page) = doc.pages().get(idx_u16) else {
+                continue;
+            };
+            let Ok(text_obj) = page.text() else {
+                continue;
+            };
+            let page_text = text_obj.all();
             let page_idx = PageIndex::new(idx);
-            let page_text = self.extract_page_text(page_idx)?;
             let haystack = if case_sensitive {
                 page_text.clone()
             } else {
@@ -274,8 +339,8 @@ impl PdfDocument for DynamicPdfiumDocument {
             let mut match_index = 0u32;
             while let Some(rel) = haystack[search_from..].find(&needle) {
                 let abs = search_from + rel;
-                let start = abs.saturating_sub(24);
-                let end = (abs + needle.len() + 36).min(page_text.len());
+                let start = clamp_floor_char_boundary(&page_text, abs.saturating_sub(24));
+                let end = clamp_ceil_char_boundary(&page_text, abs + needle.len() + 36);
                 let snippet = page_text
                     .get(start..end)
                     .unwrap_or(page_text.as_str())
@@ -297,29 +362,15 @@ impl PdfDocument for DynamicPdfiumDocument {
     }
 
     fn render_page(&self, request: &RenderPageRequest) -> Result<RenderedPage, PdfEngineError> {
-        let geometry = self.page_geometry(request.page_index)?;
-        let effective_rotation = geometry.intrinsic_rotation.combine(request.rotation);
-        let (width_px, height_px) = geometry
-            .dimensions
-            .target_pixel_size(
-                request.scale,
-                effective_rotation,
-                request.max_pixel_dimension,
-            )
-            .map_err(|_| PdfEngineError::RenderDimensionsExceedLimit {
-                width_px: (geometry.dimensions.width_pt() * request.scale) as u32,
-                height_px: (geometry.dimensions.height_pt() * request.scale) as u32,
-                max_px: request.max_pixel_dimension,
-            })?;
-
         let _guard = self
             .render_lock
             .lock()
             .map_err(|_| PdfEngineError::Internal("PDFium lock poisoned".to_owned()))?;
         let pdfium = self.bind()?;
+        let pw = self.password_str();
         let doc = pdfium
-            .load_pdf_from_byte_slice(&self.pdf_bytes, self.password.as_deref())
-            .map_err(|e| map_pdfium_error(e, self.password.is_some()))?;
+            .load_pdf_from_byte_slice(&self.pdf_bytes, pw)
+            .map_err(|e| map_pdfium_error(e, pw.is_some()))?;
 
         let idx_u16 = u16::try_from(request.page_index.zero_based()).map_err(|_| {
             PdfEngineError::PageOutOfBounds {
@@ -333,6 +384,27 @@ impl PdfDocument for DynamicPdfiumDocument {
             .map_err(|_| PdfEngineError::PageOutOfBounds {
                 page_index: request.page_index.zero_based(),
                 page_count: self.info.page_count,
+            })?;
+
+        let dimensions = PageDimensions::new(page.width().value, page.height().value)
+            .map_err(|e| PdfEngineError::InvalidPdfFormat(e.to_string()))?;
+        let intrinsic_rotation = match page.rotation() {
+            Ok(PdfPageRenderRotation::Degrees90) => Rotation::Deg90,
+            Ok(PdfPageRenderRotation::Degrees180) => Rotation::Deg180,
+            Ok(PdfPageRenderRotation::Degrees270) => Rotation::Deg270,
+            _ => Rotation::Deg0,
+        };
+        let effective_rotation = intrinsic_rotation.combine(request.rotation);
+        let (width_px, height_px) = dimensions
+            .target_pixel_size(
+                request.scale,
+                effective_rotation,
+                request.max_pixel_dimension,
+            )
+            .map_err(|_| PdfEngineError::RenderDimensionsExceedLimit {
+                width_px: (dimensions.width_pt() * request.scale) as u32,
+                height_px: (dimensions.height_pt() * request.scale) as u32,
+                max_px: request.max_pixel_dimension,
             })?;
 
         let pdfium_rotation = match request.rotation {
@@ -362,6 +434,22 @@ impl PdfDocument for DynamicPdfiumDocument {
             png_bytes,
         })
     }
+}
+
+fn clamp_floor_char_boundary(s: &str, index: usize) -> usize {
+    let mut i = index.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn clamp_ceil_char_boundary(s: &str, index: usize) -> usize {
+    let mut i = index.min(s.len());
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 fn map_pdfium_error(err: PdfiumError, had_password: bool) -> PdfEngineError {

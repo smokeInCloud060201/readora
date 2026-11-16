@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use bytes::Bytes;
 use pdf_engine::{OpenDocumentOptions, PdfDocument, PdfEngine, PdfEngineError, PdfEngineKind};
 
 pub mod fallback_engine;
@@ -75,7 +76,20 @@ impl PdfEngine for PdfiumEngineAdapter {
         }
         let bytes = fs::read(path)
             .map_err(|_| PdfEngineError::IoError("failed to read PDF file bytes".to_owned()))?;
-        self.open_bytes(&bytes, options)
+        let shared = Bytes::from(bytes);
+        if self.has_native_pdfium() {
+            let doc = DynamicPdfiumDocument::open(shared, options, self.library_dir.clone())?;
+            return Ok(Box::new(doc));
+        }
+
+        if !self.allow_fallback {
+            return Err(PdfEngineError::EngineUnavailable(
+                "native PDFium library not found and fallback is disabled".to_owned(),
+            ));
+        }
+
+        let fallback = FallbackPdfDocument::from_bytes(&shared, options)?;
+        Ok(Box::new(fallback))
     }
 
     fn open_bytes(
@@ -84,8 +98,11 @@ impl PdfEngine for PdfiumEngineAdapter {
         options: &OpenDocumentOptions,
     ) -> Result<Box<dyn PdfDocument>, PdfEngineError> {
         if self.has_native_pdfium() {
-            let doc =
-                DynamicPdfiumDocument::open(bytes.to_vec(), options, self.library_dir.clone())?;
+            let doc = DynamicPdfiumDocument::open(
+                Bytes::copy_from_slice(bytes),
+                options,
+                self.library_dir.clone(),
+            )?;
             return Ok(Box::new(doc));
         }
 

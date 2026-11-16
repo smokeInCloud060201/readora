@@ -252,7 +252,7 @@ impl NativePlatformAdapter {
                 }
             }
 
-            // 3. Clean dedicated `cache` and `updates` subdirectories inside data_dir if present
+            // 3. Clean dedicated `cache`, `updates`, and internal `library` staging subdirectories inside data_dir if present
             for subdir in ["cache", "updates"] {
                 let nested_dir = data_dir.join(subdir);
                 if nested_dir.is_dir() {
@@ -260,6 +260,12 @@ impl NativePlatformAdapter {
                         Self::clean_known_cache_files_in_dir(&nested_dir);
                     let _ = fs::remove_dir(&nested_dir);
                 }
+            }
+
+            let library_dir = data_dir.join("library");
+            if library_dir.is_dir() {
+                report.removed_cache_entries += Self::clean_internal_library_dir(&library_dir);
+                let _ = fs::remove_dir(&library_dir);
             }
 
             // Remove data_dir only if completely empty (never deletes unrelated files)
@@ -300,6 +306,76 @@ impl NativePlatformAdapter {
         let data_dir = Self::resolve_app_data_dir();
         let cache_dir = Self::resolve_app_cache_dir();
         Self::cleanup_all_app_artifacts(&data_dir, &cache_dir)
+    }
+
+    fn clean_internal_library_dir(library_dir: &Path) -> usize {
+        let mut removed = 0;
+        let Ok(entries) = fs::read_dir(library_dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let is_known_lib_file =
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| {
+                            name == "state.json"
+                                || name.starts_with("state.json.tmp")
+                                || (name.starts_with('.') && name.contains(".tmp-"))
+                        });
+                if is_known_lib_file && fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            } else if path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name == "pdfs")
+            {
+                if let Ok(pdf_entries) = fs::read_dir(&path) {
+                    for pdf_entry in pdf_entries.flatten() {
+                        let pdf_path = pdf_entry.path();
+                        if pdf_path.is_dir() {
+                            if let Ok(sub_entries) = fs::read_dir(&pdf_path) {
+                                for sub_entry in sub_entries.flatten() {
+                                    let sub_path = sub_entry.path();
+                                    let is_staged_sub_pdf = sub_path.is_file()
+                                        && sub_path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .is_some_and(|name| {
+                                                name.ends_with(".pdf")
+                                                    || name.ends_with(".pdf.tmp")
+                                                    || (name.starts_with('.')
+                                                        && name.contains(".tmp-"))
+                                            });
+                                    if is_staged_sub_pdf && fs::remove_file(&sub_path).is_ok() {
+                                        removed += 1;
+                                    }
+                                }
+                            }
+                            let _ = fs::remove_dir(&pdf_path);
+                            continue;
+                        }
+                        let is_staged_pdf = pdf_path.is_file()
+                            && pdf_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|name| {
+                                    name.ends_with(".pdf")
+                                        || name.ends_with(".pdf.tmp")
+                                        || (name.starts_with('.') && name.contains(".tmp-"))
+                                });
+                        if is_staged_pdf && fs::remove_file(&pdf_path).is_ok() {
+                            removed += 1;
+                        }
+                    }
+                }
+                let _ = fs::remove_dir(&path);
+            }
+        }
+        removed
     }
 
     fn clean_known_cache_files_in_dir(dir: &Path) -> usize {
@@ -423,11 +499,62 @@ impl NativePlatformAdapter {
         Ok(false)
     }
 
+    /// Returns `true` when `raw` is a syntactically valid 64-character hexadecimal SHA-256 digest.
+    #[must_use]
+    pub fn is_hex_sha256(raw: &str) -> bool {
+        let trimmed = raw.trim().trim_start_matches("sha256:");
+        trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    /// Computes the SHA-256 digest of `bytes` and compares it in constant time against `expected_hex`.
+    #[must_use]
+    pub fn verify_sha256_bytes(bytes: &[u8], expected_hex: &str) -> bool {
+        let cleaned = expected_hex.trim().trim_start_matches("sha256:");
+        if !Self::is_hex_sha256(cleaned) {
+            return false;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        let a = actual.as_bytes();
+        let b = cleaned.to_ascii_lowercase();
+        let b = b.as_bytes();
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut diff = 0_u8;
+        for (x, y) in a.iter().zip(b.iter()) {
+            diff |= x ^ y;
+        }
+        diff == 0
+    }
+
+    /// Reads `file_path` and verifies its SHA-256 digest against `expected_hex`.
+    pub fn verify_sha256_file(
+        file_path: &Path,
+        expected_hex: &str,
+    ) -> Result<bool, ApplicationError> {
+        let bytes = fs::read(file_path).map_err(|e| {
+            ApplicationError::Platform(format!("failed to read file for SHA-256 check: {e}"))
+        })?;
+        Ok(Self::verify_sha256_bytes(&bytes, expected_hex))
+    }
+
     /// Parses a GitHub Releases `/repos/{owner}/{repo}/releases/latest` JSON payload into a
     /// validated `ReleaseManifestDto`, selecting the best matching installer asset for `target_os`.
     pub fn parse_github_release_json(
         raw_json: &str,
         target_os: &str,
+    ) -> Result<ReleaseManifestDto, ApplicationError> {
+        Self::parse_github_release_json_for_target(raw_json, target_os, std::env::consts::ARCH)
+    }
+
+    /// Parses a GitHub Releases `/repos/{owner}/{repo}/releases/latest` JSON payload into a
+    /// validated `ReleaseManifestDto`, preferring assets matching both `target_os` and `target_arch`.
+    pub fn parse_github_release_json_for_target(
+        raw_json: &str,
+        target_os: &str,
+        target_arch: &str,
     ) -> Result<ReleaseManifestDto, ApplicationError> {
         let value: serde_json::Value = serde_json::from_str(raw_json).map_err(|e| {
             ApplicationError::Platform(format!("invalid GitHub release JSON response: {e}"))
@@ -483,6 +610,13 @@ impl NativePlatformAdapter {
             _ => &[".dmg", ".msi", ".appimage"],
         };
 
+        let arch_tokens: &[&str] = match target_arch {
+            "aarch64" | "arm64" => &["aarch64", "arm64", "universal"],
+            "x86_64" | "x64" | "amd64" => &["x86_64", "x64", "amd64", "win64", "universal"],
+            _ => &[],
+        };
+
+        let mut best_score: u8 = 0;
         let mut selected_size: u64 = 0;
         let mut selected_url: Option<String> = None;
         let mut selected_sha256: Option<String> = None;
@@ -508,7 +642,19 @@ impl NativePlatformAdapter {
                     .map(|d| d.trim_start_matches("sha256:").to_owned());
 
                 let matches_os = os_extensions.iter().any(|ext| asset_name.contains(ext));
-                if matches_os || selected_size == 0 {
+                let matches_arch = arch_tokens.is_empty()
+                    || arch_tokens.iter().any(|tok| asset_name.contains(tok));
+                let is_preferred_updater_bundle =
+                    target_os == "macos" && asset_name.ends_with(".app.tar.gz");
+                let score: u8 = match (matches_os, matches_arch, is_preferred_updater_bundle) {
+                    (true, true, true) => 4,
+                    (true, true, false) => 3,
+                    (true, false, _) => 2,
+                    (false, _, _) => 1,
+                };
+
+                if score > best_score {
+                    best_score = score;
                     if asset_size > 0 {
                         selected_size = asset_size;
                     }
@@ -518,7 +664,7 @@ impl NativePlatformAdapter {
                     if asset_digest.as_ref().is_some_and(|d| !d.is_empty()) {
                         selected_sha256 = asset_digest;
                     }
-                    if matches_os {
+                    if score == 4 {
                         break;
                     }
                 }
@@ -531,14 +677,7 @@ impl NativePlatformAdapter {
             42 * 1024 * 1024
         };
         let download_url = selected_url.or(html_url);
-        let sha256 = selected_sha256.unwrap_or_else(|| {
-            let mut hasher = Sha256::new();
-            hasher.update(raw_tag.as_bytes());
-            if let Some(url) = &download_url {
-                hasher.update(url.as_bytes());
-            }
-            format!("{:x}", hasher.finalize())
-        });
+        let sha256 = selected_sha256.unwrap_or_else(|| format!("github-tag-{version}"));
 
         Ok(ReleaseManifestDto {
             version,
@@ -817,5 +956,38 @@ mod tests {
                 "https://github.com/smokeInCloud060201/readora/releases/download/v1.2.0/Readora_1.2.0_aarch64.dmg"
             )
         );
+    }
+
+    #[test]
+    fn platform_uninstall_cleanup_removes_internal_library_staging_dir_and_verifies_sha256() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("com.readora.desktop");
+        let cache_dir = dir.path().join("readora-cache");
+        let adapter = NativePlatformAdapter::new();
+
+        let state_file = data_dir.join("library").join("state.json");
+        let staged_pdf = data_dir.join("library").join("pdfs").join("doc-abc.pdf");
+        adapter
+            .atomic_write_file(&state_file.to_string_lossy(), br#"{"recents":[]}"#)
+            .unwrap();
+        adapter
+            .atomic_write_file(&staged_pdf.to_string_lossy(), b"%PDF-1.7\n%%EOF")
+            .unwrap();
+
+        let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert!(NativePlatformAdapter::verify_sha256_bytes(
+            b"",
+            empty_sha256
+        ));
+        assert!(!NativePlatformAdapter::verify_sha256_bytes(
+            b"tampered",
+            empty_sha256
+        ));
+
+        let report =
+            NativePlatformAdapter::cleanup_all_app_artifacts(&data_dir, &cache_dir).unwrap();
+        assert_eq!(report.removed_cache_entries, 2);
+        assert!(report.data_dir_removed);
+        assert!(!data_dir.exists());
     }
 }

@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
@@ -26,11 +26,13 @@ use app_application::{
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
     OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState, compare_semver,
+    sanitize_display_name,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
-use pdf_engine::{PdfDocument, PdfEngine, PdfEngineKind};
+use pdf_engine::{OpenDocumentOptions, PdfDocument, PdfEngine, PdfEngineKind};
 use pdfium_adapter::{PdfiumEngineAdapter, build_synthetic_pdf_bytes};
 use platform::NativePlatformAdapter;
+use sha2::{Digest, Sha256};
 use storage::SqliteStorage;
 
 struct ActiveDocumentEntry {
@@ -49,6 +51,7 @@ pub struct AppCore {
     render_cache: Arc<MemoryRenderCache>,
     cancellation: Arc<GenerationCancellationRegistry>,
     sessions: RwLock<HashMap<DocumentId, Arc<ActiveDocumentEntry>>>,
+    library_pdfs_dir: PathBuf,
 }
 
 impl AppCore {
@@ -57,16 +60,23 @@ impl AppCore {
         let data_dir = NativePlatformAdapter::resolve_app_data_dir();
         let db_path = data_dir.join("readora.sqlite");
         let storage = Arc::new(SqliteStorage::open(&db_path)?);
-        Self::with_storage(storage)
+        let library_pdfs_dir = data_dir.join("library").join("pdfs");
+        Self::with_storage_and_library_dir(storage, library_pdfs_dir)
     }
 
     /// Initializes `AppCore` with an in-memory SQLite database for isolated tests.
     pub fn new_in_memory() -> Result<Self, ApplicationError> {
         let storage = Arc::new(SqliteStorage::open_in_memory()?);
-        Self::with_storage(storage)
+        let library_pdfs_dir = std::env::temp_dir()
+            .join("readora-samples")
+            .join("imported");
+        Self::with_storage_and_library_dir(storage, library_pdfs_dir)
     }
 
-    fn with_storage(storage: Arc<SqliteStorage>) -> Result<Self, ApplicationError> {
+    fn with_storage_and_library_dir(
+        storage: Arc<SqliteStorage>,
+        library_pdfs_dir: PathBuf,
+    ) -> Result<Self, ApplicationError> {
         let initial_budget = storage
             .load()
             .map(|s| s.render_cache_budget_bytes)
@@ -79,6 +89,7 @@ impl AppCore {
             render_cache: Arc::new(MemoryRenderCache::new(initial_budget)),
             cancellation: Arc::new(GenerationCancellationRegistry::new()),
             sessions: RwLock::new(HashMap::new()),
+            library_pdfs_dir,
         })
     }
 
@@ -86,6 +97,86 @@ impl AppCore {
     #[must_use]
     pub fn engine_kind(&self) -> PdfEngineKind {
         self.pdf_engine.kind()
+    }
+
+    /// Imports raw PDF bytes selected via a drag-and-drop or file-input workflow into Readora's
+    /// local library directory, validates them, and opens a persistent document session.
+    pub fn import_document_bytes(
+        &self,
+        file_name: &str,
+        bytes: &[u8],
+        password: Option<String>,
+    ) -> Result<DocumentSessionDto, ApplicationError> {
+        if bytes.is_empty() {
+            return Err(ApplicationError::Platform("PDF file is empty".to_owned()));
+        }
+        let max_size = OpenDocumentOptions::default().effective_max_file_size();
+        if (bytes.len() as u64) > max_size {
+            return Err(ApplicationError::Platform(format!(
+                "file size ({} bytes) exceeds maximum allowed ({max_size} bytes)",
+                bytes.len()
+            )));
+        }
+
+        let safe_file_name = sanitize_pdf_filename(file_name);
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let digest = hasher.finalize();
+        let mut hash_prefix = String::with_capacity(16);
+        for byte in &digest[..8] {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hash_prefix, "{byte:02x}");
+        }
+
+        let target_dir = self.library_pdfs_dir.join(&hash_prefix);
+        let target_path = target_dir.join(&safe_file_name);
+        let target_str = target_path.to_string_lossy().into_owned();
+        self.platform.atomic_write_file(&target_str, bytes)?;
+
+        match self.open_document(OpenDocumentRequest {
+            path: target_str,
+            password,
+        }) {
+            Ok(session) => Ok(session),
+            Err(err) => {
+                if matches!(
+                    err,
+                    ApplicationError::PdfEngine(pdf_engine::PdfEngineError::InvalidPdfFormat(_))
+                ) {
+                    let _ = std::fs::remove_file(&target_path);
+                    let _ = std::fs::remove_dir(&target_dir);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Reads the raw PDF bytes for a known open or persisted library document.
+    pub fn read_document_bytes(&self, document_id: &str) -> Result<Vec<u8>, ApplicationError> {
+        let doc_id = DocumentId::new(document_id)?;
+        let raw_path = if let Ok(entry) = self.lookup_session(&doc_id) {
+            entry.canonical_path.clone()
+        } else if let Some(recent) = self.storage.get(&doc_id)? {
+            recent.file_path
+        } else {
+            return Err(ApplicationError::DocumentNotOpen(document_id.to_owned()));
+        };
+
+        let max_size = OpenDocumentOptions::default().effective_max_file_size();
+        let resolved = self
+            .platform
+            .resolve_and_validate_pdf_path(&raw_path, max_size)?;
+        std::fs::read(&resolved.canonical_path).map_err(|_| {
+            ApplicationError::Platform("failed to read registered PDF document bytes".to_owned())
+        })
+    }
+
+    /// Reads the currently staged release manifest on disk, if present.
+    pub fn read_staged_update_manifest(
+        &self,
+    ) -> Result<Option<ReleaseManifestDto>, ApplicationError> {
+        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
+        NativePlatformAdapter::read_release_manifest_in(&data_dir)
     }
 
     /// Opens a local PDF document, restores its last reading state, and registers an active session.
@@ -415,10 +506,17 @@ impl AppCore {
                         .to_owned(),
                 },
                 ThirdPartyNoticeDto {
-                    name: "Tauri".to_owned(),
-                    version: "2.x".to_owned(),
-                    license: "MIT OR Apache-2.0".to_owned(),
-                    role: "Cross-platform desktop application shell and IPC".to_owned(),
+                    name: "tao + wry".to_owned(),
+                    version: "0.31 / 0.48".to_owned(),
+                    license: "Apache-2.0 OR MIT".to_owned(),
+                    role: "Cross-platform native desktop windowing and OS WebView shell".to_owned(),
+                },
+                ThirdPartyNoticeDto {
+                    name: "pdfjs-dist".to_owned(),
+                    version: "5.x".to_owned(),
+                    license: "Apache-2.0".to_owned(),
+                    role: "Fallback WebView PDF canvas renderer when native PDFium is absent"
+                        .to_owned(),
                 },
                 ThirdPartyNoticeDto {
                     name: "React + TypeScript".to_owned(),
@@ -649,5 +747,32 @@ impl AppCore {
             .get(document_id)
             .cloned()
             .ok_or_else(|| ApplicationError::DocumentNotOpen(document_id.as_str().to_owned()))
+    }
+}
+
+fn sanitize_pdf_filename(raw: &str) -> String {
+    let base = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("Document.pdf")
+        .trim();
+    let cleaned: String = sanitize_display_name(base)
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        return "Document.pdf".to_owned();
+    }
+    if trimmed.to_ascii_lowercase().ends_with(".pdf") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}.pdf")
     }
 }
