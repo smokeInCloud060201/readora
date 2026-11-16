@@ -8,7 +8,9 @@ use app_application::{
 };
 use app_core::AppCore;
 use app_domain::{Annotation, AppSettings, Bookmark, RecentDocument, SearchHit, ViewState};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Structured, serializable error DTO returned across the IPC boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,30 @@ impl DesktopCommandHandler {
         request: OpenDocumentRequest,
     ) -> Result<DocumentSessionDto, CommandErrorDto> {
         Ok(self.core.open_document(request)?)
+    }
+
+    /// Imports raw PDF bytes selected via file picker or drag-and-drop into the local library and opens a session.
+    pub fn document_import_bytes(
+        &self,
+        file_name: &str,
+        bytes: &[u8],
+        password: Option<String>,
+    ) -> Result<DocumentSessionDto, CommandErrorDto> {
+        Ok(self
+            .core
+            .import_document_bytes(file_name, bytes, password)?)
+    }
+
+    /// Reads raw PDF bytes for an open or persisted library document.
+    pub fn document_read_bytes(&self, document_id: &str) -> Result<Vec<u8>, CommandErrorDto> {
+        Ok(self.core.read_document_bytes(document_id)?)
+    }
+
+    /// Reads the staged release manifest on disk if present.
+    pub fn read_staged_update_manifest(
+        &self,
+    ) -> Result<Option<ReleaseManifestDto>, CommandErrorDto> {
+        Ok(self.core.read_staged_update_manifest()?)
     }
 
     /// Handles `document_open_sample` (generates and opens the built-in welcome guide PDF).
@@ -254,4 +280,155 @@ impl DesktopCommandHandler {
     pub fn app_dismiss_update(&self, version: &str) -> Result<AppUpdateStatusDto, CommandErrorDto> {
         Ok(self.core.dismiss_update(version)?)
     }
+
+    /// Dispatches a JSON-serialized IPC command by name (`cmd`) and `args` object onto `AppCore`.
+    pub fn dispatch_rpc(&self, cmd: &str, args: Value) -> Result<Value, CommandErrorDto> {
+        match cmd {
+            "document_open" => {
+                let request: OpenDocumentRequest = parse_arg(&args, "request")?;
+                to_json_value(self.document_open(request)?)
+            }
+            "document_open_sample" => to_json_value(self.document_open_sample()?),
+            "document_close" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                self.document_close(&document_id)?;
+                Ok(Value::Null)
+            }
+            "document_get_info" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                to_json_value(self.document_get_info(&document_id)?)
+            }
+            "document_navigate" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let action: NavigationAction = parse_arg(&args, "action")?;
+                to_json_value(self.document_navigate(&document_id, action)?)
+            }
+            "page_render" => {
+                let command: RenderPageCommand = parse_arg(&args, "command")?;
+                to_json_value(self.page_render(command)?)
+            }
+            "page_cancel_renders" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                to_json_value(self.page_cancel_renders(&document_id)?)
+            }
+            "page_extract_text" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let page_index: u32 = parse_arg(&args, "pageIndex")?;
+                to_json_value(self.page_extract_text(&document_id, page_index)?)
+            }
+            "document_search" => {
+                let request: SearchRequestDto = parse_arg(&args, "request")?;
+                to_json_value(self.document_search(request)?)
+            }
+            "recent_documents_list" => {
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(20);
+                to_json_value(self.recent_documents_list(limit)?)
+            }
+            "recent_document_set_favorite" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let is_favorite: bool = parse_arg(&args, "isFavorite")?;
+                to_json_value(self.recent_document_set_favorite(&document_id, is_favorite)?)
+            }
+            "recent_document_set_archived" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let is_archived: bool = parse_arg(&args, "isArchived")?;
+                to_json_value(self.recent_document_set_archived(&document_id, is_archived)?)
+            }
+            "recent_document_delete" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                self.recent_document_delete(&document_id)?;
+                Ok(Value::Null)
+            }
+            "bookmark_upsert" => {
+                let command: UpsertBookmarkCommand = parse_arg(&args, "command")?;
+                to_json_value(self.bookmark_upsert(command)?)
+            }
+            "bookmark_list" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                to_json_value(self.bookmark_list(&document_id)?)
+            }
+            "bookmark_delete" => {
+                let bookmark_id: String = parse_arg(&args, "bookmarkId")?;
+                to_json_value(self.bookmark_delete(&bookmark_id)?)
+            }
+            "annotation_upsert" => {
+                let command: UpsertAnnotationCommand = parse_arg(&args, "command")?;
+                to_json_value(self.annotation_upsert(command)?)
+            }
+            "annotation_list" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                to_json_value(self.annotation_list(&document_id)?)
+            }
+            "annotation_delete" => {
+                let annotation_id: String = parse_arg(&args, "annotationId")?;
+                to_json_value(self.annotation_delete(&annotation_id)?)
+            }
+            "annotation_export" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let include_annotations: bool = parse_arg(&args, "includeAnnotations")?;
+                let destination_path: Option<String> = args
+                    .get("destinationPath")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                to_json_value(self.annotation_export(
+                    &document_id,
+                    include_annotations,
+                    destination_path.as_deref(),
+                )?)
+            }
+            "settings_get" => to_json_value(self.settings_get()?),
+            "settings_update" => {
+                let patch: SettingsPatchDto = parse_arg(&args, "patch")?;
+                to_json_value(self.settings_update(patch)?)
+            }
+            "system_diagnostics" => to_json_value(self.system_diagnostics()?),
+            "app_cleanup_data" => to_json_value(self.app_cleanup_data()?),
+            "app_check_for_updates" => {
+                let include_dismissed = args
+                    .get("includeDismissed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                to_json_value(self.app_check_for_updates(include_dismissed)?)
+            }
+            "app_stage_update_manifest" => {
+                let manifest: ReleaseManifestDto = parse_arg(&args, "manifest")?;
+                to_json_value(self.app_stage_update_manifest(manifest)?)
+            }
+            "app_stage_github_release" => {
+                let raw_json: String = parse_arg(&args, "rawJson")?;
+                to_json_value(self.app_stage_github_release(&raw_json)?)
+            }
+            "app_install_update" => {
+                let version: String = parse_arg(&args, "version")?;
+                to_json_value(self.app_install_update(&version)?)
+            }
+            "app_dismiss_update" => {
+                let version: String = parse_arg(&args, "version")?;
+                to_json_value(self.app_dismiss_update(&version)?)
+            }
+            _ => Err(CommandErrorDto {
+                code: "unknown_command".to_owned(),
+                message: format!("unrecognized IPC command '{cmd}'"),
+            }),
+        }
+    }
+}
+
+fn parse_arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T, CommandErrorDto> {
+    let field = args.get(key).cloned().unwrap_or(Value::Null);
+    serde_json::from_value(field).map_err(|err| CommandErrorDto {
+        code: "validation_error".to_owned(),
+        message: format!("invalid IPC argument '{key}': {err}"),
+    })
+}
+
+fn to_json_value<T: Serialize>(val: T) -> Result<Value, CommandErrorDto> {
+    serde_json::to_value(val).map_err(|err| CommandErrorDto {
+        code: "serialization_error".to_owned(),
+        message: format!("failed to serialize IPC response: {err}"),
+    })
 }

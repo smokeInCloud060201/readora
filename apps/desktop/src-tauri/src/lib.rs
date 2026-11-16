@@ -1,8 +1,9 @@
-//! Desktop composition root and typed IPC command handlers for Readora.
+//! Desktop composition root, authenticated RPC server, and typed IPC command handlers for Readora.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod commands;
+pub mod server;
 
 pub use commands::{CommandErrorDto, DesktopCommandHandler};
 
@@ -19,12 +20,20 @@ pub fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use app_application::{
         NavigationAction, ReleaseManifestDto, RenderPageCommand, UpsertAnnotationCommand,
         UpsertBookmarkCommand,
     };
     use app_domain::{AnnotationKind, RenderMode};
+    use pdfium_adapter::build_synthetic_pdf_bytes;
+    use serde_json::json;
 
+    use super::server::{
+        CONTENT_SECURITY_POLICY, constant_time_eq, generate_session_token,
+        read_and_authorize_http_request, route_http_request,
+    };
     use super::*;
 
     #[test]
@@ -34,6 +43,10 @@ mod tests {
         let session = handler.document_open_sample().unwrap();
         let doc_id = session.descriptor.id.as_str().to_owned();
         assert_eq!(session.descriptor.page_count, 5);
+        assert_eq!(
+            serde_json::to_value(session.view_state.rotation).unwrap(),
+            json!("deg0")
+        );
 
         let rendered = handler
             .page_render(RenderPageCommand {
@@ -51,6 +64,14 @@ mod tests {
             .document_navigate(&doc_id, NavigationAction::NextPage)
             .unwrap();
         assert_eq!(nav_state.current_page.zero_based(), 1);
+
+        let rotated = handler
+            .document_navigate(&doc_id, NavigationAction::RotateClockwise)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(rotated.rotation).unwrap(),
+            json!("deg90")
+        );
 
         let bm = handler
             .bookmark_upsert(UpsertBookmarkCommand {
@@ -99,7 +120,6 @@ mod tests {
         assert_eq!(diag.sqlite_schema_version, 3);
         assert!(!diag.third_party_notices.is_empty());
 
-        // Verify update check, staging, dismissal, and installation lifecycle
         let staged = handler
             .app_stage_update_manifest(ReleaseManifestDto {
                 version: "1.1.0".to_owned(),
@@ -126,5 +146,141 @@ mod tests {
         assert_eq!(handler.system_diagnostics().unwrap().app_version, "1.1.0");
 
         handler.document_close(&doc_id).unwrap();
+    }
+
+    #[test]
+    fn loopback_server_blocks_csrf_dns_rebinding_and_unauthenticated_requests() {
+        let port = 52419_u16;
+        let token = generate_session_token();
+        assert_eq!(token.len(), 64);
+        assert!(constant_time_eq(&token, &token));
+        assert!(!constant_time_eq(&token, "wrong"));
+
+        // 1. Drive-by GET /__readora_update from an external webpage -> rejected (405)
+        let drive_by_get = format!(
+            "GET /__readora_update?version=9.9.9&repo=attacker/evil HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        );
+        let mut cursor = Cursor::new(drive_by_get.into_bytes());
+        let err = read_and_authorize_http_request(&mut cursor, port, &token).unwrap_err();
+        assert_eq!(err.status, "405 Method Not Allowed");
+
+        // 2. DNS rebinding attack with forged Host header -> rejected (403)
+        let rebind_req = "GET /index.html HTTP/1.1\r\nHost: rebind.attacker.example\r\n\r\n";
+        let mut cursor = Cursor::new(rebind_req.as_bytes());
+        let err = read_and_authorize_http_request(&mut cursor, port, &token).unwrap_err();
+        assert_eq!(err.status, "403 Forbidden");
+
+        // 3. Cross-origin POST without matching Origin or session token -> rejected (403)
+        let cross_origin_post = format!(
+            "POST /__readora_rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let mut cursor = Cursor::new(cross_origin_post.into_bytes());
+        let err = read_and_authorize_http_request(&mut cursor, port, &token).unwrap_err();
+        assert_eq!(err.status, "403 Forbidden");
+
+        // 4. Same-origin POST with missing/invalid X-Readora-Token -> rejected (403)
+        let wrong_token_post = format!(
+            "POST /__readora_rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nX-Readora-Token: invalid\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let mut cursor = Cursor::new(wrong_token_post.into_bytes());
+        let err = read_and_authorize_http_request(&mut cursor, port, &token).unwrap_err();
+        assert_eq!(err.status, "403 Forbidden");
+    }
+
+    #[test]
+    fn loopback_server_executes_authenticated_rpc_import_and_attaches_csp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            b"<!doctype html><title>Readora</title>",
+        )
+        .unwrap();
+        let handler = DesktopCommandHandler::try_new_in_memory().unwrap();
+        let port = 52420_u16;
+        let token = generate_session_token();
+
+        // Static index.html includes CSP
+        let get_html = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        let mut cursor = Cursor::new(get_html.into_bytes());
+        let parsed = read_and_authorize_http_request(&mut cursor, port, &token)
+            .unwrap()
+            .unwrap();
+        let resp = route_http_request(parsed, dir.path(), &handler, |_, _| r#"{"status":"noop"}"#);
+        assert_eq!(resp.status, "200 OK");
+        assert!(resp.include_csp);
+        let mut wire = Vec::new();
+        resp.write_to(&mut wire);
+        let wire_str = String::from_utf8_lossy(&wire);
+        assert!(wire_str.contains(CONTENT_SECURITY_POLICY));
+
+        // Authenticated PDF import + RPC roundtrip through SQLite AppCore
+        let pdf_bytes = build_synthetic_pdf_bytes(
+            "Imported Study",
+            &["Page 1 content", "Page 2 content"],
+            None,
+        );
+        let import_header = format!(
+            "POST /__readora_import HTTP/1.1\r\n\
+             Host: 127.0.0.1:{port}\r\n\
+             Origin: http://127.0.0.1:{port}\r\n\
+             Sec-Fetch-Site: same-origin\r\n\
+             X-Readora-Token: {token}\r\n\
+             X-Readora-Filename: Imported%20Study.pdf\r\n\
+             Content-Length: {}\r\n\r\n",
+            pdf_bytes.len()
+        );
+        let mut raw_import = import_header.into_bytes();
+        raw_import.extend_from_slice(&pdf_bytes);
+        let mut cursor = Cursor::new(raw_import);
+        let parsed_import = read_and_authorize_http_request(&mut cursor, port, &token)
+            .unwrap()
+            .unwrap();
+        let import_resp = route_http_request(
+            parsed_import,
+            dir.path(),
+            &handler,
+            |_, _| r#"{"status":"noop"}"#,
+        );
+        assert_eq!(import_resp.status, "200 OK");
+        let import_json: serde_json::Value = serde_json::from_slice(&import_resp.body).unwrap();
+        assert_eq!(import_json["ok"], json!(true));
+        assert_eq!(
+            import_json["data"]["descriptor"]["file_name"],
+            json!("Imported Study.pdf")
+        );
+        let doc_id = import_json["data"]["descriptor"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Authenticated RPC recent_documents_list reflects imported document in SQLite
+        let rpc_body = serde_json::to_vec(&json!({
+            "cmd": "recent_documents_list",
+            "args": { "limit": 10 }
+        }))
+        .unwrap();
+        let rpc_req = format!(
+            "POST /__readora_rpc HTTP/1.1\r\n\
+             Host: 127.0.0.1:{port}\r\n\
+             Origin: http://127.0.0.1:{port}\r\n\
+             X-Readora-Token: {token}\r\n\
+             Content-Length: {}\r\n\r\n",
+            rpc_body.len()
+        );
+        let mut raw_rpc = rpc_req.into_bytes();
+        raw_rpc.extend_from_slice(&rpc_body);
+        let mut cursor = Cursor::new(raw_rpc);
+        let parsed_rpc = read_and_authorize_http_request(&mut cursor, port, &token)
+            .unwrap()
+            .unwrap();
+        let rpc_resp = route_http_request(
+            parsed_rpc,
+            dir.path(),
+            &handler,
+            |_, _| r#"{"status":"noop"}"#,
+        );
+        assert_eq!(rpc_resp.status, "200 OK");
+        let rpc_json: serde_json::Value = serde_json::from_slice(&rpc_resp.body).unwrap();
+        assert_eq!(rpc_json["data"][0]["document_id"], json!(doc_id));
     }
 }

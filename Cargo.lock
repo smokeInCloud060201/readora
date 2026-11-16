@@ -61,6 +61,7 @@ dependencies = [
  "pdfium-adapter",
  "platform",
  "serde",
+ "sha2",
  "storage",
  "tempfile",
  "thiserror 2.0.21",
@@ -1846,6 +1847,7 @@ name = "pdfium-adapter"
 version = "1.0.6"
 dependencies = [
  "app-domain",
+ "bytes",
  "crc32fast",
  "flate2",
  "pdf-engine",
@@ -2235,6 +2237,8 @@ dependencies = [
  "app-application",
  "app-core",
  "app-domain",
+ "pdfium-adapter",
+ "platform",
  "serde",
  "serde_json",
  "tao",
@@ -2242,6 +2246,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wry",
 ]
 
