@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
 import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
+import { AppNavigationRail } from "../features/reader/AppNavigationRail";
 import { ImportPdfDialog } from "../features/reader/ImportPdfDialog";
 import { OpenPasswordDialog } from "../features/reader/OpenPasswordDialog";
 import { PageViewport } from "../features/reader/PageViewport";
@@ -13,6 +14,7 @@ import {
 import { ShareDialog } from "../features/reader/ShareDialog";
 import { StatusBar } from "../features/reader/StatusBar";
 import { UpdateDialog } from "../features/reader/UpdateDialog";
+import { useGlobalReaderShortcuts } from "../features/reader/useGlobalReaderShortcuts";
 import { SearchPanel } from "../features/search/SearchPanel";
 import {
   PreferencesDialog,
@@ -24,7 +26,6 @@ import {
   type LibraryCollectionView,
 } from "../shared/components/EmptyWorkspace";
 import { FocusIcon } from "../shared/components/FocusIcon";
-import { ReadoraLogo } from "../shared/components/ReadoraLogo";
 import {
   rotationToDegrees,
   type AnnotationDto,
@@ -606,64 +607,13 @@ export const App: React.FC = () => {
         ?.is_favorite,
   );
 
-  useEffect(() => {
-    const handleGlobalKeyDown = (event: KeyboardEvent) => {
-      const hasCommandOrSuperOrCtrl = event.metaKey || event.ctrlKey;
-      if (!hasCommandOrSuperOrCtrl || event.altKey) {
-        return;
-      }
-
-      const key = event.key.toLowerCase();
-      if (key === "f") {
-        event.preventDefault();
-        if (session) {
-          setActiveSidebar("search");
-          const existingInput = document.querySelector<HTMLInputElement>(
-            ".search-popover-input",
-          );
-          if (existingInput) {
-            existingInput.focus();
-            existingInput.select();
-          }
-        } else {
-          const librarySearch = document.querySelector<HTMLInputElement>(
-            'input[aria-label="Search library documents"]',
-          );
-          librarySearch?.focus();
-          librarySearch?.select();
-        }
-        return;
-      }
-
-      if (key === "o") {
-        event.preventDefault();
-        setShowImportDialog(true);
-        return;
-      }
-
-      if (key === "p" && session) {
-        event.preventDefault();
-        setShowPrintDialog(true);
-        return;
-      }
-
-      if (event.key === "\\" && session) {
-        event.preventDefault();
-        if (event.shiftKey) {
-          setShowRightPanel((prev) => !prev);
-        } else {
-          setActiveSidebar((prev) =>
-            prev === "thumbnails" ? null : "thumbnails",
-          );
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleGlobalKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleGlobalKeyDown);
-    };
-  }, [session]);
+  useGlobalReaderShortcuts({
+    session,
+    setActiveSidebar,
+    setShowImportDialog,
+    setShowPrintDialog,
+    setShowRightPanel,
+  });
 
   const showBookmarksPanel =
     activeSidebar === "bookmarks" || showRightPanel;
@@ -764,76 +714,17 @@ export const App: React.FC = () => {
       )}
 
       <div className="app-body-frame">
-        {/* Left 58px App Rail (Figma Frame 01/02/03) */}
-        <nav className="app-rail" aria-label="Application Navigation Rail">
-          <div className="app-rail-top">
-            <div className="app-rail-logo" title="Focus Reader · Readora">
-              <ReadoraLogo size={22} />
-            </div>
-            <button
-              type="button"
-              className={`app-rail-btn ${session ? "active" : ""}`}
-              onClick={() => {
-                if (!session) {
-                  const firstActive = recentDocs.find((d) => !d.is_archived);
-                  if (firstActive) {
-                    void handleOpenPath(firstActive.file_path);
-                  } else {
-                    setShowImportDialog(true);
-                  }
-                }
-              }}
-              title="Reader / Documents"
-              aria-label="Reader Workspace"
-            >
-              <FocusIcon name="file" size={16} />
-            </button>
-            <button
-              type="button"
-              className={`app-rail-btn ${
-                (session && showBookmarksPanel) ||
-                (!session && libraryCollection === "favorites")
-                  ? "active"
-                  : ""
-              }`}
-              onClick={() => {
-                if (session) {
-                  handleToggleSidebar("bookmarks");
-                } else {
-                  setLibraryCollection((prev) =>
-                    prev === "favorites" ? "all" : "favorites",
-                  );
-                }
-              }}
-              title="Notes & Favorites"
-              aria-label="Notes and Bookmarks Rail"
-            >
-              <FocusIcon name="star" size={16} />
-            </button>
-            <button
-              type="button"
-              className={`app-rail-btn ${
-                !session && libraryCollection === "all" ? "active" : ""
-              }`}
-              onClick={() => {
-                setLibraryCollection("all");
-                if (session) {
-                  void handleCloseDocument();
-                }
-              }}
-              title="Library Home"
-              aria-label="Library Home"
-            >
-              <FocusIcon name="grid" size={16} />
-            </button>
-          </div>
-
-          <div className="app-rail-bottom">
-            <div className="app-rail-avatar" title="Local Reader Profile">
-              MK
-            </div>
-          </div>
-        </nav>
+        <AppNavigationRail
+          hasOpenSession={Boolean(session)}
+          showBookmarksPanel={showBookmarksPanel}
+          libraryCollection={libraryCollection}
+          recentDocs={recentDocs}
+          onOpenRecentPath={(path) => void handleOpenPath(path)}
+          onOpenImportDialog={() => setShowImportDialog(true)}
+          onToggleBookmarksSidebar={() => handleToggleSidebar("bookmarks")}
+          onSetLibraryCollection={setLibraryCollection}
+          onCloseDocument={() => void handleCloseDocument()}
+        />
 
         {session ? (
           <div className="reader-workspace">

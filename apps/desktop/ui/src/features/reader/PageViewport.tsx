@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
-import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   rotationToDegrees,
   type AnnotationDto,
@@ -10,6 +9,10 @@ import {
   type SearchHitDto,
   type ViewStateDto,
 } from "../../types/ipc";
+import {
+  FloatingAnnotationTools,
+  HIGHLIGHT_SWATCHES,
+} from "./FloatingAnnotationTools";
 
 interface PageViewportProps {
   documentTitle?: string;
@@ -37,14 +40,6 @@ interface PageViewportProps {
     noteText: string,
   ) => void;
 }
-
-const HIGHLIGHT_SWATCHES = [
-  { id: "amber", label: "Amber", hex: "#f3d96b" },
-  { id: "coral", label: "Coral", hex: "#f0a88f" },
-  { id: "sage", label: "Sage", hex: "#a9d5b2" },
-  { id: "sky", label: "Sky", hex: "#9bc8e0" },
-  { id: "lavender", label: "Lavender", hex: "#c9afe2" },
-] as const;
 
 function rotateBoundingBox(
   box: SearchBoundingBoxDto,
@@ -637,162 +632,21 @@ export const PageViewport: React.FC<PageViewportProps> = ({
         })}
       </div>
 
-      {/* Figma Frame 24: Highlight Options Popover (254x116) */}
-      {showHighlightPopover && (
-        <div
-          ref={highlightPopoverRef}
-          className="highlight-options-popover"
-          role="dialog"
-          aria-label="Highlight Options"
-          data-node-id="7:943"
-        >
-          <div className="highlight-popover-header">
-            <span className="highlight-popover-label">Highlight color</span>
-            <div className="highlight-popover-actions">
-              {onCreateAnnotation && (
-                <button
-                  type="button"
-                  className="highlight-pin-link"
-                  aria-label="Save page highlight"
-                  onClick={() => {
-                    onCreateAnnotation(
-                      underlineInstead ? "underline" : "highlight",
-                      selectedColor,
-                      pageText || `Page ${viewState.current_page + 1} excerpt`,
-                      underlineInstead
-                        ? "Underlined passage"
-                        : "Highlighted passage",
-                    );
-                    setShowHighlightPopover(false);
-                  }}
-                >
-                  Save highlight
-                </button>
-              )}
-              {onQuickAddNote && (
-                <button
-                  type="button"
-                  className="highlight-pin-link"
-                  onClick={() => {
-                    setShowHighlightPopover(false);
-                    onQuickAddNote();
-                  }}
-                >
-                  + Add note
-                </button>
-              )}
-            </div>
-          </div>
-          <div
-            className="highlight-swatch-row"
-            role="radiogroup"
-            aria-label="Highlight color swatches"
-          >
-            {HIGHLIGHT_SWATCHES.map((swatch) => (
-              <button
-                key={swatch.id}
-                type="button"
-                role="radio"
-                aria-checked={selectedColor === swatch.hex}
-                aria-label={`Highlight color ${swatch.label}`}
-                className={`highlight-swatch-btn ${
-                  selectedColor === swatch.hex ? "selected" : ""
-                }`}
-                style={{ backgroundColor: swatch.hex }}
-                onClick={() => setSelectedColor(swatch.hex)}
-              />
-            ))}
-          </div>
-          <div className="highlight-popover-divider" />
-          <div className="highlight-underline-row">
-            <span className="highlight-underline-label">Underline instead</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={underlineInstead}
-              aria-label="Underline instead"
-              className={`focus-switch compact ${underlineInstead ? "on" : ""}`}
-              onClick={() => setUnderlineInstead((v) => !v)}
-            >
-              <span className="focus-switch-thumb" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Bottom Floating Annotation & Selection Tools Bar (Figma Frame 01 & 24: 2:149, 246x45) */}
-      <div
-        ref={floatingToolsRef}
-        className="floating-annotation-tools"
-        role="toolbar"
-        aria-label="Page Reading Tools"
-        data-node-id="2:149"
-      >
-        <button
-          type="button"
-          className={`focus-icon-btn ${
-            !showHighlightPopover && !underlineInstead ? "active" : ""
-          }`}
-          onClick={() => {
-            setShowHighlightPopover(false);
-            setUnderlineInstead(false);
-          }}
-          title="Select cursor"
-          aria-label="Select cursor"
-          data-node-id="2:150"
-        >
-          <FocusIcon name="arrow-right" size={15} />
-        </button>
-        <button
-          type="button"
-          className="focus-icon-btn"
-          onClick={onCopyText}
-          title="Copy Page Text"
-          aria-label="Copy Page Text"
-          data-node-id="2:152"
-        >
-          <FocusIcon name="text" size={16} />
-        </button>
-        <button
-          type="button"
-          className={`focus-icon-btn ${showHighlightPopover ? "active" : ""}`}
-          onClick={() => setShowHighlightPopover((prev) => !prev)}
-          title="Highlight Options"
-          aria-label="Highlight Options"
-          data-node-id="2:154"
-        >
-          <FocusIcon name="highlight" size={16} />
-        </button>
-        <button
-          type="button"
-          className={`focus-icon-btn ${underlineInstead ? "active" : ""}`}
-          onClick={() => {
-            setUnderlineInstead((prev) => !prev);
-            setShowHighlightPopover(true);
-          }}
-          title="Underline Selection"
-          aria-label="Underline Selection"
-          data-node-id="2:156"
-        >
-          <FocusIcon name="pen" size={16} />
-        </button>
-        <button
-          type="button"
-          className="focus-icon-btn"
-          onClick={() => {
-            if (onQuickAddNote) {
-              onQuickAddNote();
-            } else {
-              onCopyText();
-            }
-          }}
-          title="Add Comment"
-          aria-label="Add Comment"
-          data-node-id="2:158"
-        >
-          <FocusIcon name="comment" size={16} />
-        </button>
-      </div>
+      <FloatingAnnotationTools
+        currentPage={viewState.current_page}
+        pageText={pageText}
+        showHighlightPopover={showHighlightPopover}
+        setShowHighlightPopover={setShowHighlightPopover}
+        selectedColor={selectedColor}
+        setSelectedColor={setSelectedColor}
+        underlineInstead={underlineInstead}
+        setUnderlineInstead={setUnderlineInstead}
+        highlightPopoverRef={highlightPopoverRef}
+        floatingToolsRef={floatingToolsRef}
+        onCopyText={onCopyText}
+        onQuickAddNote={onQuickAddNote}
+        onCreateAnnotation={onCreateAnnotation}
+      />
     </main>
   );
 };

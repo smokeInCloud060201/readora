@@ -8,8 +8,14 @@ import {
 } from "../lib/tauri/client";
 import { App } from "./App";
 
-function createTestPdfFile(fileName: string): File {
-  return new File(["%PDF-1.7 test document bytes"], fileName, {
+function createTestPdfFile(
+  fileName: string,
+  userPassword: string | null = null,
+): File {
+  const payload = userPassword
+    ? `%PDF-1.7\n1 0 obj\n<< /Filter /Standard /Encrypt true /UserPassword (${userPassword}) >>\nendobj\n%%EOF`
+    : "%PDF-1.7 test document bytes\n%%EOF";
+  return new File([payload], fileName, {
     type: "application/pdf",
   });
 }
@@ -141,11 +147,22 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
   });
 
   it("prompts for password when opening an encrypted PDF file and supports preferences theme toggle", async () => {
+    // Regression check: an unencrypted file whose filename contains "encrypted" must open normally without password
+    const unencryptedNamedEncrypted = await readoraApi.openDocumentFile(
+      createTestPdfFile("unencrypted-encrypted-notes.pdf"),
+    );
+    expect(unencryptedNamedEncrypted.descriptor.metadata.is_encrypted).toBe(
+      false,
+    );
+    await readoraApi.cleanupApplicationData();
+
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
     fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
-      target: { files: [createTestPdfFile("encrypted-contract.pdf")] },
+      target: {
+        files: [createTestPdfFile("encrypted-contract.pdf", "topsecret")],
+      },
     });
 
     await waitFor(() => {
@@ -597,5 +614,92 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
 
     await readoraApi.cleanupApplicationData();
     expect(window.localStorage.getItem("readora.library.state.v1")).toBeNull();
+  });
+
+  it("routes commands and file imports through native IPC bridge when bound", async () => {
+    const invokedCommands: Array<{ cmd: string; args?: Record<string, unknown> }> =
+      [];
+    const win = window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+      __READORA_NATIVE__?: {
+        importPdfBytes: (
+          fileName: string,
+          bytes: Uint8Array,
+          password: string | null,
+        ) => Promise<unknown>;
+        readPdfBytes: (documentId: string) => Promise<Uint8Array | null>;
+        triggerSelfUpdate: (version: string) => Promise<{ status: string }>;
+      };
+    };
+
+    win.__TAURI_INTERNALS__ = {
+      invoke: async (cmd, args) => {
+        invokedCommands.push({ cmd, args });
+        if (cmd === "system_diagnostics") {
+          return {
+            app_version: "1.0.6",
+            target_os: "macos",
+            target_arch: "aarch64",
+            pdf_engine_kind: "pdfium_dynamic",
+            sqlite_schema_version: 3,
+            redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
+            render_cache_usage_bytes: 0,
+            third_party_notices: [],
+          };
+        }
+        if (cmd === "recent_documents_list") {
+          return [];
+        }
+        return null;
+      },
+    };
+    win.__READORA_NATIVE__ = {
+      importPdfBytes: async (fileName) => ({
+        descriptor: {
+          id: "doc-native-1",
+          file_name: fileName,
+          file_size_bytes: 1024,
+          page_count: 2,
+          metadata: {
+            title: "Native Doc",
+            author: null,
+            subject: null,
+            creator: null,
+            pdf_version: "1.7",
+            is_encrypted: false,
+          },
+        },
+        view_state: {
+          document_id: "doc-native-1",
+          current_page: 0,
+          page_count: 2,
+          zoom: 1.0,
+          fit_mode: "fit_width",
+          rotation: "deg0",
+          layout_mode: "continuous",
+          render_mode: "standard",
+        },
+        outline: [],
+        bookmarks: [],
+      }),
+      readPdfBytes: async () => null,
+      triggerSelfUpdate: async () => ({ status: "restarting" }),
+    };
+
+    try {
+      const opened = await readoraApi.openDocumentFile(
+        createTestPdfFile("Native-Backed.pdf"),
+      );
+      expect(opened.descriptor.id).toBe("doc-native-1");
+      await readoraApi.listRecentDocuments(10);
+      expect(invokedCommands.some((c) => c.cmd === "recent_documents_list")).toBe(
+        true,
+      );
+    } finally {
+      delete win.__TAURI_INTERNALS__;
+      delete win.__READORA_NATIVE__;
+    }
   });
 });

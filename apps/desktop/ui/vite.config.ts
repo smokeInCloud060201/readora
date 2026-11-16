@@ -8,6 +8,21 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("pdfjs-dist")) {
+            return "pdfjs";
+          }
+          if (id.includes("node_modules/react")) {
+            return "react-vendor";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: false,

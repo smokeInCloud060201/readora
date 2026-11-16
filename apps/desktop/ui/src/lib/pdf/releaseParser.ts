@@ -1,0 +1,105 @@
+/// <reference types="vite/client" />
+import { type ReleaseManifestDto } from "../../types/ipc";
+
+export const DEFAULT_APP_VERSION: string =
+  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.6";
+
+export function compareSemver(left: string, right: string): number {
+  const parse = (raw: string): [number, number, number] => {
+    const cleaned = raw.trim().replace(/^[vV]/, "");
+    const core = cleaned.split(/[-+]/)[0] ?? "";
+    const parts = core.split(".");
+    return [
+      Number.parseInt(parts[0] ?? "0", 10) || 0,
+      Number.parseInt(parts[1] ?? "0", 10) || 0,
+      Number.parseInt(parts[2] ?? "0", 10) || 0,
+    ];
+  };
+  const l = parse(left);
+  const r = parse(right);
+  for (let i = 0; i < 3; i += 1) {
+    const li = l[i] ?? 0;
+    const ri = r[i] ?? 0;
+    if (li > ri) return 1;
+    if (li < ri) return -1;
+  }
+  return 0;
+}
+
+interface GithubReleaseAssetPayload {
+  name?: string;
+  size?: number;
+  browser_download_url?: string;
+  digest?: string;
+}
+
+interface GithubReleasePayload {
+  tag_name?: string;
+  name?: string;
+  body?: string;
+  published_at?: string;
+  html_url?: string;
+  assets?: GithubReleaseAssetPayload[];
+}
+
+export function parseGithubReleasePayload(
+  rawJson: string,
+  targetOs = "macos",
+): ReleaseManifestDto {
+  const parsed = JSON.parse(rawJson) as GithubReleasePayload;
+  const rawTag = (parsed.tag_name ?? "").trim();
+  const version = rawTag.replace(/^[vV]/, "").trim();
+  if (!version) {
+    throw new Error("GitHub release payload is missing tag_name");
+  }
+
+  const title = parsed.name?.trim() || `Focus Reader ${version} is ready`;
+  const notes =
+    parsed.body?.trim() || `Release ${version} published on GitHub Releases.`;
+  const publishedAt = parsed.published_at ?? "";
+  const htmlUrl = parsed.html_url ?? null;
+
+  const osTokens =
+    targetOs === "windows"
+      ? [".msi", ".exe", "windows", "win64"]
+      : targetOs === "linux"
+        ? [".appimage", ".deb", ".rpm", "linux"]
+        : [".app.tar.gz", ".dmg", "macos", "darwin"];
+
+  let selectedSize = 0;
+  let selectedUrl: string | null = null;
+  let selectedSha256: string | null = null;
+
+  if (Array.isArray(parsed.assets)) {
+    for (const asset of parsed.assets) {
+      const nameLower = (asset.name ?? "").toLowerCase();
+      const size = typeof asset.size === "number" ? asset.size : 0;
+      const url = asset.browser_download_url ?? null;
+      const digest = asset.digest
+        ? asset.digest.replace(/^sha256:/i, "").trim()
+        : null;
+      const matchesOs = osTokens.some((tok) => nameLower.includes(tok));
+      if (matchesOs || selectedSize === 0) {
+        if (size > 0) selectedSize = size;
+        if (url) selectedUrl = url;
+        if (digest) selectedSha256 = digest;
+        if (matchesOs) break;
+      }
+    }
+  }
+
+  const packageSizeBytes = selectedSize > 0 ? selectedSize : 42 * 1024 * 1024;
+  const downloadUrl = selectedUrl ?? htmlUrl;
+  const sha256 =
+    selectedSha256 || `github-tag-${version}-${(downloadUrl ?? "").length}`;
+
+  return {
+    version,
+    title,
+    notes,
+    package_size_bytes: packageSizeBytes,
+    sha256,
+    published_at: publishedAt,
+    download_url: downloadUrl,
+  };
+}
