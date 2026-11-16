@@ -1,39 +1,39 @@
 # Architecture Decision Records
 
-## ADR-001: Tauri 2 + Rust core
-
-**Status:** Proposed
-
-**Decision:** Use Tauri 2 as desktop shell, Rust for application logic, React + TypeScript for UI.
-
-**Reasoning:** Cross-platform desktop packaging, native OS integration, Rust backend, and a frontend technology with a mature component ecosystem. The UI communicates through a narrow typed IPC boundary.
-
-**Consequences:** Must manage Tauri capabilities carefully and test the system webview differences across OSes. Keep UI-independent logic in Rust crates.
-
-## ADR-002: Modular monolith
-
-**Status:** Proposed
-
-**Decision:** Start with a modular monolith using ports/adapters, not microservices.
-
-**Reasoning:** Local desktop workloads do not justify distributed deployment. Internal module boundaries still permit engine and storage replacement.
-
-**Consequences:** Enforce crate dependency direction and avoid a large all-purpose application crate.
-
-## ADR-003: PDFium adapter
-
-**Status:** Implemented with pure-Rust fallback
-
-**Decision:** Implement `PdfiumEngineAdapter` behind the engine-neutral `pdf-engine` (`PdfEngine` / `PdfDocument`) interface using dynamic native binding (`pdfium-render` `thread_safe` + `pdfium_latest`) from `READORA_PDFIUM_PATH`, `assets/pdfium/`, or system library paths, paired with a built-in pure-Rust PDF parser/renderer fallback (`FallbackPdfDocument`) when `libpdfium` is not installed on the machine.
-
-**Reasoning:** Allows clean checkouts, CI runners, and developer environments to run full unit, contract, and vertical-slice integration tests without committing native PDFium binaries to source control, while supporting native PDFium rendering wherever `libpdfium` is provisioned.
-
-**Consequences:** Must verify binding coverage, license compatibility, platform binaries, security update cadence, and required advanced features before shipping release installers.
-
-## ADR-004: Rendered page IPC transfer and byte-bounded LRU cache
+## ADR-001: Native `tao` + `wry` Desktop Shell + Hexagonal Rust Core
 
 **Status:** Accepted
 
-**Decision:** Encode rendered page bitmaps to PNG and transfer them across the Tauri IPC boundary as compact `data:image/png;base64,...` URLs cached inside a byte-bounded `MemoryRenderCache` keyed by `(DocumentId, PageIndex, ScaleBucket, Rotation, RenderMode)`, paired with a per-document `GenerationCancellationRegistry`.
+**Decision:** Use `tao` + `wry` directly for cross-platform native desktop windowing and OS WebViews, Rust (`crates/*`) for domain rules, SQLite persistence, PDF engine orchestration, and caching, and React + TypeScript for presentation UI communicating over an authenticated typed IPC/RPC boundary (`DesktopCommandHandler`).
 
-**Reasoning:** Prevents multi-megabyte raw JSON byte arrays across IPC, guarantees bounded memory consumption (default 64 MiB, configurable 8–512 MiB), and cancels obsolete page render requests when the user navigates, zooms, rotates, or closes a document.
+**Reasoning:** Provides a lightweight, zero-bloat cross-platform desktop binary while enforcing a strict Content-Security-Policy, navigation allowlist, ephemeral loopback binding (`127.0.0.1:0`), `Host` anti-rebinding checks, and per-launch 256-bit CSPRNG token authentication.
+
+**Consequences:** Keep all business logic, file operations, SQLite persistence, and self-update verification inside Rust crates (`app-domain`, `app-application`, `storage`, `platform`, `app-core`).
+
+## ADR-002: Modular Monolith (Ports & Adapters)
+
+**Status:** Accepted
+
+**Decision:** Structure the backend as a modular monolith using hexagonal ports and adapters (`app-domain` ← `app-application` ← adapters ← `app-core` ← `readora-desktop`).
+
+**Reasoning:** Local desktop workloads benefit from in-process low latency while strict crate boundaries keep the PDF engine and SQLite storage replaceable and unit-testable in isolation.
+
+**Consequences:** Enforce inward crate dependency direction and avoid circular dependencies or "god" modules.
+
+## ADR-003: PDFium Dynamic Adapter with Bundled Library Discovery & Pure-Rust Fallback
+
+**Status:** Accepted
+
+**Decision:** Implement `PdfiumEngineAdapter` behind `pdf-engine` (`PdfEngine` / `PdfDocument`) using dynamic native binding (`pdfium-render` `thread_safe` + `pdfium_latest`) probing `READORA_PDFIUM_PATH`, OS bundle resource directories (`../Resources/pdfium`, `./pdfium`, `/usr/share/readora/pdfium`), `assets/pdfium/`, and system paths, paired with a built-in pure-Rust fallback engine (`FallbackPdfDocument` with bounded Flate stream inspection) when `libpdfium` is absent.
+
+**Reasoning:** Release installers provision native `libpdfium` for full fidelity while clean developer checkouts and CI runners execute deterministic unit, contract, and vertical-slice tests without committing native binaries to Git.
+
+**Consequences:** Zeroize document passwords on drop, avoid cloning large PDF buffers (`bytes::Bytes`), and inspect capabilities without full-buffer UTF-8 allocations.
+
+## ADR-004: Rendered Page Transfer and Byte-Bounded LRU Cache
+
+**Status:** Accepted
+
+**Decision:** Encode rendered page bitmaps to PNG and transfer them across the IPC boundary as compact `data:image/png;base64,...` URLs cached inside a byte-bounded `MemoryRenderCache` keyed by `(DocumentId, PageIndex, ScaleBucket, Rotation, RenderMode)`, paired with a per-document `GenerationCancellationRegistry`.
+
+**Reasoning:** Guarantees bounded memory consumption (default 64 MiB, configurable 8–512 MiB) and cancels obsolete page render jobs when scrolling, zooming, rotating, or closing a document.

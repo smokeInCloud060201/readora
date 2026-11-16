@@ -50,11 +50,11 @@ this software without specific prior written permission.
 
 ## 3. Desktop Shell & Frontend (`apps/desktop`)
 
-| Package | Version | License | Purpose |
+| Package / Crate | Version | License | Purpose |
 |---|---|---|---|
-| `@tauri-apps/cli` / Tauri | `2.x` | `MIT OR Apache-2.0` | Cross-platform desktop application shell and native bundler |
+| `tao` / `wry` | `0.31.x` / `0.48.x` | `Apache-2.0 OR MIT` | Cross-platform native desktop windowing and OS WebView shell |
 | `react` / `react-dom` | `19.x` | `MIT` | User interface component runtime |
-| `pdfjs-dist` | `6.5.x` | `Apache-2.0` | Browser-mode local PDF parsing, text extraction, and HTML canvas rendering |
+| `pdfjs-dist` | `6.5.x` | `Apache-2.0` | Fallback WebView/browser PDF canvas rendering and text extraction |
 | `typescript` | `5.7.x` | `Apache-2.0` | Static type checking |
 | `vite` | `6.x` | `MIT` | Frontend bundler |
 | `vitest` / `@testing-library/react` | `3.x` / `16.x` | `MIT` | Automated UI verification |

@@ -97,7 +97,13 @@ jobs:
 
           if [[ "${MATRIX_PLATFORM}" == "macos-latest" ]]; then
             APP_DIR="dist-macos/Readora.app/Contents"
-            mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources/ui"
+            mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources/ui" "${APP_DIR}/Resources/pdfium"
+            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz"; then
+              tar -xzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" -C "${RUNNER_TEMP}"
+              if [[ -f "${RUNNER_TEMP}/lib/libpdfium.dylib" ]]; then
+                cp "${RUNNER_TEMP}/lib/libpdfium.dylib" "${APP_DIR}/Resources/pdfium/libpdfium.dylib"
+              fi
+            fi
             cp target/release/readora-desktop "${APP_DIR}/MacOS/readora-desktop"
             chmod +x "${APP_DIR}/MacOS/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${APP_DIR}/Resources/ui/"
@@ -183,7 +189,13 @@ jobs:
 
           elif [[ "${MATRIX_PLATFORM}" == "ubuntu-latest" ]]; then
             DEB_ROOT="dist-linux/readora-deb"
-            mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps" "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps" "${DEB_ROOT}/usr/share/applications"
+            mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/readora/pdfium" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps" "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps" "${DEB_ROOT}/usr/share/applications"
+            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-linux-x64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz"; then
+              tar -xzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" -C "${RUNNER_TEMP}"
+              if [[ -f "${RUNNER_TEMP}/lib/libpdfium.so" ]]; then
+                cp "${RUNNER_TEMP}/lib/libpdfium.so" "${DEB_ROOT}/usr/share/readora/pdfium/libpdfium.so"
+              fi
+            fi
             cp target/release/readora-desktop "${DEB_ROOT}/usr/bin/readora-desktop"
             chmod 0755 "${DEB_ROOT}/usr/bin/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${DEB_ROOT}/usr/share/readora/ui/"
@@ -218,7 +230,13 @@ jobs:
 
           else
             WIN_STAGE="dist-windows/Readora"
-            mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/installer"
+            mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/pdfium" "${WIN_STAGE}/installer"
+            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-win-x64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz"; then
+              tar -xzf "${RUNNER_TEMP}/pdfium-win-x64.tgz" -C "${RUNNER_TEMP}"
+              if [[ -f "${RUNNER_TEMP}/bin/pdfium.dll" ]]; then
+                cp "${RUNNER_TEMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
+              fi
+            fi
             if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
               echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/win_cert.pfx"
               signtool.exe sign /f "${RUNNER_TEMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe || true
