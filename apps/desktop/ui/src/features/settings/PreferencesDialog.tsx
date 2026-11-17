@@ -37,7 +37,7 @@ const FALLBACK_SQLITE_SCHEMA_VERSION = 4;
 const FALLBACK_THIRD_PARTY_NOTICES: readonly ThirdPartyNoticeDto[] = [
   {
     name: "PDFium",
-    version: "chromium/6723",
+    version: "chromium/8165",
     license: "BSD-3-Clause AND Apache-2.0",
     role: "Dynamic native PDF rendering engine",
   },

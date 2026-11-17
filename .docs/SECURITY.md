@@ -8,7 +8,7 @@ Assume every PDF may be malformed, malicious, encrypted, deeply nested, decompre
 
 ### 1. PDF & untrusted input isolation
 - Isolate PDF parsing/rendering behind `crates/pdf-engine` traits (`crates/pdfium-adapter` only).
-- Pin prebuilt PDFium binaries to a reviewed tag (`chromium/6723` in `.github/workflows/release.yml`, `sbom.cdx.json`, and `THIRD_PARTY_NOTICES.md`) and fail closed if archive extraction fails.
+- Pin prebuilt PDFium binaries to a reviewed tag (`chromium/8165` in `.github/workflows/release.yml`, `sbom.cdx.json`, and `THIRD_PARTY_NOTICES.md`) and fail closed if archive extraction fails.
 - Enforce strict resource bounds: `512 MiB` maximum PDF size, `8192 px` maximum render dimension, bounded Flate decompression caps in the pure-Rust fallback parser, bounded HTTP worker pool (`8` threads, queue `64`), and byte-bounded LRU render cache.
 - Never execute PDF JavaScript, launch embedded files, or auto-open external protocols.
 - Zeroize PDF passwords in memory on drop, redact them in `Debug` impls, and never persist or log them.

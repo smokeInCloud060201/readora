@@ -2,7 +2,7 @@
 
 ## Release principle
 
-Build native artifacts on native operating-system runners (`.github/workflows/release.yml`). Readora packages a native `tao` + `wry` Rust binary (`readora-desktop`), compiled Vite UI assets (`apps/desktop/ui/dist`), and a pinned `chromium/6723` PDFium shared library on each target OS.
+Build native artifacts on native operating-system runners (`.github/workflows/release.yml`). Readora packages a native `tao` + `wry` Rust binary (`readora-desktop`), compiled Vite UI assets (`apps/desktop/ui/dist`), and a pinned `chromium/8165` PDFium shared library on each target OS.
 
 ## Official CI artifact matrix
 
@@ -49,13 +49,13 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 1. **`.github/workflows/ci.yml`**: Runs `cargo fmt`, `cargo clippy --locked -- -D warnings`, `cargo test --workspace --locked`, and `pnpm lint` / `typecheck` / `test` / `build` across `ubuntu-latest`, `macos-latest`, and `windows-latest`.
 2. **`.github/workflows/release.yml`**:
    - Triggered on `v*.*.*` tags or manual `workflow_dispatch` (defaulting `VITE_APP_VERSION` and `CLEAN_VERSION` to `1.1.0`).
-   - Fetches PDFium pinned deterministically to `PDFIUM_TAG="chromium%2F6723"` from `bblanchon/pdfium-binaries` and fails closed if `curl`, `tar`, or library extraction fails.
+   - Fetches PDFium pinned deterministically to `PDFIUM_TAG="chromium%2F8165"` from `bblanchon/pdfium-binaries` and fails closed if `curl`, `tar`, or library extraction fails.
    - Places macOS `libpdfium.dylib` inside `Contents/Frameworks/libpdfium.dylib`, signs it **first without entitlements**, then signs `Readora.app` with `--options runtime --entitlements apps/desktop/src-tauri/Entitlements.plist` **without `--deep`**, followed by `codesign --verify --deep --strict`, notarizes and staples `Readora.app` **before** archiving `Readora_<ver>_macos-aarch64.app.tar.gz` and building/notarizing/stapling the `.dmg`.
    - Generates `release-manifest-<label>.json` (recording exact `"asset"` and `"sha256"`), `.sha256` checksum lists, and GitHub Sigstore SLSA build provenance attestations.
 
 ## PDFium binary packaging rules
 
-- **Never** download mutable `releases/latest` PDFium archives in CI. Always pin an explicit `chromium/<build>` tag (currently `chromium/6723`) matching [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json).
+- **Never** download mutable `releases/latest` PDFium archives in CI. Always pin an explicit `chromium/<build>` tag (currently `chromium/8165`) matching [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json).
 - Fail closed if archive extraction or expected shared library verification fails.
 - Bundle [`LICENSE-MIT`](../LICENSE-MIT), [`LICENSE-APACHE`](../LICENSE-APACHE), [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`sbom.cdx.json`](../sbom.cdx.json) inside every OS distribution.
 
@@ -74,7 +74,7 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 
 - [x] Workspace version (`1.1.0`), [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`sbom.cdx.json`](../sbom.cdx.json) synced with `Cargo.lock` and `pnpm-lock.yaml`.
 - [x] Unit, adapter-contract, and integration tests pass on macOS, Linux, and Windows (`.github/workflows/ci.yml`).
-- [x] PDFium pinned to `chromium/6723` with fail-closed archive verification.
+- [x] PDFium pinned to `chromium/8165` with fail-closed archive verification.
 - [x] macOS dylib signed separately without entitlements before signing `Readora.app`.
 - [x] Debian package declares `Depends: libwebkit2gtk-4.1-0, libgtk-3-0` and `postrm` purges data strictly on `purge` without following symlinks.
 - [x] Logs and `SystemDiagnosticsDto` redact user home paths and never emit document text or passwords.

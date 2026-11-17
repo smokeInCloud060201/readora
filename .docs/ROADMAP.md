@@ -697,7 +697,7 @@ foundation                                      `.docs/DECISIONS.md`
 foundation                                      `tao`/`wry` + React/TS strict
 
 2 --- PDF engine        Complete                `pdf-engine` traits +
-integration                                     `pdfium-adapter` (`chromium/6723`) + tests
+integration                                     `pdfium-adapter` (`chromium/8165`) + tests
 
 3 --- Core reader MVP   Complete                Full reader UI, Figma SVG
                                                 icon system, Library,

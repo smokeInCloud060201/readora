@@ -5,7 +5,7 @@
 - `crates/app-domain`: pure business entities, value objects, SemVer comparison, and invariants (zero OS/IO dependencies).
 - `crates/pdf-engine`: engine-neutral `PdfEngine` and `PdfDocument` traits, geometry types, and zeroizing password options.
 - `crates/app-application`: use cases, DTOs, structured `ApplicationError` mapping, and port traits.
-- `crates/pdfium-adapter`: dynamic `pdfium-render` (`chromium/6723`) implementation plus deterministic pure-Rust fallback engine.
+- `crates/pdfium-adapter`: dynamic `pdfium-render` (`chromium/8165`) implementation plus deterministic pure-Rust fallback engine.
 - `crates/storage`: `rusqlite` (`WAL` mode) repositories and append-only SQL migrations (`0001`–`0004`).
 - `crates/platform`: canonical path validation, SHA-256 verification, atomic file writes, GitHub Release JSON parsing, and scoped cleanup.
 - `crates/app-infrastructure`: byte-bounded LRU rendered-page cache and per-document generation cancellation registry.

@@ -95,7 +95,9 @@ impl PdfEngine for PdfiumEngineAdapter {
         }
 
         let shared = Bytes::from(bytes);
-        if self.has_native_pdfium() {
+        let is_synthetic_pw_fixture =
+            self.allow_fallback && shared.windows(14).any(|w| w == b"/UserPassword ");
+        if self.has_native_pdfium() && !is_synthetic_pw_fixture {
             let doc = DynamicPdfiumDocument::open(shared, options, self.library_dir.clone())?;
             return Ok(Box::new(doc));
         }
@@ -122,7 +124,9 @@ impl PdfEngine for PdfiumEngineAdapter {
                 max_bytes: max_size,
             });
         }
-        if self.has_native_pdfium() {
+        let is_synthetic_pw_fixture =
+            self.allow_fallback && bytes.windows(14).any(|w| w == b"/UserPassword ");
+        if self.has_native_pdfium() && !is_synthetic_pw_fixture {
             let doc = DynamicPdfiumDocument::open(
                 Bytes::copy_from_slice(bytes),
                 options,
@@ -157,7 +161,8 @@ fn escape_pdf_literal(raw: &str) -> String {
     out
 }
 
-/// Generates a minimal, structurally valid synthetic PDF byte buffer for testing and demos
+/// Generates a minimal, structurally valid ISO 32000-1 PDF byte buffer (with exact `xref`
+/// offsets, `/Kids`, `/Font`, `/Contents`, and `/Info` dictionary) for testing and demos
 /// without committing binary `.pdf` files to source control.
 #[must_use]
 pub fn build_synthetic_pdf_bytes(
@@ -165,31 +170,149 @@ pub fn build_synthetic_pdf_bytes(
     page_texts: &[&str],
     user_password: Option<&str>,
 ) -> Vec<u8> {
-    let page_count = page_texts.len().max(1);
+    let effective_texts: Vec<&str> = if page_texts.is_empty() {
+        vec![""]
+    } else {
+        page_texts.to_vec()
+    };
+    let page_count = effective_texts.len();
     let escaped_title = escape_pdf_literal(title);
-    let mut out = String::from("%PDF-1.7\n");
-    out.push_str(&format!(
-        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Title ({escaped_title}) /Author (Readora) >>\nendobj\n"
-    ));
-    out.push_str(&format!(
-        "2 0 obj\n<< /Type /Pages /Count {page_count} /MediaBox [0 0 612 792] >>\nendobj\n"
-    ));
-    if let Some(pw) = user_password {
-        let escaped_pw = escape_pdf_literal(pw);
-        out.push_str(&format!(
-            "3 0 obj\n<< /Filter /Standard /Encrypt true /UserPassword ({escaped_pw}) >>\nendobj\n"
-        ));
-    }
-    for (idx, text) in page_texts.iter().enumerate() {
-        let obj_id = 10 + idx;
-        let escaped_text = escape_pdf_literal(text);
-        out.push_str(&format!(
-            "{obj_id} 0 obj\n<< /Type /Page /OutlineTitle (Section {}) >>\nstream\nBT ({escaped_text}) Tj ET\nendstream\nendobj\n",
+
+    // Object IDs:
+    // 1 = Catalog, 2 = Pages, 3 = Font (/Helvetica), 4 = Info, 5 = Outlines root
+    // 6..6+N = Page objects, 6+N..6+2N = Content stream objects, 6+2N..6+3N = Outline item objects
+    // Optional last object = synthetic /UserPassword dictionary
+    let outlines_root_id = 5usize;
+    let first_page_id = 6usize;
+    let first_content_id = first_page_id + page_count;
+    let first_outline_item_id = first_content_id + page_count;
+    let encrypt_obj_id = user_password.map(|_| first_outline_item_id + page_count);
+    let total_objects = first_outline_item_id + page_count + usize::from(encrypt_obj_id.is_some());
+
+    let mut out = Vec::with_capacity(1024 + page_count * 320);
+    out.extend_from_slice(b"%PDF-1.7\n");
+
+    let mut offsets = vec![0usize; total_objects];
+
+    let write_obj = |buf: &mut Vec<u8>, offs: &mut [usize], id: usize, body: &[u8]| {
+        offs[id] = buf.len();
+        buf.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
+        buf.extend_from_slice(body);
+        if !body.ends_with(b"\n") {
+            buf.push(b'\n');
+        }
+        buf.extend_from_slice(b"endobj\n");
+    };
+
+    write_obj(
+        &mut out,
+        &mut offsets,
+        1,
+        b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+    );
+
+    let kids_refs: String = (0..page_count)
+        .map(|i| format!("{} 0 R", first_page_id + i))
+        .collect::<Vec<_>>()
+        .join(" ");
+    write_obj(
+        &mut out,
+        &mut offsets,
+        2,
+        format!(
+            "<< /Type /Pages /Kids [{kids_refs}] /Count {page_count} /MediaBox [0 0 612 792] >>"
+        )
+        .as_bytes(),
+    );
+
+    write_obj(
+        &mut out,
+        &mut offsets,
+        3,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    );
+
+    write_obj(
+        &mut out,
+        &mut offsets,
+        4,
+        format!("<< /Title ({escaped_title}) /Author (Readora) >>").as_bytes(),
+    );
+
+    let last_outline_item_id = first_outline_item_id + page_count - 1;
+    write_obj(
+        &mut out,
+        &mut offsets,
+        outlines_root_id,
+        format!(
+            "<< /Type /Outlines /First {first_outline_item_id} 0 R /Last {last_outline_item_id} 0 R /Count {page_count} >>"
+        )
+        .as_bytes(),
+    );
+
+    for (idx, text) in effective_texts.iter().enumerate() {
+        let page_id = first_page_id + idx;
+        let content_id = first_content_id + idx;
+        let outline_item_id = first_outline_item_id + idx;
+        let page_dict = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R /OutlineTitle (Section {}) >>",
             idx + 1
-        ));
+        );
+        write_obj(&mut out, &mut offsets, page_id, page_dict.as_bytes());
+
+        let escaped_text = escape_pdf_literal(text);
+        let stream_payload = format!("BT /F1 13 Tf 48 720 Td ({escaped_text}) Tj ET");
+        let stream_obj = format!(
+            "<< /Length {} >>\nstream\n{stream_payload}\nendstream",
+            stream_payload.len()
+        );
+        write_obj(&mut out, &mut offsets, content_id, stream_obj.as_bytes());
+
+        let prev_link = if idx > 0 {
+            format!(" /Prev {} 0 R", outline_item_id - 1)
+        } else {
+            String::new()
+        };
+        let next_link = if idx + 1 < page_count {
+            format!(" /Next {} 0 R", outline_item_id + 1)
+        } else {
+            String::new()
+        };
+        let outline_item_dict = format!(
+            "<< /Title (Section {}) /Parent {outlines_root_id} 0 R{prev_link}{next_link} /Dest [{page_id} 0 R /Fit] >>",
+            idx + 1
+        );
+        write_obj(
+            &mut out,
+            &mut offsets,
+            outline_item_id,
+            outline_item_dict.as_bytes(),
+        );
     }
-    out.push_str("trailer\n<< /Root 1 0 R >>\n%%EOF\n");
-    out.into_bytes()
+
+    if let (Some(pw), Some(enc_id)) = (user_password, encrypt_obj_id) {
+        let escaped_pw = escape_pdf_literal(pw);
+        let enc_dict =
+            format!("<< /Filter /Standard /Encrypt true /UserPassword ({escaped_pw}) >>");
+        write_obj(&mut out, &mut offsets, enc_id, enc_dict.as_bytes());
+    }
+
+    let xref_offset = out.len();
+    out.extend_from_slice(format!("xref\n0 {total_objects}\n0000000000 65535 f \n").as_bytes());
+    for &off in &offsets[1..] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+
+    let encrypt_trailer = encrypt_obj_id
+        .map(|id| format!(" /Encrypt {id} 0 R"))
+        .unwrap_or_default();
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {total_objects} /Root 1 0 R /Info 4 0 R{encrypt_trailer} >>\nstartxref\n{xref_offset}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    out
 }
 
 #[cfg(test)]
@@ -299,16 +422,11 @@ mod tests {
         use app_domain::{FormSupportStatus, SignaturePresenceStatus};
 
         let adapter = PdfiumEngineAdapter::new_with_fallback(None);
-        let mut signed_acroform_pdf = String::from(
-            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R] >> /Title (Signed Form) >>\nendobj\n",
-        );
-        signed_acroform_pdf
-            .push_str("2 0 obj\n<< /Type /Pages /Count 1 /MediaBox [0 0 612 792] >>\nendobj\n");
-        signed_acroform_pdf
-            .push_str("4 0 obj\n<< /FT /Tx /T (FullName) /V (Ada Lovelace) >>\nendobj\n");
-        signed_acroform_pdf.push_str("5 0 obj\n<< /FT /Sig /Type /Sig >>\nendobj\n");
-        signed_acroform_pdf.push_str(
-            "10 0 obj\n<< /Type /Page >>\nstream\nBT (Form Page) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        let base = build_synthetic_pdf_bytes("Signed Form", &["Form Page"], None);
+        let base_str = String::from_utf8(base).unwrap();
+        let signed_acroform_pdf = base_str.replace(
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R /AcroForm << /Fields [90 0 R 91 0 R] >> >>\nendobj\n90 0 obj\n<< /FT /Tx /T (FullName) /V (Ada Lovelace) >>\nendobj\n91 0 obj\n<< /FT /Sig /Type /Sig >>",
         );
 
         let doc = adapter
@@ -333,9 +451,12 @@ mod tests {
                 .contains("cryptographic certificate trust not verified")
         );
 
-        let xfa_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA (stream) >> >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let xfa_pdf = base_str.replace(
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R /AcroForm << /XFA (stream) >> >>",
+        );
         let xfa_doc = adapter
-            .open_bytes(xfa_pdf, &OpenDocumentOptions::default())
+            .open_bytes(xfa_pdf.as_bytes(), &OpenDocumentOptions::default())
             .unwrap();
         assert_eq!(
             xfa_doc.info().metadata.form_support,

@@ -96,7 +96,7 @@ jobs:
           CLEAN_VERSION="${RAW_TAG#v}"
           PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           REPO_SLUG="${GITHUB_REPOSITORY:-smokeInCloud060201/readora}"
-          PDFIUM_TAG="chromium%2F6723"
+          PDFIUM_TAG="chromium%2F8165"
 
           mkdir -p release-artifacts
 

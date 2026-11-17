@@ -202,9 +202,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:generic/pdfium@chromium-6723",
+      "bom-ref": "pkg:generic/pdfium@chromium-8165",
       "name": "pdfium",
-      "version": "chromium-6723",
+      "version": "chromium-8165",
       "licenses": [{ "expression": "BSD-3-Clause AND Apache-2.0" }]
     },
     {

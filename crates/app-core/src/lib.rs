@@ -599,7 +599,7 @@ impl AppCore {
             third_party_notices: vec![
                 ThirdPartyNoticeDto {
                     name: "PDFium".to_owned(),
-                    version: "chromium/6723".to_owned(),
+                    version: "chromium/8165".to_owned(),
                     license: "BSD-3-Clause AND Apache-2.0".to_owned(),
                     role: "Dynamic native PDF rendering engine".to_owned(),
                 },

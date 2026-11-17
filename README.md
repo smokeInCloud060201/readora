@@ -81,7 +81,7 @@ flowchart TD
     end
 
     subgraph Adapters["Infrastructure Adapters"]
-        Pdfium["crates/pdfium-adapter (Dynamic PDFium chromium/6723 + Pure-Rust Fallback)"]
+        Pdfium["crates/pdfium-adapter (Dynamic PDFium chromium/8165 + Pure-Rust Fallback)"]
         Storage["crates/storage (SQLite WAL + Append-Only Migrations 0001..0004)"]
         Platform["crates/platform (Path Validation, SHA-256, Atomic Writes, Cleanup)"]
         Infra["crates/app-infrastructure (Byte-Bounded LRU Cache & Cancellation)"]
@@ -103,7 +103,7 @@ flowchart TD
 | [`crates/app-domain`](crates/app-domain) | Domain | Pure domain models (`ViewState`, `DocumentDescriptor`, `Bookmark`, `Annotation`, `AppSettings`), value objects (`ZoomLevel`, `PageIndex`, `Rotation`), and SemVer comparison. Zero OS/IO dependencies. |
 | [`crates/pdf-engine`](crates/pdf-engine) | Domain Port | Engine-agnostic traits (`PdfEngine`, `PdfDocument`), page geometry, and zeroizing password-redacted open options. |
 | [`crates/app-application`](crates/app-application) | Application | Use-case orchestration, boundary DTOs, structured `ApplicationError` codes, and port traits (`PlatformPort`, `RenderCachePort`, `SettingsRepository`). |
-| [`crates/pdfium-adapter`](crates/pdfium-adapter) | Adapter | Dynamic `pdfium-render` adapter (`chromium/6723`) with an automatic pure-Rust fallback engine and PNG encoder. |
+| [`crates/pdfium-adapter`](crates/pdfium-adapter) | Adapter | Dynamic `pdfium-render` adapter (`chromium/8165`) with an automatic pure-Rust fallback engine and PNG encoder. |
 | [`crates/storage`](crates/storage) | Adapter | `rusqlite` (`WAL` mode) persistence for recent documents, favorites, archive state, bookmarks, annotations, and settings with append-only SQL migrations (`0001`–`0004`). |
 | [`crates/platform`](crates/platform) | Adapter | Canonical path validation, deterministic document ID hashing, atomic file writes, GitHub Release JSON parsing, and strictly-scoped uninstall cleanup. |
 | [`crates/app-infrastructure`](crates/app-infrastructure) | Adapter | Byte-bounded LRU rendered-page cache and per-document generation cancellation registry. |

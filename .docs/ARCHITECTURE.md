@@ -40,7 +40,7 @@ Why:
 │  PdfEngine / PdfDocument      Storage / Platform / RenderCache ports        │
 │       │                            │                                        │
 │  pdfium-adapter               storage (rusqlite WAL) / platform / infra     │
-│  (PDFium chromium/6723 +                                                    │
+│  (PDFium chromium/8165 +                                                    │
 │   pure-Rust fallback)                                                       │
 │                                                                             │
 │  Domain (crates/app-domain): DocumentDescriptor, PageIndex, ViewState,      │
@@ -57,7 +57,7 @@ The Cargo workspace in [`Cargo.toml`](../Cargo.toml) contains **9 Rust members**
 | `crates/app-domain` | Entities, value objects, invariants, SemVer comparison, domain errors | `tao`, `wry`, UI, SQLite, PDFium, OS I/O |
 | `crates/pdf-engine` | Engine-neutral `PdfEngine` / `PdfDocument` traits, geometry, zeroizing password options | PDFium implementation, SQLite, UI |
 | `crates/app-application` | Use cases, orchestration, port traits, boundary DTOs | Concrete adapters (`rusqlite`, `pdfium-render`, `wry`) |
-| `crates/pdfium-adapter` | Dynamic `pdfium-render` bindings (`chromium/6723`) + pure-Rust fallback engine & PNG encoder | UI, desktop shell |
+| `crates/pdfium-adapter` | Dynamic `pdfium-render` bindings (`chromium/8165`) + pure-Rust fallback engine & PNG encoder | UI, desktop shell |
 | `crates/storage` | `rusqlite` (`WAL` mode) repositories and append-only migrations (`0001`–`0004`) | UI, PDFium |
 | `crates/platform` | Canonical path validation, SHA-256 verification, atomic writes, release JSON parsing, scoped cleanup | Domain internals, UI |
 | `crates/app-infrastructure` | Byte-bounded LRU rendered-page cache and generation cancellation registry | UI, SQLite |
@@ -118,5 +118,5 @@ External user PDF files remain untouched at their original paths; browser/drag-a
 ## 7. PDF engine strategy
 
 `PdfEngine` and `PdfDocument` live in `crates/pdf-engine`; all `pdfium-render` bindings live exclusively in `crates/pdfium-adapter`.
-- Release installers bundle prebuilt PDFium pinned to **`chromium/6723`** (`bblanchon/pdfium-binaries` tag `chromium%2F6723`), matching [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json).
+- Release installers bundle prebuilt PDFium pinned to **`chromium/8165`** (`bblanchon/pdfium-binaries` tag `chromium%2F8165`), matching [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json).
 - When no dynamic PDFium binary is present (e.g., clean developer checkouts and CI unit tests), `PdfiumEngineAdapter` transparently falls back to its built-in deterministic pure-Rust PDF parser/renderer.
