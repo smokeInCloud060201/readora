@@ -6,9 +6,9 @@
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:cargo/readora-desktop@1.1.0",
+      "bom-ref": "pkg:cargo/readora-desktop@1.1.1",
       "name": "readora-desktop",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "description": "Local-first open-source cross-platform PDF reader built with Rust, tao 0.31.1, wry 0.48.1, and React 19.3.1.",
       "licenses": [
         {
@@ -20,58 +20,58 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-domain@1.1.0",
+      "bom-ref": "pkg:cargo/app-domain@1.1.1",
       "name": "app-domain",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-application@1.1.0",
+      "bom-ref": "pkg:cargo/app-application@1.1.1",
       "name": "app-application",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/pdf-engine@1.1.0",
+      "bom-ref": "pkg:cargo/pdf-engine@1.1.1",
       "name": "pdf-engine",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/pdfium-adapter@1.1.0",
+      "bom-ref": "pkg:cargo/pdfium-adapter@1.1.1",
       "name": "pdfium-adapter",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/storage@1.1.0",
+      "bom-ref": "pkg:cargo/storage@1.1.1",
       "name": "storage",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/platform@1.1.0",
+      "bom-ref": "pkg:cargo/platform@1.1.1",
       "name": "platform",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-infrastructure@1.1.0",
+      "bom-ref": "pkg:cargo/app-infrastructure@1.1.1",
       "name": "app-infrastructure",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-core@1.1.0",
+      "bom-ref": "pkg:cargo/app-core@1.1.1",
       "name": "app-core",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
