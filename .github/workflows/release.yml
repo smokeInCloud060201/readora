@@ -267,18 +267,20 @@ jobs:
 
           else
             WIN_STAGE="dist-windows/Readora"
-            mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/pdfium" "${WIN_STAGE}/installer"
+            WIN_TMP="dist-windows/_tmp"
+            mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/pdfium" "${WIN_STAGE}/installer" "${WIN_TMP}"
 
-            curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-win-x64.tgz" \
+            curl -fSL --retry 3 -o "${WIN_TMP}/pdfium-win-x64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-win-x64.tgz"
-            tar -xzf "${RUNNER_TEMP}/pdfium-win-x64.tgz" -C "${RUNNER_TEMP}"
-            test -f "${RUNNER_TEMP}/bin/pdfium.dll"
-            cp "${RUNNER_TEMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
+            tar -xzf "${WIN_TMP}/pdfium-win-x64.tgz" -C "${WIN_TMP}"
+            test -f "${WIN_TMP}/bin/pdfium.dll"
+            cp "${WIN_TMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
 
             if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
-              echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/win_cert.pfx"
-              signtool.exe sign /f "${RUNNER_TEMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe
+              echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${WIN_TMP}/win_cert.pfx"
+              MSYS_NO_PATHCONV=1 signtool.exe sign /f "${WIN_TMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe
             fi
+            rm -rf "${WIN_TMP}"
             cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
             cp -R apps/desktop/ui/dist/* "${WIN_STAGE}/ui/"
             cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
