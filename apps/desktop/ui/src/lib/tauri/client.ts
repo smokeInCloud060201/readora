@@ -671,6 +671,7 @@ export const readoraApi = {
       settings.github_release_repo || "smokeInCloud060201/readora"
     ).trim();
 
+    let stagedVerifiedViaWebview = false;
     if (typeof fetch === "function" && repo.includes("/")) {
       try {
         const response = await fetch(
@@ -684,22 +685,28 @@ export const readoraApi = {
           const rawJson = await response.text();
           if (rawJson.trim().startsWith("{")) {
             if (invoke) {
-              await invoke<AppUpdateStatusDto>("app_stage_github_release", {
-                rawJson,
-              });
+              const staged = await invoke<AppUpdateStatusDto>(
+                "app_stage_github_release",
+                {
+                  rawJson,
+                },
+              );
+              stagedVerifiedViaWebview = Boolean(staged?.verified);
             } else {
-              fallbackBridge.stageGithubReleaseJson(rawJson);
+              const staged = fallbackBridge.stageGithubReleaseJson(rawJson);
+              stagedVerifiedViaWebview = Boolean(staged?.verified);
             }
           }
         }
       } catch {
-        // Offline or network unreachable — fall back to locally staged release manifest
+        // Offline or network unreachable — fall back to native remote manifest or cached state
       }
     }
 
     if (invoke) {
       return invoke<AppUpdateStatusDto>("app_check_for_updates", {
         includeDismissed,
+        fetchRemote: !stagedVerifiedViaWebview,
       });
     }
     return fallbackBridge.checkForUpdates(includeDismissed);

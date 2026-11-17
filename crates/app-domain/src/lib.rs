@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(bm.label, "Chapter 1");
 
         let mut settings = AppSettings::default();
-        assert!(!settings.auto_check_updates);
+        assert!(settings.auto_check_updates);
         assert!(settings.reopen_last_document);
         assert!(settings.remember_page_position);
         assert!(!settings.confirm_before_delete);

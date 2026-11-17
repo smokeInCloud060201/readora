@@ -146,7 +146,7 @@ export const App: React.FC = () => {
     remember_page_position: true,
     confirm_before_delete: false,
     show_extracted_text_layer: false,
-    auto_check_updates: false,
+    auto_check_updates: true,
   });
   const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() => {
     if (
@@ -487,7 +487,7 @@ export const App: React.FC = () => {
         setRecentDocs(recents);
         setSettings(loadedSettings);
 
-        if (loadedSettings.auto_check_updates === true) {
+        if (loadedSettings.auto_check_updates !== false) {
           const status = await readoraApi.checkForUpdates(false);
           if (isMountedRef.current) {
             setUpdateStatus(status);
@@ -1015,7 +1015,7 @@ export const App: React.FC = () => {
     const report = await readoraApi.cleanupApplicationData();
     const freshSettings = await readoraApi.getSettings();
     const freshUpdateStatus =
-      freshSettings.auto_check_updates === true
+      freshSettings.auto_check_updates !== false
         ? await readoraApi.checkForUpdates(false)
         : null;
     setSession(null);
@@ -1619,6 +1619,8 @@ export const App: React.FC = () => {
           <PreferencesDialog
             settings={settings}
             initialSection={preferencesSection}
+            updateStatus={updateStatus}
+            onCheckForUpdates={() => void handleCheckForUpdates()}
             onSave={(patch) => void handleSavePreferences(patch)}
             onCleanupAppData={() => void handleCleanupAppData()}
             onClose={() => setShowPreferences(false)}

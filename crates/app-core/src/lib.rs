@@ -123,6 +123,16 @@ impl AppCore {
                 if settings.staged_update_version.is_some()
                     || settings.installed_version.as_deref() != Some(APP_VERSION)
                 {
+                    let upgraded_from_opt_in_era = match settings.installed_version.as_deref() {
+                        Some(prev) => {
+                            app_domain::compare_semver(prev, "1.1.2").is_lt()
+                                && app_domain::compare_semver(APP_VERSION, prev).is_gt()
+                        }
+                        None => true,
+                    };
+                    if upgraded_from_opt_in_era {
+                        settings.auto_check_updates = true;
+                    }
                     settings.installed_version = Some(APP_VERSION.to_owned());
                     settings.staged_update_version = None;
                     SettingsRepository::save(storage.as_ref(), &settings)?;
@@ -1108,5 +1118,41 @@ mod tests {
         let post_restart_update = restarted.check_for_updates(false).unwrap();
         assert_eq!(post_restart_update.current_version, APP_VERSION);
         assert!(!post_restart_update.staged_for_restart);
+
+        // 5. Upgrading from pre-1.1.2 (e.g. 1.1.0) enables auto_check_updates once, while preserving future opt-outs
+        let mut legacy_settings = SettingsRepository::load(restarted.storage.as_ref()).unwrap();
+        legacy_settings.installed_version = Some("1.1.0".to_owned());
+        legacy_settings.auto_check_updates = false;
+        SettingsRepository::save(restarted.storage.as_ref(), &legacy_settings).unwrap();
+        let storage_for_upgrade = Arc::clone(&restarted.storage);
+        let data_for_upgrade = restarted.data_dir.clone();
+        let cache_for_upgrade = restarted.cache_dir.clone();
+        drop(restarted);
+
+        let upgraded = AppCore::with_storage_and_dirs(
+            Arc::clone(&storage_for_upgrade),
+            data_for_upgrade.clone(),
+            cache_for_upgrade.clone(),
+            false,
+        )
+        .unwrap();
+        assert!(upgraded.get_settings().unwrap().auto_check_updates);
+
+        // Once on the current version, disabling auto_check_updates persists across restarts
+        upgraded
+            .update_settings(SettingsPatchDto {
+                auto_check_updates: Some(false),
+                ..SettingsPatchDto::default()
+            })
+            .unwrap();
+        drop(upgraded);
+        let opted_out = AppCore::with_storage_and_dirs(
+            storage_for_upgrade,
+            data_for_upgrade,
+            cache_for_upgrade,
+            false,
+        )
+        .unwrap();
+        assert!(!opted_out.get_settings().unwrap().auto_check_updates);
     }
 }

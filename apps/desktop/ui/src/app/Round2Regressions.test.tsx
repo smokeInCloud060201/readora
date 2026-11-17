@@ -1244,4 +1244,134 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
       pdfCanvasRenderer.sanitizeMetadataTitle("Microsoft Word - Trung Bộ Kinh"),
     ).toBe("Trung Bộ Kinh");
   });
+
+  it("surfaces automatic startup update alert, provides Check for updates in Preferences → About, and falls back to native fetchRemote when WebView fetch lacks verified digest", async () => {
+    const validSha256 = "a".repeat(64);
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            tag_name: "v9.9.9",
+            name: "Readora 9.9.9",
+            body: "Faster rendering and automatic update notifications.",
+            published_at: "2026-11-17T00:00:00Z",
+            assets: [
+              {
+                name: "Readora_9.9.9_universal.dmg",
+                size: 12 * 1024 * 1024,
+                digest: `sha256:${validSha256}`,
+                browser_download_url:
+                  "https://github.com/smokeInCloud060201/readora/releases/download/v9.9.9/Readora_9.9.9_universal.dmg",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+
+    render(<App />);
+    // Default startup auto-check surfaces the top-right Update available pill automatically
+    const updatePill = await screen.findByRole("button", {
+      name: "Update available",
+    });
+    expect(updatePill).toBeInTheDocument();
+
+    // Preferences → About & Licenses also exposes a Check for updates button that opens UpdateDialog
+    fireEvent.click(screen.getByLabelText("Preferences"));
+    fireEvent.click(
+      screen.getByRole("button", { name: /About & Licenses/i }),
+    );
+    const aboutCheckBtn = screen.getByRole("button", {
+      name: "Check for updates",
+    });
+    expect(aboutCheckBtn).toHaveTextContent("Update to 9.9.9");
+    fireEvent.click(aboutCheckBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("dialog", { name: "Update Available Dialog" }),
+      ).toBeInTheDocument();
+    });
+
+    // Verify native IPC fetchRemote fallback when WebView fetch fails vs when verified
+    const invoked: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+    const win = window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+    };
+    win.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+        invoked.push({ cmd, args });
+        if (cmd === "settings_get") {
+          return {
+            theme: "system",
+            default_layout: "continuous",
+            default_fit_mode: "fit_width",
+            default_zoom: 1.0,
+            render_cache_budget_bytes: 64 * 1024 * 1024,
+            prefetch_window: 1,
+            auto_check_updates: true,
+            github_release_repo: "smokeInCloud060201/readora",
+          };
+        }
+        if (cmd === "app_stage_github_release") {
+          return {
+            current_version: "1.1.1",
+            update_available: true,
+            latest_version: "9.9.9",
+            release_title: "Readora 9.9.9",
+            release_notes: "Notes",
+            package_size_bytes: 1024,
+            sha256_checksum: validSha256,
+            download_url: null,
+            github_repo: "smokeInCloud060201/readora",
+            verified: true,
+            staged_for_restart: false,
+            checked_at_unix_ms: Date.now(),
+          };
+        }
+        return {
+          current_version: "1.1.1",
+          update_available: false,
+          latest_version: null,
+          release_title: null,
+          release_notes: null,
+          package_size_bytes: null,
+          sha256_checksum: null,
+          download_url: null,
+          github_repo: "smokeInCloud060201/readora",
+          verified: false,
+          staged_for_restart: false,
+          checked_at_unix_ms: Date.now(),
+        };
+      },
+    };
+
+    try {
+      // 1. WebView fetch succeeded with verified SHA-256 -> fetchRemote: false
+      await readoraApi.checkForUpdates(true);
+      const firstCheck = invoked.find((c) => c.cmd === "app_check_for_updates");
+      expect(firstCheck?.args).toEqual({
+        includeDismissed: true,
+        fetchRemote: false,
+      });
+
+      // 2. WebView fetch fails -> native curl fallback enabled via fetchRemote: true
+      invoked.length = 0;
+      globalThis.fetch = vi.fn(async () => {
+        throw new Error("Network blocked in WebView");
+      }) as unknown as typeof fetch;
+      await readoraApi.checkForUpdates(false);
+      const fallbackCheck = invoked.find(
+        (c) => c.cmd === "app_check_for_updates",
+      );
+      expect(fallbackCheck?.args).toEqual({
+        includeDismissed: false,
+        fetchRemote: true,
+      });
+    } finally {
+      delete win.__TAURI_INTERNALS__;
+    }
+  });
 });

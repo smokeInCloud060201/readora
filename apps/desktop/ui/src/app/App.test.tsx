@@ -714,7 +714,7 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     }
   });
 
-  it("makes zero startup network requests by default, validates SHA-256 digests strictly, and supports Escape modal dismissal", async () => {
+  it("checks for updates once on startup by default, respects opt-out, validates SHA-256 digests strictly, and supports Escape modal dismissal", async () => {
     const fetchSpy = vi.fn(
       async () =>
         new Response("{}", {
@@ -724,12 +724,20 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     );
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
+    const { unmount } = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Your library")).toBeInTheDocument();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+    unmount();
+
+    // When auto_check_updates is disabled, startup makes ZERO external GitHub API requests
+    fetchSpy.mockClear();
+    await readoraApi.updateSettings({ auto_check_updates: false });
     render(<App />);
     await waitFor(() => {
       expect(screen.getByText("Your library")).toBeInTheDocument();
     });
-
-    // Startup makes ZERO external GitHub API requests when auto_check_updates defaults to false
     expect(fetchSpy).not.toHaveBeenCalled();
 
     // Non-hex or missing GitHub digests must NOT fabricate verified SHA-256

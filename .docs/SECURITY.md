@@ -22,7 +22,7 @@ Assume every PDF may be malformed, malicious, encrypted, deeply nested, decompre
 - Lock WebView navigation via `is_allowed_navigation_url` to exact `http://127.0.0.1:<port>` authorities (blocking `about:blank`, `javascript:`, `@` userinfo bypasses, and port-prefix collisions), block new windows (`with_new_window_req_handler(|_| false)`), inject the RPC bridge at document creation with subframe/origin guards and captured `window.fetch`, and sanitize all hyperlinks rendered in the UI.
 
 ### 3. Self-updater, installer & privacy controls
-- Keep automatic update checks **opt-in** (`auto_check_updates = false` by default) so Readora makes zero unsolicited network connections.
+- Query only the configured GitHub Releases endpoint (`/repos/{owner}/{repo}/releases/latest` over HTTPS with strict `is_valid_github_repo_slug` validation) on launch when `auto_check_updates = true` (user-configurable in `Preferences → General`, with zero telemetry or document metadata sent).
 - Stage downloaded updates inside a mode-`0700` CSPRNG temporary directory under `<app_data_dir>/updates`, verify 64-hex SHA-256 checksums **fail-closed** against the staged release manifest, verify macOS `codesign --verify --deep --strict`, pass bundle paths as positional `$1` arguments (never shell interpolation), and back up/restore `Readora.app` on move failure.
 - On Linux, `DEBIAN/postrm` cleans user artifacts **only on `purge`** (never `remove`/`upgrade`), enforces fail-closed non-root privilege drop via `runuser` or `su` (never executing `rm -rf` inside user home directories as `uid 0`), and refuses symlinked path segments (`find -P`).
 - Never log document text, passwords, or unredacted user home paths.

@@ -5,6 +5,7 @@ import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
 import { useModalDialog } from "../../shared/hooks/useModalDialog";
 import {
   type AppSettingsDto,
+  type AppUpdateStatusDto,
   type FitMode,
   type LayoutMode,
   type SettingsPatchDto,
@@ -22,6 +23,8 @@ export type PreferencesSection =
 interface PreferencesDialogProps {
   settings: AppSettingsDto;
   initialSection?: PreferencesSection;
+  updateStatus?: AppUpdateStatusDto | null;
+  onCheckForUpdates?: () => void;
   onSave: (patch: SettingsPatchDto) => void;
   onCleanupAppData?: () => void;
   onClose: () => void;
@@ -106,6 +109,8 @@ function clampPrefetchWindow(raw: string): number {
 export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   settings,
   initialSection = "appearance",
+  updateStatus = null,
+  onCheckForUpdates,
   onSave,
   onCleanupAppData,
   onClose,
@@ -147,7 +152,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     settings.confirm_before_delete ?? false,
   );
   const [autoCheckUpdates, setAutoCheckUpdates] = useState<boolean>(
-    settings.auto_check_updates ?? false,
+    settings.auto_check_updates ?? true,
   );
   const [githubReleaseRepo, setGithubReleaseRepo] = useState<string>(
     settings.github_release_repo ?? "smokeInCloud060201/readora",
@@ -361,8 +366,8 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     Automatically check for updates
                   </span>
                   <span className="preferences-toggle-sub">
-                    Opt in to query GitHub Releases ({githubReleaseRepo}) on
-                    launch.
+                    Query GitHub Releases ({githubReleaseRepo}) on launch and
+                    notify when a verified update is ready.
                   </span>
                 </div>
                 <input
@@ -481,6 +486,35 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
               className="preferences-fields-grid"
               aria-label="System Diagnostics and Licenses"
             >
+              {onCheckForUpdates && (
+                <div className="preferences-toggle-item">
+                  <div>
+                    <span className="preferences-toggle-title">
+                      Software updates
+                    </span>
+                    <span className="preferences-toggle-sub">
+                      {updateStatus?.update_available &&
+                      updateStatus.latest_version
+                        ? `Focus Reader ${updateStatus.latest_version} is ready to install.`
+                        : `Installed release: Focus Reader ${resolvedVersion} (${githubReleaseRepo}).`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className={`focus-btn ${
+                      updateStatus?.update_available ? "primary" : "secondary"
+                    }`}
+                    onClick={onCheckForUpdates}
+                    aria-label="Check for updates"
+                  >
+                    {updateStatus?.update_available &&
+                    updateStatus.latest_version
+                      ? `Update to ${updateStatus.latest_version}`
+                      : "Check for updates"}
+                  </button>
+                </div>
+              )}
+
               <dl className="details-meta-list">
                 <div className="details-meta-row">
                   <dt>Release Version</dt>

@@ -18,7 +18,7 @@ pub const MAX_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_PREFETCH_WINDOW: u32 = 5;
 
 const fn default_auto_check_updates() -> bool {
-    false
+    true
 }
 
 const fn default_true() -> bool {

@@ -110,7 +110,7 @@ Binary PDF imports (`/__readora_import`, bounded at `512 MiB`) and binary PDF re
 SQLite (`readora.sqlite` in OS application data directory) stores application metadata only:
 - recent documents, favorite/archive flags, and last reading position/zoom/rotation
 - bookmarks and user annotations (highlights, underlines, comments)
-- reading preferences and application settings (including opt-in `auto_check_updates` default `false`)
+- reading preferences and application settings (including user-configurable `auto_check_updates`, enabled by default and toggleable in `Preferences → General`)
 - append-only schema migrations (`0001` → `0002` → `0003` → `0004`)
 
 External user PDF files remain untouched at their original paths; browser/drag-and-drop imports are staged inside `<app_data_dir>/library/pdfs/` and cleaned up cleanly on `--uninstall-cleanup` or package purge.
