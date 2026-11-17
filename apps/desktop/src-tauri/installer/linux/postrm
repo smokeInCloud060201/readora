@@ -1,39 +1,147 @@
 #!/bin/sh
-# Readora Debian/Ubuntu/RPM post-removal script
-# Removes ONLY Readora's own SQLite database and cache artifacts.
-# Never deletes user PDF documents or non-empty directories containing unrelated files.
-set -e
+# Readora Debian/Ubuntu post-removal script (Debian Policy §6.5)
+# Removes ONLY Readora's own SQLite database, staged library/update files, and cache artifacts
+# strictly on `purge` (NEVER on `remove` or `upgrade`), refusing symlinked path segments and
+# dropping privileges to the target non-root user whenever possible.
+set -eu
 
-case "$1" in
-  purge|remove)
-    TARGET_USER="${SUDO_USER:-$USER}"
-    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
-      USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6 2>/dev/null || echo "/home/$TARGET_USER")
-    else
-      USER_HOME="$HOME"
+case "${1:-}" in
+  purge)
+    TARGET_USER="${SUDO_USER:-}"
+    case "$TARGET_USER" in
+      ""|root|*[!a-zA-Z0-9._-]*)
+        exit 0
+        ;;
+    esac
+
+    USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6 2>/dev/null || true)
+    case "$USER_HOME" in
+      /*) ;;
+      *) exit 0 ;;
+    esac
+
+    if [ ! -d "$USER_HOME" ] || [ -L "$USER_HOME" ]; then
+      exit 0
     fi
 
-    if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
-      DATA_DIR="${XDG_DATA_HOME:-$USER_HOME/.local/share}/readora"
-      CACHE_DIR="${XDG_CACHE_HOME:-$USER_HOME/.cache}/readora"
+    check_no_symlink_segments() {
+      target_path="$1"
+      cur=""
+      old_ifs="$IFS"
+      IFS="/"
+      # shellcheck disable=SC2086
+      set -- $target_path
+      IFS="$old_ifs"
+      for seg in "$@"; do
+        [ -n "$seg" ] || continue
+        cur="$cur/$seg"
+        if [ -L "$cur" ]; then
+          return 1
+        fi
+      done
+      return 0
+    }
 
-      if [ -d "$DATA_DIR" ]; then
-        rm -f "$DATA_DIR/readora.sqlite" \
-              "$DATA_DIR/readora.sqlite-wal" \
-              "$DATA_DIR/readora.sqlite-shm" \
-              "$DATA_DIR/readora.sqlite-journal"
-        rm -f "$DATA_DIR/cache/"*.png "$DATA_DIR/cache/"*.cache "$DATA_DIR/cache/"*.tmp "$DATA_DIR/cache/"*.json 2>/dev/null || true
-        rmdir --ignore-fail-on-non-empty "$DATA_DIR/cache" 2>/dev/null || true
+    DATA_DIR="$USER_HOME/.local/share/readora"
+    CACHE_DIR="$USER_HOME/.cache/readora"
+
+    if ! check_no_symlink_segments "$DATA_DIR" || ! check_no_symlink_segments "$CACHE_DIR"; then
+      exit 0
+    fi
+
+    if [ -x /usr/bin/readora-desktop ] && [ ! -L /usr/bin/readora-desktop ] && command -v runuser >/dev/null 2>&1; then
+      runuser -u "$TARGET_USER" -- env HOME="$USER_HOME" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
+    fi
+
+    CLEANUP_SCRIPT='
+      set -eu
+      USER_HOME="$1"
+      DATA_DIR="$USER_HOME/.local/share/readora"
+      CACHE_DIR="$USER_HOME/.cache/readora"
+
+      is_safe_dir() {
+        [ -d "$1" ] && [ ! -L "$1" ]
+      }
+
+      if is_safe_dir "$DATA_DIR"; then
+        find -P "$DATA_DIR" -maxdepth 1 -type f \( \
+          -name "readora.sqlite" \
+          -o -name "readora.sqlite-wal" \
+          -o -name "readora.sqlite-shm" \
+          -o -name "readora.sqlite-journal" \
+          -o -name ".*.tmp-*" \
+        \) -delete 2>/dev/null || true
+
+        if is_safe_dir "$DATA_DIR/updates"; then
+          find -P "$DATA_DIR/updates" -maxdepth 1 -type f \( \
+            -name "release-manifest.json" \
+            -o -name "*.tmp" \
+            -o -name ".*.tmp-*" \
+          \) -delete 2>/dev/null || true
+          rmdir --ignore-fail-on-non-empty "$DATA_DIR/updates" 2>/dev/null || true
+        fi
+
+        if is_safe_dir "$DATA_DIR/library"; then
+          if is_safe_dir "$DATA_DIR/library/pdfs"; then
+            find -P "$DATA_DIR/library/pdfs" -maxdepth 2 -type f \( \
+              -name "*.pdf" \
+              -o -name "*.pdf.tmp" \
+              -o -name ".*.tmp-*" \
+            \) -delete 2>/dev/null || true
+            find -P "$DATA_DIR/library/pdfs" -mindepth 1 -maxdepth 1 -type d \
+              -exec rmdir --ignore-fail-on-non-empty {} + 2>/dev/null || true
+            rmdir --ignore-fail-on-non-empty "$DATA_DIR/library/pdfs" 2>/dev/null || true
+          fi
+          find -P "$DATA_DIR/library" -maxdepth 1 -type f \( \
+            -name "state.json" \
+            -o -name "state.json.tmp*" \
+            -o -name ".*.tmp-*" \
+          \) -delete 2>/dev/null || true
+          rmdir --ignore-fail-on-non-empty "$DATA_DIR/library" 2>/dev/null || true
+        fi
+
+        if is_safe_dir "$DATA_DIR/cache"; then
+          find -P "$DATA_DIR/cache" -maxdepth 1 -type f \( \
+            -name "*.png" \
+            -o -name "*.cache" \
+            -o -name "*.tmp" \
+            -o -name "*.json" \
+            -o -name "*.bin" \
+          \) -delete 2>/dev/null || true
+          rmdir --ignore-fail-on-non-empty "$DATA_DIR/cache" 2>/dev/null || true
+        fi
+
         rmdir --ignore-fail-on-non-empty "$DATA_DIR" 2>/dev/null || true
       fi
 
-      if [ -d "$CACHE_DIR" ]; then
-        rm -f "$CACHE_DIR/render-cache/"*.png "$CACHE_DIR/render-cache/"*.cache 2>/dev/null || true
-        rmdir --ignore-fail-on-non-empty "$CACHE_DIR/render-cache" 2>/dev/null || true
-        rm -f "$CACHE_DIR/"*.png "$CACHE_DIR/"*.cache "$CACHE_DIR/"*.tmp "$CACHE_DIR/"*.json 2>/dev/null || true
+      if is_safe_dir "$CACHE_DIR"; then
+        if is_safe_dir "$CACHE_DIR/render-cache"; then
+          find -P "$CACHE_DIR/render-cache" -maxdepth 1 -type f \( \
+            -name "*.png" \
+            -o -name "*.cache" \
+            -o -name "*.bin" \
+          \) -delete 2>/dev/null || true
+          rmdir --ignore-fail-on-non-empty "$CACHE_DIR/render-cache" 2>/dev/null || true
+        fi
+        find -P "$CACHE_DIR" -maxdepth 1 -type f \( \
+          -name "*.png" \
+          -o -name "*.cache" \
+          -o -name "*.tmp" \
+          -o -name "*.json" \
+          -o -name "*.bin" \
+        \) -delete 2>/dev/null || true
         rmdir --ignore-fail-on-non-empty "$CACHE_DIR" 2>/dev/null || true
       fi
+    '
+
+    if [ "$(id -u)" = "0" ] && command -v runuser >/dev/null 2>&1; then
+      runuser -u "$TARGET_USER" -- /bin/sh -c "$CLEANUP_SCRIPT" -- "$USER_HOME"
+    else
+      /bin/sh -c "$CLEANUP_SCRIPT" -- "$USER_HOME"
     fi
+    ;;
+
+  remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
     ;;
 esac
 

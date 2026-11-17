@@ -3,14 +3,19 @@
 //! Security properties:
 //! - Binds strictly to `127.0.0.1:0` (ephemeral OS-assigned port).
 //! - Validates `Host: 127.0.0.1:<port>` on every request to defeat DNS rebinding.
+//! - Rejects duplicate security-critical headers, `Transfer-Encoding`, unparseable
+//!   `Content-Length`, incomplete headers, truncated bodies, and Slowloris trickles.
 //! - Enforces `POST` + matching `Origin` + `Sec-Fetch-Site` + constant-time `X-Readora-Token`
 //!   validation before reading request bodies or executing any RPC/import/update operation.
-//! - Attaches strict `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, and
-//!   `X-Frame-Options: DENY` headers to static UI responses.
+//! - Attaches strict `Content-Security-Policy` (without `script-src 'unsafe-inline'`),
+//!   `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY` headers to static UI responses.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use app_application::ReleaseManifestDto;
+use platform::NativePlatformAdapter;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -23,11 +28,13 @@ pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_RPC_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum authenticated PDF import body size (`512 MiB`).
 pub const MAX_IMPORT_PDF_BYTES: usize = 512 * 1024 * 1024;
+/// Maximum total wall-clock duration allowed to read an HTTP request (`20s`).
+pub const MAX_REQUEST_DURATION: Duration = Duration::from_secs(20);
 
 /// Strict Content-Security-Policy served on UI HTML documents.
 pub const CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'self'; ",
-    "script-src 'self' 'unsafe-inline' blob:; ",
+    "script-src 'self' blob:; ",
     "worker-src 'self' blob:; ",
     "connect-src 'self' https://api.github.com https://github.com; ",
     "img-src 'self' data: blob:; ",
@@ -57,6 +64,198 @@ pub fn constant_time_eq(left: &str, right: &str) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// Validates whether `raw_url` is an allowed WebView navigation target.
+///
+/// Must start with `"http://"` (rejecting `about:blank`, `javascript:`, `data:`, `https://`, etc.),
+/// must not contain `@` in the authority (blocking `http://127.0.0.1:port@attacker.example/`),
+/// and must match `127.0.0.1:<bound_port>` exactly (blocking port-prefix collisions such as `5432` vs `54321`).
+#[must_use]
+pub fn is_allowed_navigation_url(raw_url: &str, bound_port: u16) -> bool {
+    let Some(rest) = raw_url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    authority == format!("127.0.0.1:{bound_port}")
+}
+
+/// Verifies a downloaded release artifact fail-closed against a previously staged manifest.
+#[must_use]
+pub fn verify_downloaded_asset_staged(
+    file_path: &Path,
+    asset_url: &str,
+    staged_manifest: Option<&ReleaseManifestDto>,
+    requested_version: &str,
+) -> bool {
+    let Some(staged) = staged_manifest else {
+        return false;
+    };
+    if staged.version.trim() != requested_version {
+        return false;
+    }
+    if staged.download_url.as_deref() != Some(asset_url) {
+        return false;
+    }
+    if !NativePlatformAdapter::is_hex_sha256(&staged.sha256) {
+        return false;
+    }
+    NativePlatformAdapter::verify_sha256_file(file_path, &staged.sha256).unwrap_or(false)
+}
+
+/// Builds the WebView document-creation initialization script with subframe and origin guards
+/// and captured intrinsics (`fetch`, `encodeURIComponent`, `JSON.stringify`, `Uint8Array`).
+#[must_use]
+pub fn build_init_script(bound_port: u16, session_token: &str) -> String {
+    format!(
+        r#"
+      (function() {{
+        if (window.top !== window.self) {{ return; }}
+        if (window.location.origin !== "http://127.0.0.1:{bound_port}") {{ return; }}
+        const nativeFetch = window.fetch.bind(window);
+        const nativeEncodeURIComponent = globalThis.encodeURIComponent;
+        const nativeJsonStringify = globalThis.JSON.stringify;
+        const NativeUint8Array = globalThis.Uint8Array;
+        const sliceArrayBuffer = Function.prototype.call.bind(ArrayBuffer.prototype.slice);
+        const TOKEN = "{session_token}";
+
+        if (typeof globalThis.Iterator === 'undefined') {{
+          var IterProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+          function Iterator() {{}}
+          Iterator.prototype = IterProto;
+          globalThis.Iterator = Iterator;
+        }}
+        if (typeof globalThis.Iterator.prototype.join !== 'function') {{
+          globalThis.Iterator.prototype.join = function(sep) {{
+            return Array.from(this).join(sep);
+          }};
+        }}
+        if (typeof Promise.withResolvers !== 'function') {{
+          Promise.withResolvers = function() {{
+            var resolve, reject;
+            var promise = new Promise(function(res, rej) {{ resolve = res; reject = rej; }});
+            return {{ promise: promise, resolve: resolve, reject: reject }};
+          }};
+        }}
+        if (typeof URL.parse !== 'function') {{
+          URL.parse = function(url, base) {{
+            try {{ return new URL(url, base); }} catch (_) {{ return null; }}
+          }};
+        }}
+
+        async function invokeRpc(cmd, args) {{
+          const resp = await nativeFetch('/__readora_rpc', {{
+            method: 'POST',
+            headers: {{
+              'Content-Type': 'application/json',
+              'X-Readora-Token': TOKEN
+            }},
+            body: nativeJsonStringify({{ cmd: cmd, args: args || {{}} }})
+          }});
+          const payload = await resp.json();
+          if (!resp.ok || !payload || payload.ok !== true) {{
+            const err = (payload && payload.error) || {{
+              code: 'ipc_error',
+              message: 'Desktop command failed'
+            }};
+            throw err;
+          }}
+          return payload.data;
+        }}
+
+        Object.defineProperty(window, '__TAURI_INTERNALS__', {{
+          configurable: false,
+          enumerable: false,
+          writable: false,
+          value: Object.freeze({{
+            invoke: invokeRpc
+          }})
+        }});
+
+        Object.defineProperty(window, '__READORA_NATIVE__', {{
+          configurable: false,
+          enumerable: false,
+          writable: false,
+          value: Object.freeze({{
+            importPdfBytes: async function(fileName, bytes, password) {{
+              const headers = {{
+                'Content-Type': 'application/pdf',
+                'X-Readora-Token': TOKEN,
+                'X-Readora-Filename': nativeEncodeURIComponent(fileName || 'Document.pdf')
+              }};
+              if (password) {{
+                headers['X-Readora-Password'] = nativeEncodeURIComponent(password);
+              }}
+              const bodyBuffer = sliceArrayBuffer(
+                bytes.buffer,
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength
+              );
+              const resp = await nativeFetch('/__readora_import', {{
+                method: 'POST',
+                headers: headers,
+                body: bodyBuffer
+              }});
+              const payload = await resp.json();
+              if (!resp.ok || !payload || payload.ok !== true) {{
+                throw (payload && payload.error) || {{
+                  code: 'invalid_pdf',
+                  message: 'Failed to import PDF document'
+                }};
+              }}
+              return payload.data;
+            }},
+            readPdfBytes: async function(documentId) {{
+              const resp = await nativeFetch('/__readora_pdf_read', {{
+                method: 'POST',
+                headers: {{
+                  'Content-Type': 'application/json',
+                  'X-Readora-Token': TOKEN
+                }},
+                body: nativeJsonStringify({{ documentId: documentId }})
+              }});
+              if (!resp.ok) {{
+                return null;
+              }}
+              const buf = await resp.arrayBuffer();
+              return buf.byteLength > 0 ? new NativeUint8Array(buf) : null;
+            }},
+            triggerSelfUpdate: async function(version) {{
+              const resp = await nativeFetch('/__readora_update', {{
+                method: 'POST',
+                headers: {{
+                  'Content-Type': 'application/json',
+                  'X-Readora-Token': TOKEN
+                }},
+                body: nativeJsonStringify({{ version: version }})
+              }});
+              if (!resp.ok) {{
+                return {{ status: 'failed' }};
+              }}
+              return resp.json();
+            }}
+          }})
+        }});
+
+        window.close = function() {{
+          if (window.ipc && typeof window.ipc.postMessage === 'function') {{
+            window.ipc.postMessage('quit');
+          }}
+        }};
+        window.addEventListener('keydown', function(e) {{
+          if ((e.metaKey || e.ctrlKey) && e.key && e.key.toLowerCase() === 'q') {{
+            e.preventDefault();
+            if (window.ipc && typeof window.ipc.postMessage === 'function') {{
+              window.ipc.postMessage('quit');
+            }}
+          }}
+        }});
+      }})();
+    "#
+    )
 }
 
 /// Parsed HTTP request metadata and body.
@@ -212,6 +411,20 @@ pub fn validate_api_headers(
     Ok(())
 }
 
+fn duplicate_header_error() -> HttpResponse {
+    HttpResponse::json(
+        "400 Bad Request",
+        &json!({ "ok": false, "error": { "code": "duplicate_header", "message": "Duplicate security-critical HTTP header" } }),
+    )
+}
+
+fn timeout_error() -> HttpResponse {
+    HttpResponse::json(
+        "408 Request Timeout",
+        &json!({ "ok": false, "error": { "code": "request_timeout", "message": "Request read deadline exceeded" } }),
+    )
+}
+
 /// Reads and validates an HTTP/1.1 request from `reader`, checking `Host` and API authentication
 /// headers **before** allocating or reading multi-megabyte request bodies.
 pub fn read_and_authorize_http_request<R: Read>(
@@ -219,56 +432,163 @@ pub fn read_and_authorize_http_request<R: Read>(
     bound_port: u16,
     expected_token: &str,
 ) -> Result<Option<ParsedHttpRequest>, HttpResponse> {
+    let started_at = Instant::now();
     let mut header_buf = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 4096];
-    let header_end = loop {
-        let Ok(n) = reader.read(&mut chunk) else {
-            return Ok(None);
-        };
-        if n == 0 {
-            if header_buf.is_empty() {
-                return Ok(None);
+    let (header_end, body_offset) = loop {
+        if started_at.elapsed() > MAX_REQUEST_DURATION {
+            return Err(timeout_error());
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                if header_buf.is_empty() {
+                    return Ok(None);
+                }
+                return Err(HttpResponse::json(
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": { "code": "incomplete_headers", "message": "Incomplete HTTP request headers" } }),
+                ));
             }
-            break header_buf.len();
-        }
-        header_buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = header_buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break pos + 4;
-        }
-        if header_buf.len() > MAX_HEADER_BYTES {
-            return Err(HttpResponse::json(
-                "431 Request Header Fields Too Large",
-                &json!({ "ok": false, "error": { "code": "headers_too_large", "message": "Request headers exceed limit" } }),
-            ));
+            Ok(n) => {
+                if started_at.elapsed() > MAX_REQUEST_DURATION {
+                    return Err(timeout_error());
+                }
+                header_buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = header_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break (pos, pos + 4);
+                }
+                if header_buf.len() > MAX_HEADER_BYTES {
+                    return Err(HttpResponse::json(
+                        "431 Request Header Fields Too Large",
+                        &json!({ "ok": false, "error": { "code": "headers_too_large", "message": "Request headers exceed limit" } }),
+                    ));
+                }
+            }
+            Err(err) => {
+                if started_at.elapsed() > MAX_REQUEST_DURATION
+                    || matches!(err.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+                {
+                    if header_buf.is_empty() && started_at.elapsed() <= MAX_REQUEST_DURATION {
+                        return Ok(None);
+                    }
+                    return Err(timeout_error());
+                }
+                if header_buf.is_empty() {
+                    return Ok(None);
+                }
+                return Err(HttpResponse::json(
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": { "code": "bad_request", "message": "Failed reading HTTP headers" } }),
+                ));
+            }
         }
     };
 
-    let header_str = String::from_utf8_lossy(&header_buf[..header_end]);
-    let mut lines = header_str.lines();
+    let Ok(header_str) = std::str::from_utf8(&header_buf[..header_end]) else {
+        return Err(HttpResponse::json(
+            "400 Bad Request",
+            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Invalid UTF-8 in HTTP headers" } }),
+        ));
+    };
+    let mut lines = header_str.split("\r\n");
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
-    let Some(raw_method) = parts.next() else {
-        return Ok(None);
+    let (Some(raw_method), Some(raw_target), Some(_http_version)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(HttpResponse::json(
+            "400 Bad Request",
+            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
+        ));
     };
+    if parts.next().is_some() {
+        return Err(HttpResponse::json(
+            "400 Bad Request",
+            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
+        ));
+    }
     let method = raw_method.to_ascii_uppercase();
-    let target = parts.next().unwrap_or("/").to_owned();
+    let target = raw_target.to_owned();
 
     let mut headers = Vec::new();
     let mut content_length = 0_usize;
+    let mut seen_host = false;
+    let mut seen_origin = false;
+    let mut seen_sec_fetch_site = false;
+    let mut seen_token = false;
+    let mut seen_content_length = false;
+
     for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim().to_ascii_lowercase();
-            let val = v.trim().to_owned();
-            if key == "content-length"
-                && let Ok(parsed) = val.parse::<usize>()
-            {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            return Err(HttpResponse::json(
+                "400 Bad Request",
+                &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP header line" } }),
+            ));
+        };
+        let key = k.trim().to_ascii_lowercase();
+        let val = v.trim().to_owned();
+
+        match key.as_str() {
+            "transfer-encoding" => {
+                return Err(HttpResponse::json(
+                    "501 Not Implemented",
+                    &json!({ "ok": false, "error": { "code": "unsupported_transfer_encoding", "message": "Transfer-Encoding is not supported" } }),
+                ));
+            }
+            "host" => {
+                if seen_host {
+                    return Err(duplicate_header_error());
+                }
+                seen_host = true;
+            }
+            "origin" => {
+                if seen_origin {
+                    return Err(duplicate_header_error());
+                }
+                seen_origin = true;
+            }
+            "sec-fetch-site" => {
+                if seen_sec_fetch_site {
+                    return Err(duplicate_header_error());
+                }
+                seen_sec_fetch_site = true;
+            }
+            "x-readora-token" => {
+                if seen_token {
+                    return Err(duplicate_header_error());
+                }
+                seen_token = true;
+            }
+            "content-length" => {
+                if seen_content_length {
+                    return Err(duplicate_header_error());
+                }
+                seen_content_length = true;
+                if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(HttpResponse::json(
+                        "400 Bad Request",
+                        &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
+                    ));
+                }
+                let Ok(parsed) = val.parse::<usize>() else {
+                    return Err(HttpResponse::json(
+                        "400 Bad Request",
+                        &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
+                    ));
+                };
                 content_length = parsed;
             }
-            headers.push((key, val));
+            _ => {}
         }
+
+        headers.push((key, val));
     }
 
-    let is_api_route = target.starts_with("/__readora_");
+    let path_only = target.split('?').next().unwrap_or("/");
+    let is_api_route = path_only.starts_with("/__readora_");
     if is_api_route {
         validate_api_headers(&method, &headers, bound_port, expected_token)?;
     } else if !is_allowed_host(&headers, bound_port) {
@@ -278,7 +598,7 @@ pub fn read_and_authorize_http_request<R: Read>(
         ));
     }
 
-    let max_body = if target == "/__readora_import" {
+    let max_body = if path_only == "/__readora_import" {
         MAX_IMPORT_PDF_BYTES
     } else if is_api_route {
         MAX_RPC_BODY_BYTES
@@ -294,21 +614,41 @@ pub fn read_and_authorize_http_request<R: Read>(
     }
 
     let mut body = Vec::with_capacity(content_length.min(64 * 1024));
-    if header_buf.len() > header_end {
-        let already = &header_buf[header_end..];
+    if header_buf.len() > body_offset {
+        let already = &header_buf[body_offset..];
         let to_copy = already.len().min(content_length);
         body.extend_from_slice(&already[..to_copy]);
     }
     while body.len() < content_length {
+        if started_at.elapsed() > MAX_REQUEST_DURATION {
+            return Err(timeout_error());
+        }
         let remaining = content_length - body.len();
         let read_limit = remaining.min(chunk.len());
-        let Ok(n) = reader.read(&mut chunk[..read_limit]) else {
-            break;
-        };
-        if n == 0 {
-            break;
+        match reader.read(&mut chunk[..read_limit]) {
+            Ok(0) => break,
+            Ok(n) => {
+                if started_at.elapsed() > MAX_REQUEST_DURATION {
+                    return Err(timeout_error());
+                }
+                body.extend_from_slice(&chunk[..n]);
+            }
+            Err(err) => {
+                if started_at.elapsed() > MAX_REQUEST_DURATION
+                    || matches!(err.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+                {
+                    return Err(timeout_error());
+                }
+                break;
+            }
         }
-        body.extend_from_slice(&chunk[..n]);
+    }
+
+    if body.len() < content_length {
+        return Err(HttpResponse::json(
+            "400 Bad Request",
+            &json!({ "ok": false, "error": { "code": "truncated_body", "message": "Request body truncated before Content-Length bytes" } }),
+        ));
     }
 
     Ok(Some(ParsedHttpRequest {

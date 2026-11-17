@@ -11,9 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app_core::AppCore;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use platform::NativePlatformAdapter;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use readora_desktop_lib::server::verify_downloaded_asset_staged;
 use readora_desktop_lib::server::{
-    generate_session_token, read_and_authorize_http_request, route_http_request,
+    build_init_script, generate_session_token, is_allowed_navigation_url,
+    read_and_authorize_http_request, route_http_request,
 };
 use readora_desktop_lib::{DesktopCommandHandler, init_tracing};
 use tao::dpi::LogicalSize;
@@ -76,28 +80,6 @@ fn is_safe_github_repo(repo: &str) -> bool {
         })
 }
 
-fn verify_downloaded_asset_if_staged(
-    file_path: &Path,
-    asset_url: &str,
-    staged_version: Option<&str>,
-    staged_url: Option<&str>,
-    staged_sha256: Option<&str>,
-    requested_version: &str,
-) -> bool {
-    let (Some(sv), Some(sha)) = (staged_version, staged_sha256) else {
-        return true;
-    };
-    if sv.trim() != requested_version || !NativePlatformAdapter::is_hex_sha256(sha) {
-        return true;
-    }
-    if let Some(su) = staged_url
-        && su != asset_url
-    {
-        return true;
-    }
-    NativePlatformAdapter::verify_sha256_file(file_path, sha).unwrap_or(false)
-}
-
 fn perform_native_self_update(
     handler: &DesktopCommandHandler,
     raw_version: &str,
@@ -116,204 +98,250 @@ fn perform_native_self_update(
         return r#"{"status":"invalid_parameters"}"#;
     }
 
-    let staged = handler.read_staged_update_manifest().ok().flatten();
-    let staged_version = staged.as_ref().map(|m| m.version.as_str());
-    let staged_url = staged.as_ref().and_then(|m| m.download_url.as_deref());
-    let staged_sha256 = staged.as_ref().map(|m| m.sha256.as_str());
-
     #[cfg(target_os = "macos")]
     {
-        let arch_labels: &[&str] = if cfg!(target_arch = "x86_64") {
-            &["macos-x86_64", "macos-aarch64"]
+        use std::os::unix::fs::PermissionsExt;
+
+        let staged = handler.read_staged_update_manifest().ok().flatten();
+        let staged_url = staged.as_ref().and_then(|m| m.download_url.as_deref());
+        let arch_label = if cfg!(target_arch = "x86_64") {
+            "macos-x86_64"
         } else {
-            &["macos-aarch64"]
+            "macos-aarch64"
         };
-        let primary_arch = arch_labels[0];
-        let dmg_url = format!(
-            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_{primary_arch}.dmg"
+        let tar_url = format!(
+            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_{arch_label}.app.tar.gz"
         );
-        let staging_dir = std::env::temp_dir().join(format!("readora-update-{version}"));
-        let _ = std::fs::remove_dir_all(&staging_dir);
+        let dmg_url = format!(
+            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_{arch_label}.dmg"
+        );
+        let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
 
-        if std::fs::create_dir_all(&staging_dir).is_ok() {
-            let tar_path = staging_dir.join("Readora.app.tar.gz");
-            let mut downloaded_tar_url: Option<String> = None;
+        let updates_dir = NativePlatformAdapter::resolve_app_data_dir().join("updates");
+        if std::fs::create_dir_all(&updates_dir).is_ok() {
+            let _ = std::fs::set_permissions(&updates_dir, std::fs::Permissions::from_mode(0o700));
+            if let Ok(stage_temp) = tempfile::Builder::new()
+                .prefix(".stage-")
+                .tempdir_in(&updates_dir)
+            {
+                let staging_dir = stage_temp.path();
 
-            for arch in arch_labels {
-                let candidate_url = format!(
-                    "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_{arch}.app.tar.gz"
-                );
-                let ok = Command::new("/usr/bin/curl")
-                    .args(["-fSL", "--retry", "2", "-o"])
-                    .arg(&tar_path)
-                    .arg(&candidate_url)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if ok {
-                    downloaded_tar_url = Some(candidate_url);
-                    break;
-                }
-            }
-
-            if let Some(tar_url) = downloaded_tar_url {
-                if !verify_downloaded_asset_if_staged(
-                    &tar_path,
-                    &tar_url,
-                    staged_version,
-                    staged_url,
-                    staged_sha256,
-                    version,
-                ) {
-                    let _ = std::fs::remove_dir_all(&staging_dir);
-                    return r#"{"status":"checksum_verification_failed"}"#;
-                }
-
-                let untar_ok = Command::new("/usr/bin/tar")
-                    .args(["-xzf"])
-                    .arg(&tar_path)
-                    .arg("-C")
-                    .arg(&staging_dir)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-
-                let extracted_app = staging_dir.join("Readora.app");
-                if untar_ok && extracted_app.is_dir() {
-                    let _ = Command::new("/usr/bin/xattr")
-                        .args(["-cr"])
-                        .arg(&extracted_app)
-                        .status();
-                    let verified_sig = Command::new("/usr/bin/codesign")
-                        .args(["--verify", "--deep", "--strict"])
-                        .arg(&extracted_app)
+                if staged_url != Some(dmg_url.as_str()) {
+                    let tar_path = staging_dir.join("Readora.app.tar.gz");
+                    let curl_ok = Command::new("/usr/bin/curl")
+                        .args(["-fSL", "--retry", "2", "-o"])
+                        .arg(&tar_path)
+                        .arg(&tar_url)
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
-                    if !verified_sig {
-                        let _ = std::fs::remove_dir_all(&staging_dir);
-                        return r#"{"status":"signature_verification_failed"}"#;
-                    }
 
-                    let current_bundle = std::env::current_exe().ok().and_then(|exe| {
-                        let contents_dir = exe.parent()?.parent()?;
-                        let app_dir = contents_dir.parent()?;
-                        if app_dir.extension().and_then(|e| e.to_str()) == Some("app")
-                            && !app_dir.to_string_lossy().starts_with("/Volumes/")
-                        {
-                            Some(app_dir.to_path_buf())
-                        } else {
-                            None
+                    if curl_ok {
+                        if !verify_downloaded_asset_staged(
+                            &tar_path,
+                            &tar_url,
+                            staged.as_ref(),
+                            version,
+                        ) {
+                            return r#"{"status":"checksum_verification_failed"}"#;
                         }
-                    });
-                    let target_app = current_bundle
-                        .unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
 
-                    let _ = std::fs::remove_dir_all(&target_app);
-                    let moved = Command::new("/bin/mv")
-                        .arg(&extracted_app)
-                        .arg(&target_app)
+                        let untar_ok = Command::new("/usr/bin/tar")
+                            .args(["-xzf"])
+                            .arg(&tar_path)
+                            .arg("-C")
+                            .arg(staging_dir)
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+
+                        let extracted_app = staging_dir.join("Readora.app");
+                        if untar_ok && extracted_app.is_dir() && !extracted_app.is_symlink() {
+                            let _ = Command::new("/usr/bin/xattr")
+                                .args(["-cr"])
+                                .arg(&extracted_app)
+                                .status();
+                            let verified_sig = Command::new("/usr/bin/codesign")
+                                .args(["--verify", "--deep", "--strict"])
+                                .arg(&extracted_app)
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+                            if !verified_sig {
+                                return r#"{"status":"signature_verification_failed"}"#;
+                            }
+
+                            let current_bundle = std::env::current_exe().ok().and_then(|exe| {
+                                let contents_dir = exe.parent()?.parent()?;
+                                let app_dir = contents_dir.parent()?;
+                                if app_dir.extension().and_then(|e| e.to_str()) == Some("app")
+                                    && !app_dir.to_string_lossy().starts_with("/Volumes/")
+                                {
+                                    Some(app_dir.to_path_buf())
+                                } else {
+                                    None
+                                }
+                            });
+                            let target_app = current_bundle
+                                .unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
+                            let target_parent = target_app
+                                .parent()
+                                .map_or_else(|| PathBuf::from("/Applications"), Path::to_path_buf);
+                            let backup_app = target_parent
+                                .join(format!(".Readora.app.backup-{}", std::process::id()));
+                            if backup_app.exists() {
+                                let _ = std::fs::remove_dir_all(&backup_app);
+                            }
+
+                            let had_existing = target_app.exists();
+                            let backup_ok = if had_existing {
+                                std::fs::rename(&target_app, &backup_app).is_ok()
+                                    || Command::new("/bin/mv")
+                                        .arg("--")
+                                        .arg(&target_app)
+                                        .arg(&backup_app)
+                                        .status()
+                                        .map(|s| s.success())
+                                        .unwrap_or(false)
+                            } else {
+                                true
+                            };
+
+                            if backup_ok {
+                                let moved = std::fs::rename(&extracted_app, &target_app).is_ok()
+                                    || Command::new("/bin/mv")
+                                        .arg("--")
+                                        .arg(&extracted_app)
+                                        .arg(&target_app)
+                                        .status()
+                                        .map(|s| s.success())
+                                        .unwrap_or(false);
+
+                                if moved {
+                                    if had_existing {
+                                        let _ = std::fs::remove_dir_all(&backup_app);
+                                    }
+                                    drop(stage_temp);
+                                    let _ = handler.app_install_update(version);
+                                    let _ = Command::new("/bin/sh")
+                                        .args([
+                                            "-c",
+                                            "sleep 0.6 && exec /usr/bin/open -n -- \"$1\"",
+                                            "--",
+                                        ])
+                                        .arg(&target_app)
+                                        .spawn();
+                                    let _ = proxy.send_event(DesktopUserEvent::Quit);
+                                    return r#"{"status":"restarting"}"#;
+                                }
+
+                                if had_existing
+                                    && std::fs::rename(&backup_app, &target_app).is_err()
+                                {
+                                    let _ = Command::new("/bin/mv")
+                                        .arg("--")
+                                        .arg(&backup_app)
+                                        .arg(&target_app)
+                                        .status();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if staged_url == Some(dmg_url.as_str()) {
+                    let staged_dmg =
+                        staging_dir.join(format!("Readora_{version}_{arch_label}.dmg"));
+                    let dmg_ok = Command::new("/usr/bin/curl")
+                        .args(["-fSL", "--retry", "2", "-o"])
+                        .arg(&staged_dmg)
+                        .arg(&dmg_url)
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
-                    let _ = std::fs::remove_dir_all(&staging_dir);
-
-                    if moved {
-                        let _ = handler.app_install_update(version);
-                        let target_str = target_app.to_string_lossy().into_owned();
-                        let _ = Command::new("/bin/sh")
-                            .args([
-                                "-c",
-                                &format!("sleep 0.6 && /usr/bin/open -n \"{target_str}\""),
-                            ])
-                            .spawn();
-                        let _ = proxy.send_event(DesktopUserEvent::Quit);
-                        return r#"{"status":"restarting"}"#;
+                    if dmg_ok {
+                        if !verify_downloaded_asset_staged(
+                            &staged_dmg,
+                            &dmg_url,
+                            staged.as_ref(),
+                            version,
+                        ) {
+                            return r#"{"status":"checksum_verification_failed"}"#;
+                        }
+                        if let Ok(home) = std::env::var("HOME") {
+                            let downloads_dir = PathBuf::from(home).join("Downloads");
+                            if std::fs::create_dir_all(&downloads_dir).is_ok() {
+                                let dmg_dest = downloads_dir
+                                    .join(format!("Readora_{version}_{arch_label}.dmg"));
+                                let placed = std::fs::rename(&staged_dmg, &dmg_dest).is_ok()
+                                    || std::fs::copy(&staged_dmg, &dmg_dest).is_ok();
+                                if placed {
+                                    drop(stage_temp);
+                                    let _ = Command::new("/usr/bin/open").arg(&dmg_dest).spawn();
+                                    return r#"{"status":"downloaded_installer"}"#;
+                                }
+                            }
+                        }
                     }
                 }
-            }
-
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
-            let dmg_dest = PathBuf::from(home)
-                .join("Downloads")
-                .join(format!("Readora_{version}_{primary_arch}.dmg"));
-            let dmg_ok = Command::new("/usr/bin/curl")
-                .args(["-fSL", "--retry", "2", "-o"])
-                .arg(&dmg_dest)
-                .arg(&dmg_url)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            let _ = std::fs::remove_dir_all(&staging_dir);
-            if dmg_ok {
-                if !verify_downloaded_asset_if_staged(
-                    &dmg_dest,
-                    &dmg_url,
-                    staged_version,
-                    staged_url,
-                    staged_sha256,
-                    version,
-                ) {
-                    let _ = std::fs::remove_file(&dmg_dest);
-                    return r#"{"status":"checksum_verification_failed"}"#;
-                }
-                let _ = handler.app_install_update(version);
-                let _ = Command::new("/usr/bin/open").arg(&dmg_dest).spawn();
-                return r#"{"status":"downloaded_installer"}"#;
             }
         }
-        let _ = handler.app_install_update(version);
-        let _ = Command::new("/usr/bin/open").arg(&dmg_url).spawn();
+
+        let _ = Command::new("/usr/bin/open").arg(&release_url).spawn();
         r#"{"status":"opened_release"}"#
     }
 
     #[cfg(target_os = "windows")]
     {
-        let msi_url = format!(
-            "https://github.com/{repo}/releases/download/v{version}/Readora_{version}_windows-x86_64.msi"
-        );
-        let msi_dest = std::env::temp_dir().join(format!("Readora_{version}_windows-x86_64.msi"));
-        let curl_ok = Command::new("curl.exe")
-            .args(["-fSL", "--retry", "2", "-o"])
-            .arg(&msi_dest)
-            .arg(&msi_url)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if curl_ok {
-            if !verify_downloaded_asset_if_staged(
-                &msi_dest,
-                &msi_url,
-                staged_version,
-                staged_url,
-                staged_sha256,
-                version,
-            ) {
-                let _ = std::fs::remove_file(&msi_dest);
-                return r#"{"status":"checksum_verification_failed"}"#;
+        let _ = proxy;
+        let staged = handler.read_staged_update_manifest().ok().flatten();
+        let zip_name = format!("Readora_{version}_windows-x86_64-setup.zip");
+        let zip_url = format!("https://github.com/{repo}/releases/download/v{version}/{zip_name}");
+        let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
+
+        let updates_dir = NativePlatformAdapter::resolve_app_data_dir().join("updates");
+        if std::fs::create_dir_all(&updates_dir).is_ok()
+            && let Ok(stage_temp) = tempfile::Builder::new()
+                .prefix(".stage-")
+                .tempdir_in(&updates_dir)
+        {
+            let temp_zip = stage_temp.path().join(&zip_name);
+            let curl_ok = Command::new("curl.exe")
+                .args(["-fSL", "--retry", "2", "-o"])
+                .arg(&temp_zip)
+                .arg(&zip_url)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if curl_ok {
+                if !verify_downloaded_asset_staged(&temp_zip, &zip_url, staged.as_ref(), version) {
+                    return r#"{"status":"checksum_verification_failed"}"#;
+                }
+                if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                    let downloads_dir = PathBuf::from(user_profile).join("Downloads");
+                    if std::fs::create_dir_all(&downloads_dir).is_ok() {
+                        let dest_zip = downloads_dir.join(&zip_name);
+                        let placed = std::fs::rename(&temp_zip, &dest_zip).is_ok()
+                            || std::fs::copy(&temp_zip, &dest_zip).is_ok();
+                        if placed {
+                            drop(stage_temp);
+                            let _ = Command::new("explorer.exe")
+                                .arg(format!("/select,{}", dest_zip.display()))
+                                .spawn();
+                            return r#"{"status":"downloaded_installer"}"#;
+                        }
+                    }
+                }
             }
-            let _ = handler.app_install_update(version);
-            let _ = Command::new("msiexec.exe").arg("/i").arg(&msi_dest).spawn();
-            let _ = proxy.send_event(DesktopUserEvent::Quit);
-            return r#"{"status":"restarting"}"#;
         }
-        let _ = handler.app_install_update(version);
-        let _ = Command::new("cmd")
-            .args(["/C", "start", "", &msi_url])
-            .spawn();
+
+        let _ = Command::new("explorer.exe").arg(&release_url).spawn();
         r#"{"status":"opened_release"}"#
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (
-            proxy,
-            staged_version,
-            staged_url,
-            staged_sha256,
-            verify_downloaded_asset_if_staged,
-        );
-        let _ = handler.app_install_update(version);
+        let _ = proxy;
         let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
         let _ = Command::new("xdg-open").arg(&release_url).spawn();
         r#"{"status":"opened_release"}"#
@@ -343,147 +371,6 @@ fn handle_http_connection(
             err_resp.write_to(&mut stream);
         }
     }
-}
-
-fn build_init_script(session_token: &str) -> String {
-    format!(
-        r#"
-      (function() {{
-        const TOKEN = "{session_token}";
-
-        if (typeof globalThis.Iterator === 'undefined') {{
-          var IterProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
-          function Iterator() {{}}
-          Iterator.prototype = IterProto;
-          globalThis.Iterator = Iterator;
-        }}
-        if (typeof globalThis.Iterator.prototype.join !== 'function') {{
-          globalThis.Iterator.prototype.join = function(sep) {{
-            return Array.from(this).join(sep);
-          }};
-        }}
-        if (typeof Promise.withResolvers !== 'function') {{
-          Promise.withResolvers = function() {{
-            var resolve, reject;
-            var promise = new Promise(function(res, rej) {{ resolve = res; reject = rej; }});
-            return {{ promise: promise, resolve: resolve, reject: reject }};
-          }};
-        }}
-        if (typeof URL.parse !== 'function') {{
-          URL.parse = function(url, base) {{
-            try {{ return new URL(url, base); }} catch (_) {{ return null; }}
-          }};
-        }}
-
-        async function invokeRpc(cmd, args) {{
-          const resp = await fetch('/__readora_rpc', {{
-            method: 'POST',
-            headers: {{
-              'Content-Type': 'application/json',
-              'X-Readora-Token': TOKEN
-            }},
-            body: JSON.stringify({{ cmd: cmd, args: args || {{}} }})
-          }});
-          const payload = await resp.json();
-          if (!resp.ok || !payload || payload.ok !== true) {{
-            const err = (payload && payload.error) || {{
-              code: 'ipc_error',
-              message: 'Desktop command failed'
-            }};
-            throw err;
-          }}
-          return payload.data;
-        }}
-
-        Object.defineProperty(window, '__TAURI_INTERNALS__', {{
-          configurable: false,
-          enumerable: false,
-          writable: false,
-          value: Object.freeze({{
-            invoke: invokeRpc
-          }})
-        }});
-
-        Object.defineProperty(window, '__READORA_NATIVE__', {{
-          configurable: false,
-          enumerable: false,
-          writable: false,
-          value: Object.freeze({{
-            importPdfBytes: async function(fileName, bytes, password) {{
-              const headers = {{
-                'Content-Type': 'application/pdf',
-                'X-Readora-Token': TOKEN,
-                'X-Readora-Filename': encodeURIComponent(fileName || 'Document.pdf')
-              }};
-              if (password) {{
-                headers['X-Readora-Password'] = encodeURIComponent(password);
-              }}
-              const bodyBuffer = bytes.buffer.slice(
-                bytes.byteOffset,
-                bytes.byteOffset + bytes.byteLength
-              );
-              const resp = await fetch('/__readora_import', {{
-                method: 'POST',
-                headers: headers,
-                body: bodyBuffer
-              }});
-              const payload = await resp.json();
-              if (!resp.ok || !payload || payload.ok !== true) {{
-                throw (payload && payload.error) || {{
-                  code: 'invalid_pdf',
-                  message: 'Failed to import PDF document'
-                }};
-              }}
-              return payload.data;
-            }},
-            readPdfBytes: async function(documentId) {{
-              const resp = await fetch('/__readora_pdf_read', {{
-                method: 'POST',
-                headers: {{
-                  'Content-Type': 'application/json',
-                  'X-Readora-Token': TOKEN
-                }},
-                body: JSON.stringify({{ documentId: documentId }})
-              }});
-              if (!resp.ok) {{
-                return null;
-              }}
-              const buf = await resp.arrayBuffer();
-              return buf.byteLength > 0 ? new Uint8Array(buf) : null;
-            }},
-            triggerSelfUpdate: async function(version) {{
-              const resp = await fetch('/__readora_update', {{
-                method: 'POST',
-                headers: {{
-                  'Content-Type': 'application/json',
-                  'X-Readora-Token': TOKEN
-                }},
-                body: JSON.stringify({{ version: version }})
-              }});
-              if (!resp.ok) {{
-                return {{ status: 'failed' }};
-              }}
-              return resp.json();
-            }}
-          }})
-        }});
-
-        window.close = function() {{
-          if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-            window.ipc.postMessage('quit');
-          }}
-        }};
-        window.addEventListener('keydown', function(e) {{
-          if ((e.metaKey || e.ctrlKey) && e.key && e.key.toLowerCase() === 'q') {{
-            e.preventDefault();
-            if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-              window.ipc.postMessage('quit');
-            }}
-          }}
-        }});
-      }})();
-    "#
-    )
 }
 
 fn main() {
@@ -539,7 +426,6 @@ fn main() {
     };
     let bound_port = local_addr.port();
     let base_url = format!("http://127.0.0.1:{bound_port}/");
-    let allowed_origin_prefix = format!("http://127.0.0.1:{bound_port}");
     let session_token = Arc::new(generate_session_token());
 
     tracing::info!("Serving Readora UI on authenticated loopback port {bound_port}");
@@ -582,9 +468,17 @@ fn main() {
     }
 
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            if conn_tx.send(stream).is_err() {
-                break;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if conn_tx.send(stream).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Loopback listener accept error: {err}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         }
     });
@@ -602,14 +496,15 @@ fn main() {
         }
     };
 
-    let init_script = build_init_script(&session_token);
+    let init_script = build_init_script(bound_port, &session_token);
     let ipc_proxy = proxy;
 
     let webview = match WebViewBuilder::new()
         .with_url(&base_url)
-        .with_initialization_script(&init_script)
+        .with_initialization_script_for_main_only(&init_script, false)
+        .with_new_window_req_handler(|_| false)
         .with_navigation_handler(move |target_url| {
-            target_url.starts_with(&allowed_origin_prefix) || target_url == "about:blank"
+            is_allowed_navigation_url(&target_url, bound_port)
         })
         .with_ipc_handler(move |request| {
             if request.body() == "quit" {

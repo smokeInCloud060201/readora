@@ -1,35 +1,88 @@
 #!/bin/sh
 # Readora macOS Safe Uninstall Data & Cache Cleanup Script
-# Removes ONLY Readora's SQLite database (`readora.sqlite*`) and cache artifacts.
-# User PDF documents and any unrelated files are strictly preserved.
+# Removes ONLY Readora's SQLite database (`readora.sqlite*`), staged library/update files,
+# and cache artifacts. External user PDF documents and unrelated files are strictly preserved.
 set -eu
 
 DATA_DIR="${READORA_DATA_DIR:-$HOME/Library/Application Support/com.readora.desktop}"
 CACHE_DIR="${READORA_CACHE_DIR:-$HOME/Library/Caches/com.readora.desktop}"
 TMP_SAMPLES="${TMPDIR:-/tmp}/readora-samples"
 
-if [ -d "$DATA_DIR" ]; then
-  rm -f "$DATA_DIR/readora.sqlite" \
-        "$DATA_DIR/readora.sqlite-wal" \
-        "$DATA_DIR/readora.sqlite-shm" \
-        "$DATA_DIR/readora.sqlite-journal"
-  if [ -d "$DATA_DIR/cache" ]; then
-    rm -f "$DATA_DIR/cache/"*.png "$DATA_DIR/cache/"*.cache "$DATA_DIR/cache/"*.tmp "$DATA_DIR/cache/"*.json 2>/dev/null || true
+is_safe_dir() {
+  [ -d "$1" ] && [ ! -L "$1" ]
+}
+
+if is_safe_dir "$DATA_DIR"; then
+  find -P "$DATA_DIR" -maxdepth 1 -type f \( \
+    -name "readora.sqlite" \
+    -o -name "readora.sqlite-wal" \
+    -o -name "readora.sqlite-shm" \
+    -o -name "readora.sqlite-journal" \
+    -o -name ".*.tmp-*" \
+  \) -delete 2>/dev/null || true
+
+  if is_safe_dir "$DATA_DIR/updates"; then
+    find -P "$DATA_DIR/updates" -maxdepth 1 -type f \( \
+      -name "release-manifest.json" \
+      -o -name "*.tmp" \
+      -o -name ".*.tmp-*" \
+    \) -delete 2>/dev/null || true
+    rmdir "$DATA_DIR/updates" 2>/dev/null || true
+  fi
+
+  if is_safe_dir "$DATA_DIR/library"; then
+    if is_safe_dir "$DATA_DIR/library/pdfs"; then
+      find -P "$DATA_DIR/library/pdfs" -maxdepth 2 -type f \( \
+        -name "*.pdf" \
+        -o -name "*.pdf.tmp" \
+        -o -name ".*.tmp-*" \
+      \) -delete 2>/dev/null || true
+      find -P "$DATA_DIR/library/pdfs" -mindepth 1 -maxdepth 1 -type d \
+        -exec rmdir {} + 2>/dev/null || true
+      rmdir "$DATA_DIR/library/pdfs" 2>/dev/null || true
+    fi
+    find -P "$DATA_DIR/library" -maxdepth 1 -type f \( \
+      -name "state.json" \
+      -o -name "state.json.tmp*" \
+      -o -name ".*.tmp-*" \
+    \) -delete 2>/dev/null || true
+    rmdir "$DATA_DIR/library" 2>/dev/null || true
+  fi
+
+  if is_safe_dir "$DATA_DIR/cache"; then
+    find -P "$DATA_DIR/cache" -maxdepth 1 -type f \( \
+      -name "*.png" \
+      -o -name "*.cache" \
+      -o -name "*.tmp" \
+      -o -name "*.json" \
+      -o -name "*.bin" \
+    \) -delete 2>/dev/null || true
     rmdir "$DATA_DIR/cache" 2>/dev/null || true
   fi
+
   rmdir "$DATA_DIR" 2>/dev/null || true
 fi
 
-if [ -d "$CACHE_DIR" ]; then
-  if [ -d "$CACHE_DIR/render-cache" ]; then
-    rm -f "$CACHE_DIR/render-cache/"*.png "$CACHE_DIR/render-cache/"*.cache 2>/dev/null || true
+if is_safe_dir "$CACHE_DIR"; then
+  if is_safe_dir "$CACHE_DIR/render-cache"; then
+    find -P "$CACHE_DIR/render-cache" -maxdepth 1 -type f \( \
+      -name "*.png" \
+      -o -name "*.cache" \
+      -o -name "*.bin" \
+    \) -delete 2>/dev/null || true
     rmdir "$CACHE_DIR/render-cache" 2>/dev/null || true
   fi
-  rm -f "$CACHE_DIR/"*.png "$CACHE_DIR/"*.cache "$CACHE_DIR/"*.tmp "$CACHE_DIR/"*.json 2>/dev/null || true
+  find -P "$CACHE_DIR" -maxdepth 1 -type f \( \
+    -name "*.png" \
+    -o -name "*.cache" \
+    -o -name "*.tmp" \
+    -o -name "*.json" \
+    -o -name "*.bin" \
+  \) -delete 2>/dev/null || true
   rmdir "$CACHE_DIR" 2>/dev/null || true
 fi
 
-if [ -d "$TMP_SAMPLES" ]; then
-  rm -f "$TMP_SAMPLES/Readora-Welcome-Guide.pdf" 2>/dev/null || true
+if is_safe_dir "$TMP_SAMPLES"; then
+  find -P "$TMP_SAMPLES" -maxdepth 1 -type f -name "Readora-Welcome-Guide.pdf" -delete 2>/dev/null || true
   rmdir "$TMP_SAMPLES" 2>/dev/null || true
 fi
