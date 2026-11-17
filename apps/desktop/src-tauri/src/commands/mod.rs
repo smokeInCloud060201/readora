@@ -88,8 +88,15 @@ impl DesktopCommandHandler {
 
     /// Handles `document_open_sample` (generates and opens the built-in welcome guide PDF).
     pub fn document_open_sample(&self) -> Result<DocumentSessionDto, CommandErrorDto> {
+        static SAMPLE_PDF_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let sample_dir = std::env::temp_dir().join("readora-samples");
-        let path = self.core.create_sample_pdf(&sample_dir)?;
+        let path = {
+            let _guard = SAMPLE_PDF_LOCK.lock().map_err(|_| CommandErrorDto {
+                code: "platform_error".to_owned(),
+                message: "sample PDF generation lock poisoned".to_owned(),
+            })?;
+            self.core.create_sample_pdf(&sample_dir)?
+        };
         Ok(self.core.open_document(OpenDocumentRequest {
             path,
             password: None,
@@ -263,12 +270,19 @@ impl DesktopCommandHandler {
         Ok(self.core.stage_update_manifest(manifest)?)
     }
 
-    /// Handles `app_stage_github_release` by parsing GitHub's `/releases/latest` JSON payload.
+    /// Handles `app_stage_github_release` by parsing GitHub's `/releases/latest` JSON payload
+    /// and falling back to a bounded `release-manifest-<platform>.json` fetch when `asset.digest` is absent.
     pub fn app_stage_github_release(
         &self,
         raw_json: &str,
     ) -> Result<AppUpdateStatusDto, CommandErrorDto> {
-        Ok(self.core.stage_github_release_json(raw_json)?)
+        let manifest = crate::server::parse_and_resolve_github_release_manifest(
+            raw_json,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            crate::server::fetch_allowed_github_manifest_bytes,
+        )?;
+        self.app_stage_update_manifest(manifest)
     }
 
     /// Handles `app_install_update`.
@@ -367,19 +381,9 @@ impl DesktopCommandHandler {
                 let annotation_id: String = parse_arg(&args, "annotationId")?;
                 to_json_value(self.annotation_delete(&annotation_id)?)
             }
-            "annotation_export" => {
-                let document_id: String = parse_arg(&args, "documentId")?;
-                let include_annotations: bool = parse_arg(&args, "includeAnnotations")?;
-                let destination_path: Option<String> = args
-                    .get("destinationPath")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                to_json_value(self.annotation_export(
-                    &document_id,
-                    include_annotations,
-                    destination_path.as_deref(),
-                )?)
-            }
+            "annotation_export" => to_json_value(crate::server::execute_annotation_export_rpc(
+                self, &args, None,
+            )?),
             "settings_get" => to_json_value(self.settings_get()?),
             "settings_update" => {
                 let patch: SettingsPatchDto = parse_arg(&args, "patch")?;
@@ -392,6 +396,13 @@ impl DesktopCommandHandler {
                     .get("includeDismissed")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                if args.get("fetchRemote").and_then(Value::as_bool) == Some(true)
+                    && let Ok(settings) = self.settings_get()
+                    && let Ok(manifest) =
+                        crate::server::fetch_github_release_manifest(&settings.github_release_repo)
+                {
+                    let _ = self.app_stage_update_manifest(manifest);
+                }
                 to_json_value(self.app_check_for_updates(include_dismissed)?)
             }
             "app_stage_update_manifest" => {

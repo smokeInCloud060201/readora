@@ -2,7 +2,7 @@
 # Readora Debian/Ubuntu post-removal script (Debian Policy §6.5)
 # Removes ONLY Readora's own SQLite database, staged library/update files, and cache artifacts
 # strictly on `purge` (NEVER on `remove` or `upgrade`), refusing symlinked path segments and
-# dropping privileges to the target non-root user whenever possible.
+# enforcing fail-closed privilege drop to the target non-root user (never running as uid 0).
 set -eu
 
 case "${1:-}" in
@@ -13,16 +13,6 @@ case "${1:-}" in
         exit 0
         ;;
     esac
-
-    USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6 2>/dev/null || true)
-    case "$USER_HOME" in
-      /*) ;;
-      *) exit 0 ;;
-    esac
-
-    if [ ! -d "$USER_HOME" ] || [ -L "$USER_HOME" ]; then
-      exit 0
-    fi
 
     check_no_symlink_segments() {
       target_path="$1"
@@ -42,15 +32,24 @@ case "${1:-}" in
       return 0
     }
 
-    DATA_DIR="$USER_HOME/.local/share/readora"
-    CACHE_DIR="$USER_HOME/.cache/readora"
-
-    if ! check_no_symlink_segments "$DATA_DIR" || ! check_no_symlink_segments "$CACHE_DIR"; then
-      exit 0
+    RUNUSER_BIN=""
+    if command -v runuser >/dev/null 2>&1; then
+      RUNUSER_BIN=$(command -v runuser)
+    elif [ -x /usr/sbin/runuser ]; then
+      RUNUSER_BIN="/usr/sbin/runuser"
+    elif [ -x /sbin/runuser ]; then
+      RUNUSER_BIN="/sbin/runuser"
     fi
 
-    if [ -x /usr/bin/readora-desktop ] && [ ! -L /usr/bin/readora-desktop ] && command -v runuser >/dev/null 2>&1; then
-      runuser -u "$TARGET_USER" -- env HOME="$USER_HOME" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
+    SU_BIN=""
+    if [ -z "$RUNUSER_BIN" ]; then
+      if command -v su >/dev/null 2>&1; then
+        SU_BIN=$(command -v su)
+      elif [ -x /bin/su ]; then
+        SU_BIN="/bin/su"
+      elif [ -x /usr/bin/su ]; then
+        SU_BIN="/usr/bin/su"
+      fi
     fi
 
     CLEANUP_SCRIPT='
@@ -63,6 +62,13 @@ case "${1:-}" in
         [ -d "$1" ] && [ ! -L "$1" ]
       }
 
+      for d in "$DATA_DIR" "$CACHE_DIR"; do
+        if [ -d "$d/updates" ] && [ ! -L "$d/updates" ]; then
+          find -P "$d/updates" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+          rmdir "$d/updates" 2>/dev/null || true
+        fi
+      done
+
       if is_safe_dir "$DATA_DIR"; then
         find -P "$DATA_DIR" -maxdepth 1 -type f \( \
           -name "readora.sqlite" \
@@ -72,15 +78,6 @@ case "${1:-}" in
           -o -name ".*.tmp-*" \
         \) -delete 2>/dev/null || true
 
-        if is_safe_dir "$DATA_DIR/updates"; then
-          find -P "$DATA_DIR/updates" -maxdepth 1 -type f \( \
-            -name "release-manifest.json" \
-            -o -name "*.tmp" \
-            -o -name ".*.tmp-*" \
-          \) -delete 2>/dev/null || true
-          rmdir --ignore-fail-on-non-empty "$DATA_DIR/updates" 2>/dev/null || true
-        fi
-
         if is_safe_dir "$DATA_DIR/library"; then
           if is_safe_dir "$DATA_DIR/library/pdfs"; then
             find -P "$DATA_DIR/library/pdfs" -maxdepth 2 -type f \( \
@@ -89,15 +86,15 @@ case "${1:-}" in
               -o -name ".*.tmp-*" \
             \) -delete 2>/dev/null || true
             find -P "$DATA_DIR/library/pdfs" -mindepth 1 -maxdepth 1 -type d \
-              -exec rmdir --ignore-fail-on-non-empty {} + 2>/dev/null || true
-            rmdir --ignore-fail-on-non-empty "$DATA_DIR/library/pdfs" 2>/dev/null || true
+              -exec rmdir {} + 2>/dev/null || true
+            rmdir "$DATA_DIR/library/pdfs" 2>/dev/null || true
           fi
           find -P "$DATA_DIR/library" -maxdepth 1 -type f \( \
             -name "state.json" \
             -o -name "state.json.tmp*" \
             -o -name ".*.tmp-*" \
           \) -delete 2>/dev/null || true
-          rmdir --ignore-fail-on-non-empty "$DATA_DIR/library" 2>/dev/null || true
+          rmdir "$DATA_DIR/library" 2>/dev/null || true
         fi
 
         if is_safe_dir "$DATA_DIR/cache"; then
@@ -108,10 +105,10 @@ case "${1:-}" in
             -o -name "*.json" \
             -o -name "*.bin" \
           \) -delete 2>/dev/null || true
-          rmdir --ignore-fail-on-non-empty "$DATA_DIR/cache" 2>/dev/null || true
+          rmdir "$DATA_DIR/cache" 2>/dev/null || true
         fi
 
-        rmdir --ignore-fail-on-non-empty "$DATA_DIR" 2>/dev/null || true
+        rmdir "$DATA_DIR" 2>/dev/null || true
       fi
 
       if is_safe_dir "$CACHE_DIR"; then
@@ -121,7 +118,7 @@ case "${1:-}" in
             -o -name "*.cache" \
             -o -name "*.bin" \
           \) -delete 2>/dev/null || true
-          rmdir --ignore-fail-on-non-empty "$CACHE_DIR/render-cache" 2>/dev/null || true
+          rmdir "$CACHE_DIR/render-cache" 2>/dev/null || true
         fi
         find -P "$CACHE_DIR" -maxdepth 1 -type f \( \
           -name "*.png" \
@@ -130,15 +127,53 @@ case "${1:-}" in
           -o -name "*.json" \
           -o -name "*.bin" \
         \) -delete 2>/dev/null || true
-        rmdir --ignore-fail-on-non-empty "$CACHE_DIR" 2>/dev/null || true
+        rmdir "$CACHE_DIR" 2>/dev/null || true
       fi
     '
 
-    if [ "$(id -u)" = "0" ] && command -v runuser >/dev/null 2>&1; then
-      runuser -u "$TARGET_USER" -- /bin/sh -c "$CLEANUP_SCRIPT" -- "$USER_HOME"
-    else
-      /bin/sh -c "$CLEANUP_SCRIPT" -- "$USER_HOME"
-    fi
+    for user in "$TARGET_USER"; do
+      home=$(getent passwd "$user" | cut -d: -f6 2>/dev/null || true)
+      case "$home" in
+        /*) ;;
+        *) continue ;;
+      esac
+
+      if [ ! -d "$home" ] || [ -L "$home" ]; then
+        continue
+      fi
+
+      DATA_DIR="$home/.local/share/readora"
+      CACHE_DIR="$home/.cache/readora"
+
+      if ! check_no_symlink_segments "$DATA_DIR" || ! check_no_symlink_segments "$CACHE_DIR"; then
+        continue
+      fi
+
+      if [ -x /usr/bin/readora-desktop ] && [ ! -L /usr/bin/readora-desktop ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+          if [ -n "$RUNUSER_BIN" ]; then
+            "$RUNUSER_BIN" -u "$user" -- env HOME="$home" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
+          elif [ -n "$SU_BIN" ]; then
+            "$SU_BIN" -s /bin/sh "$user" -c 'HOME="$1" exec /usr/bin/readora-desktop --uninstall-cleanup' -- "$home" >/dev/null 2>&1 || true
+          fi
+        else
+          HOME="$home" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
+        fi
+      fi
+
+      if [ "$(id -u)" -eq 0 ]; then
+        if [ -n "$RUNUSER_BIN" ]; then
+          "$RUNUSER_BIN" -u "$user" -- /bin/sh -c "$CLEANUP_SCRIPT" -- "$home" || true
+        elif [ -n "$SU_BIN" ]; then
+          "$SU_BIN" -s /bin/sh "$user" -c '/bin/sh -c "$1" -- "$2"' -- "$CLEANUP_SCRIPT" "$home" || true
+        else
+          # Fail-closed: NEVER execute cleanup / rm -rf inside a user home directory as uid 0.
+          continue
+        fi
+      else
+        /bin/sh -c "$CLEANUP_SCRIPT" -- "$home" || true
+      fi
+    done
     ;;
 
   remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)

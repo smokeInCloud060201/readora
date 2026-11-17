@@ -8,13 +8,14 @@
 //! - Enforces `POST` + matching `Origin` + `Sec-Fetch-Site` + constant-time `X-Readora-Token`
 //!   validation before reading request bodies or executing any RPC/import/update operation.
 //! - Attaches strict `Content-Security-Policy` (without `script-src 'unsafe-inline'`),
-//!   `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY` headers to static UI responses.
+//!   `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY` headers to static HTML and JS/Worker responses.
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-use app_application::ReleaseManifestDto;
+use app_application::{ExportAnnotationsBundleDto, ReleaseManifestDto};
 use platform::NativePlatformAdapter;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,10 +29,14 @@ pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_RPC_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum authenticated PDF import body size (`512 MiB`).
 pub const MAX_IMPORT_PDF_BYTES: usize = 512 * 1024 * 1024;
+/// Maximum fallback release manifest JSON size (`64 KiB`).
+pub const MAX_RELEASE_MANIFEST_BYTES: usize = 64 * 1024;
+/// Maximum GitHub Releases `/releases/latest` API JSON size (`512 KiB`).
+pub const MAX_GITHUB_RELEASE_API_BYTES: usize = 512 * 1024;
 /// Maximum total wall-clock duration allowed to read an HTTP request (`20s`).
 pub const MAX_REQUEST_DURATION: Duration = Duration::from_secs(20);
 
-/// Strict Content-Security-Policy served on UI HTML documents.
+/// Strict Content-Security-Policy served on UI HTML and JavaScript/Web Worker responses.
 pub const CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'self'; ",
     "script-src 'self' blob:; ",
@@ -104,6 +109,586 @@ pub fn verify_downloaded_asset_staged(
         return false;
     }
     NativePlatformAdapter::verify_sha256_file(file_path, &staged.sha256).unwrap_or(false)
+}
+
+/// Resolves bundled UI static assets strictly from trusted paths anchored to `exe_path`
+/// or explicit FHS system roots (`fhs_roots`), never consulting `current_dir()` or relative paths.
+#[must_use]
+pub fn resolve_trusted_ui_dist_dir_with_fhs(
+    exe_path: Option<&Path>,
+    fhs_roots: &[&Path],
+) -> Option<PathBuf> {
+    if let Some(exe) = exe_path
+        && let Some(exe_dir) = exe.parent()
+    {
+        let candidates = [
+            exe_dir.join("../Resources/ui"),
+            exe_dir.join("ui"),
+            exe_dir.join("../lib/readora/ui"),
+            exe_dir.join("../share/readora/ui"),
+        ];
+        for candidate in candidates {
+            if !candidate.is_symlink() && candidate.join("index.html").is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    for fhs_root in fhs_roots {
+        if !fhs_root.is_symlink() && fhs_root.join("index.html").is_file() {
+            return Some((*fhs_root).to_path_buf());
+        }
+    }
+
+    None
+}
+
+/// Resolves bundled UI static assets from trusted bundle paths anchored to `exe_path`
+/// (and FHS `/usr/lib/readora/ui` / `/usr/share/readora/ui` on Linux).
+///
+/// Never consults `current_dir()` or relative workspace paths (`[R2-HIGH-06]`).
+#[must_use]
+pub fn resolve_trusted_ui_dist_dir(exe_path: Option<&Path>) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let fhs_roots: &[&Path] = &[
+        Path::new("/usr/lib/readora/ui"),
+        Path::new("/usr/share/readora/ui"),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let fhs_roots: &[&Path] = &[];
+
+    resolve_trusted_ui_dist_dir_with_fhs(exe_path, fhs_roots)
+}
+
+/// Returns `true` when `raw` is a strict 64-character ASCII hexadecimal SHA-256 digest.
+#[must_use]
+pub fn is_strict_hex_sha256(raw: &str) -> bool {
+    raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Validates that `raw_url` is an `https://` URL targeting an allowlisted GitHub Releases host
+/// with no `@` userinfo or custom port.
+#[must_use]
+pub fn is_allowed_github_https_url(raw_url: &str) -> bool {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let Some(rest) = trimmed.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = authority
+        .strip_suffix(":443")
+        .unwrap_or(authority)
+        .to_ascii_lowercase();
+    if host.contains(':') {
+        return false;
+    }
+    matches!(
+        host.as_str(),
+        "github.com"
+            | "api.github.com"
+            | "objects.githubusercontent.com"
+            | "release-assets.githubusercontent.com"
+            | "codeload.github.com"
+    )
+}
+
+/// Maps `(target_os, target_arch)` to the canonical `release-manifest-<platform>.json` asset name.
+#[must_use]
+pub fn platform_release_manifest_asset_name(
+    target_os: &str,
+    target_arch: &str,
+) -> Option<&'static str> {
+    match (target_os, target_arch) {
+        ("macos", "aarch64" | "arm64") => Some("release-manifest-macos-aarch64.json"),
+        ("macos", "x86_64" | "x64") => Some("release-manifest-macos-x86_64.json"),
+        ("windows", "x86_64" | "x64" | "amd64") => Some("release-manifest-windows-x86_64.json"),
+        ("windows", "aarch64" | "arm64") => Some("release-manifest-windows-aarch64.json"),
+        ("linux", "x86_64" | "x64" | "amd64") => Some("release-manifest-linux-x86_64.json"),
+        ("linux", "aarch64" | "arm64") => Some("release-manifest-linux-aarch64.json"),
+        _ => None,
+    }
+}
+
+/// Resolves the verified 64-character hex `sha256` for a selected GitHub Release asset:
+/// 1. Prefers `selected_asset_digest` (`sha256:<64-hex>`) directly when present.
+/// 2. When `selected_asset_digest` is `None`, falls back to a matching
+///    `release-manifest-<platform>.json` asset in `release_assets` (fetched over HTTPS from
+///    allowed GitHub hosts, bounded `<= 64 KiB`, verifying its `"asset"` matches
+///    `selected_asset_name` exactly and its `"sha256"` is a valid 64-char hex digest).
+pub fn resolve_selected_asset_sha256<F>(
+    selected_asset_name: &str,
+    selected_asset_digest: Option<&str>,
+    release_assets: &[Value],
+    target_os: &str,
+    target_arch: &str,
+    fetch_https_manifest: F,
+) -> Option<String>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>, String>,
+{
+    if let Some(raw_digest) = selected_asset_digest {
+        let trimmed = raw_digest.trim();
+        if !trimmed.is_empty() {
+            let hex_part = trimmed.strip_prefix("sha256:")?;
+            if is_strict_hex_sha256(hex_part) {
+                return Some(hex_part.to_ascii_lowercase());
+            }
+            return None;
+        }
+    }
+
+    let expected_manifest_name = platform_release_manifest_asset_name(target_os, target_arch)?;
+    let manifest_entry = release_assets.iter().find(|entry| {
+        entry
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected_manifest_name))
+    })?;
+
+    let declared_size = manifest_entry
+        .get("size")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if declared_size > MAX_RELEASE_MANIFEST_BYTES as u64 {
+        return None;
+    }
+
+    let manifest_url = manifest_entry
+        .get("browser_download_url")
+        .and_then(Value::as_str)?;
+    if !is_allowed_github_https_url(manifest_url) {
+        return None;
+    }
+
+    let raw_bytes = fetch_https_manifest(manifest_url).ok()?;
+    if raw_bytes.is_empty() || raw_bytes.len() > MAX_RELEASE_MANIFEST_BYTES {
+        return None;
+    }
+
+    let parsed_manifest: Value = serde_json::from_slice(&raw_bytes).ok()?;
+    let manifest_asset_name = parsed_manifest
+        .get("asset")
+        .and_then(Value::as_str)
+        .map(str::trim)?;
+    if manifest_asset_name != selected_asset_name {
+        return None;
+    }
+
+    let manifest_sha = parsed_manifest
+        .get("sha256")
+        .and_then(Value::as_str)
+        .map(str::trim)?;
+    if !is_strict_hex_sha256(manifest_sha) {
+        return None;
+    }
+
+    Some(manifest_sha.to_ascii_lowercase())
+}
+
+struct SelectedReleaseAsset {
+    name: String,
+    download_url: String,
+    size_bytes: u64,
+    digest: Option<String>,
+}
+
+fn select_platform_installer_asset(
+    assets: &[Value],
+    target_os: &str,
+    target_arch: &str,
+) -> Option<SelectedReleaseAsset> {
+    let os_tokens: &[&str] = match target_os {
+        "macos" => &[".dmg", ".app.tar.gz", "macos", "darwin"],
+        "windows" => &[".msi", ".exe", "windows", "win64"],
+        "linux" => &[".appimage", ".deb", ".rpm", "linux"],
+        _ => &[".dmg", ".msi", ".appimage"],
+    };
+    let arch_tokens: &[&str] = match target_arch {
+        "aarch64" | "arm64" => &["aarch64", "arm64", "universal"],
+        "x86_64" | "x64" | "amd64" => &["x86_64", "x64", "amd64", "win64", "universal"],
+        _ => &[],
+    };
+
+    let mut best_score: u8 = 0;
+    let mut selected: Option<SelectedReleaseAsset> = None;
+
+    for asset in assets {
+        let Some(exact_name) = asset.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let lower_name = exact_name.to_ascii_lowercase();
+        if lower_name.ends_with(".json")
+            || lower_name.ends_with(".sha256")
+            || lower_name.starts_with("release-manifest")
+        {
+            continue;
+        }
+        if !os_tokens.iter().any(|tok| lower_name.contains(tok)) {
+            continue;
+        }
+        let Some(download_url) = asset
+            .get("browser_download_url")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let size_bytes = asset.get("size").and_then(Value::as_u64).unwrap_or(0);
+        let digest = asset
+            .get("digest")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+
+        let matches_arch =
+            arch_tokens.is_empty() || arch_tokens.iter().any(|tok| lower_name.contains(tok));
+        let is_preferred_updater_bundle =
+            target_os == "macos" && lower_name.ends_with(".app.tar.gz");
+        let score: u8 = match (matches_arch, is_preferred_updater_bundle) {
+            (true, true) => 4,
+            (true, false) => 3,
+            (false, _) => 2,
+        };
+
+        if score > best_score {
+            best_score = score;
+            selected = Some(SelectedReleaseAsset {
+                name: exact_name.to_owned(),
+                download_url,
+                size_bytes,
+                digest,
+            });
+            if score == 4 {
+                break;
+            }
+        }
+    }
+
+    selected
+}
+
+/// Parses a GitHub Releases `/releases/latest` JSON payload and resolves the platform asset's
+/// SHA-256 digest (preferring `asset.digest` and falling back to `release-manifest-<platform>.json`).
+pub fn parse_and_resolve_github_release_manifest<F>(
+    raw_release_json: &str,
+    target_os: &str,
+    target_arch: &str,
+    fetch_https_manifest: F,
+) -> Result<ReleaseManifestDto, CommandErrorDto>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>, String>,
+{
+    let mut manifest = NativePlatformAdapter::parse_github_release_json_for_target(
+        raw_release_json,
+        target_os,
+        target_arch,
+    )?;
+
+    let parsed: Value = serde_json::from_str(raw_release_json).map_err(|err| CommandErrorDto {
+        code: "platform_error".to_owned(),
+        message: format!("invalid GitHub release JSON response: {err}"),
+    })?;
+
+    if let Some(assets) = parsed.get("assets").and_then(Value::as_array)
+        && let Some(selected) = select_platform_installer_asset(assets, target_os, target_arch)
+    {
+        if is_allowed_github_https_url(&selected.download_url) {
+            manifest.package_size_bytes = selected.size_bytes;
+            manifest.download_url = Some(selected.download_url);
+            manifest.sha256 = resolve_selected_asset_sha256(
+                &selected.name,
+                selected.digest.as_deref(),
+                assets,
+                target_os,
+                target_arch,
+                fetch_https_manifest,
+            )
+            .unwrap_or_default();
+        } else {
+            manifest.package_size_bytes = 0;
+            manifest.download_url = None;
+            manifest.sha256.clear();
+        }
+    }
+
+    Ok(manifest)
+}
+
+fn fetch_github_https_bounded(
+    url: &str,
+    accept_header: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    if !is_allowed_github_https_url(url) {
+        return Err("URL is not an allowed GitHub HTTPS endpoint".to_owned());
+    }
+
+    let temp_out = tempfile::NamedTempFile::new()
+        .map_err(|err| format!("failed to allocate temporary download buffer: {err}"))?;
+    let curl_bin = if cfg!(target_os = "macos") {
+        "/usr/bin/curl"
+    } else if cfg!(target_os = "windows") {
+        "curl.exe"
+    } else {
+        "curl"
+    };
+
+    let max_size_str = max_bytes.to_string();
+    let output = Command::new(curl_bin)
+        .args([
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "--max-redirs",
+            "5",
+            "--max-time",
+            "10",
+            "--max-filesize",
+            &max_size_str,
+            "-H",
+            accept_header,
+            "-w",
+            "%{url_effective}",
+            "-o",
+        ])
+        .arg(temp_out.path())
+        .arg(url)
+        .output()
+        .map_err(|err| format!("failed to execute HTTPS client: {err}"))?;
+
+    if !output.status.success() {
+        return Err("GitHub HTTPS request failed".to_owned());
+    }
+
+    let effective_url = String::from_utf8_lossy(&output.stdout);
+    if !effective_url.trim().is_empty() && !is_allowed_github_https_url(effective_url.trim()) {
+        return Err("redirected URL left allowed GitHub HTTPS hosts".to_owned());
+    }
+
+    let meta = std::fs::metadata(temp_out.path())
+        .map_err(|err| format!("failed to inspect downloaded response size: {err}"))?;
+    if meta.len() > max_bytes as u64 {
+        return Err("downloaded GitHub response exceeded size cap".to_owned());
+    }
+
+    let bytes = std::fs::read(temp_out.path())
+        .map_err(|err| format!("failed to read downloaded response bytes: {err}"))?;
+    if bytes.len() > max_bytes {
+        return Err("downloaded GitHub response exceeded size cap".to_owned());
+    }
+    Ok(bytes)
+}
+
+/// Fetches a bounded (`<= 64 KiB`) release manifest JSON over HTTPS from an allowed GitHub host.
+pub fn fetch_allowed_github_manifest_bytes(url: &str) -> Result<Vec<u8>, String> {
+    fetch_github_https_bounded(
+        url,
+        "Accept: application/octet-stream",
+        MAX_RELEASE_MANIFEST_BYTES,
+    )
+}
+
+fn is_valid_github_repo_slug(repo: &str) -> bool {
+    let parts: Vec<&str> = repo.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= 64
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        })
+}
+
+/// Fetches `/repos/{owner}/{repo}/releases/latest` over HTTPS and resolves a verified
+/// `ReleaseManifestDto` (falling back to `release-manifest-<platform>.json` when `asset.digest` is absent).
+pub fn fetch_github_release_manifest(repo: &str) -> Result<ReleaseManifestDto, CommandErrorDto> {
+    let trimmed_repo = repo.trim();
+    if !is_valid_github_repo_slug(trimmed_repo) {
+        return Err(CommandErrorDto {
+            code: "validation_error".to_owned(),
+            message: "Invalid GitHub owner/repo slug".to_owned(),
+        });
+    }
+    let api_url = format!("https://api.github.com/repos/{trimmed_repo}/releases/latest");
+    let raw_bytes = fetch_github_https_bounded(
+        &api_url,
+        "Accept: application/vnd.github+json",
+        MAX_GITHUB_RELEASE_API_BYTES,
+    )
+    .map_err(|msg| CommandErrorDto {
+        code: "platform_error".to_owned(),
+        message: msg,
+    })?;
+    let raw_json = std::str::from_utf8(&raw_bytes).map_err(|_| CommandErrorDto {
+        code: "platform_error".to_owned(),
+        message: "GitHub release API response was not valid UTF-8".to_owned(),
+    })?;
+    parse_and_resolve_github_release_manifest(
+        raw_json,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        fetch_allowed_github_manifest_bytes,
+    )
+}
+
+/// Resolves the user's `Downloads` directory (verifying it exists and is not a symlink),
+/// falling back to `<app_data_dir>/exports` when `Downloads` is missing.
+pub fn resolve_export_target_dir(override_dir: Option<&Path>) -> Result<PathBuf, CommandErrorDto> {
+    if let Some(custom) = override_dir {
+        if let Ok(meta) = std::fs::symlink_metadata(custom)
+            && meta.file_type().is_symlink()
+        {
+            return Err(CommandErrorDto {
+                code: "platform_error".to_owned(),
+                message: "Refusing to export into a symlinked directory".to_owned(),
+            });
+        }
+        if !custom.exists() {
+            std::fs::create_dir_all(custom).map_err(|err| CommandErrorDto {
+                code: "platform_error".to_owned(),
+                message: format!("Failed to create export directory: {err}"),
+            })?;
+        }
+        return std::fs::canonicalize(custom).map_err(|err| CommandErrorDto {
+            code: "platform_error".to_owned(),
+            message: format!("Failed to resolve export directory: {err}"),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    let downloads_candidate = std::env::var("USERPROFILE")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(|profile| PathBuf::from(profile).join("Downloads"));
+
+    #[cfg(not(target_os = "windows"))]
+    let downloads_candidate = std::env::var("HOME")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(|home| PathBuf::from(home).join("Downloads"));
+
+    if let Some(downloads) = downloads_candidate
+        && let Ok(meta) = std::fs::symlink_metadata(&downloads)
+        && meta.is_dir()
+        && !meta.file_type().is_symlink()
+        && let Ok(canon) = std::fs::canonicalize(&downloads)
+    {
+        return Ok(canon);
+    }
+
+    let fallback = NativePlatformAdapter::resolve_app_data_dir().join("exports");
+    if let Ok(meta) = std::fs::symlink_metadata(&fallback)
+        && meta.file_type().is_symlink()
+    {
+        return Err(CommandErrorDto {
+            code: "platform_error".to_owned(),
+            message: "Refusing to export into symlinked exports directory".to_owned(),
+        });
+    }
+    std::fs::create_dir_all(&fallback).map_err(|err| CommandErrorDto {
+        code: "platform_error".to_owned(),
+        message: format!("Failed to create fallback exports directory: {err}"),
+    })?;
+    Ok(std::fs::canonicalize(&fallback).unwrap_or(fallback))
+}
+
+/// Picks a non-clobbering `.md` file path inside `export_dir` (`<stem>.md`, `<stem>-2.md` .. `<stem>-999.md`)
+/// so existing user files are never overwritten (`[R2-MED-01]`).
+pub fn select_non_clobbering_markdown_path(
+    export_dir: &Path,
+    sanitized_file_name: &str,
+) -> Result<PathBuf, CommandErrorDto> {
+    let clean_name = Path::new(sanitized_file_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && !n.starts_with('.'))
+        .unwrap_or("annotations.md");
+    let stem = clean_name
+        .strip_suffix(".md")
+        .or_else(|| clean_name.strip_suffix(".MD"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("annotations");
+
+    let primary = export_dir.join(format!("{stem}.md"));
+    if std::fs::symlink_metadata(&primary).is_err() {
+        return Ok(primary);
+    }
+
+    for suffix in 2..=999_u16 {
+        let candidate = export_dir.join(format!("{stem}-{suffix}.md"));
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(CommandErrorDto {
+        code: "platform_error".to_owned(),
+        message: "Unable to allocate non-clobbering Markdown export filename".to_owned(),
+    })
+}
+
+/// Executes the `"annotation_export"` RPC command, supporting optional `"saveToDownloads": bool`
+/// with atomic non-clobbering file creation (`[R2-MED-01]`).
+pub fn execute_annotation_export_rpc(
+    handler: &DesktopCommandHandler,
+    args: &Value,
+    downloads_dir_override: Option<&Path>,
+) -> Result<ExportAnnotationsBundleDto, CommandErrorDto> {
+    let document_id: String = serde_json::from_value(
+        args.get("documentId").cloned().unwrap_or(Value::Null),
+    )
+    .map_err(|err| CommandErrorDto {
+        code: "validation_error".to_owned(),
+        message: format!("invalid IPC argument 'documentId': {err}"),
+    })?;
+    let include_annotations: bool = serde_json::from_value(
+        args.get("includeAnnotations")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|err| CommandErrorDto {
+        code: "validation_error".to_owned(),
+        message: format!("invalid IPC argument 'includeAnnotations': {err}"),
+    })?;
+    let raw_destination_path: Option<String> = args
+        .get("destinationPath")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let save_to_downloads = args
+        .get("saveToDownloads")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let effective_dest = if save_to_downloads {
+        raw_destination_path.filter(|p| !p.trim().is_empty())
+    } else {
+        raw_destination_path
+    };
+
+    if effective_dest.is_none() && save_to_downloads {
+        let preview = handler.annotation_export(&document_id, include_annotations, None)?;
+        let export_dir = resolve_export_target_dir(downloads_dir_override)?;
+        let target_path = select_non_clobbering_markdown_path(&export_dir, &preview.file_name)?;
+        let target_str = target_path.to_string_lossy().into_owned();
+        let mut exported =
+            handler.annotation_export(&document_id, include_annotations, Some(&target_str))?;
+        if let Some(actual_name) = target_path.file_name().and_then(|n| n.to_str()) {
+            exported.file_name = actual_name.to_owned();
+        }
+        return Ok(exported);
+    }
+
+    handler.annotation_export(&document_id, include_annotations, effective_dest.as_deref())
 }
 
 /// Builds the WebView document-creation initialization script with subframe and origin guards
@@ -687,6 +1272,21 @@ pub fn route_http_request<F>(
 where
     F: FnOnce(&DesktopCommandHandler, &str) -> &'static str,
 {
+    route_http_request_with_export_dir(req, ui_root, handler, None, update_runner)
+}
+
+/// Routes a validated `ParsedHttpRequest` with an optional `Downloads` directory override (used by
+/// unit tests to verify atomic non-clobbering exports without touching the user's real `~/Downloads`).
+pub fn route_http_request_with_export_dir<F>(
+    req: ParsedHttpRequest,
+    ui_root: &Path,
+    handler: &DesktopCommandHandler,
+    downloads_dir_override: Option<&Path>,
+    update_runner: F,
+) -> HttpResponse
+where
+    F: FnOnce(&DesktopCommandHandler, &str) -> &'static str,
+{
     let path_only = req.target.split('?').next().unwrap_or("/");
 
     match path_only {
@@ -701,7 +1301,18 @@ where
                     },
                 );
             };
-            match handler.dispatch_rpc(&envelope.cmd, envelope.args) {
+            let rpc_result = if envelope.cmd == "annotation_export" {
+                execute_annotation_export_rpc(handler, &envelope.args, downloads_dir_override)
+                    .and_then(|bundle| {
+                        serde_json::to_value(bundle).map_err(|err| CommandErrorDto {
+                            code: "serialization_error".to_owned(),
+                            message: format!("failed to serialize IPC response: {err}"),
+                        })
+                    })
+            } else {
+                handler.dispatch_rpc(&envelope.cmd, envelope.args)
+            };
+            match rpc_result {
                 Ok(data) => HttpResponse::json("200 OK", &json!({ "ok": true, "data": data })),
                 Err(err) => error_response("400 Bad Request", err),
             }
@@ -783,11 +1394,14 @@ fn serve_static_ui_asset(ui_root: &Path, raw_path: &str, head_only: bool) -> Htt
     match std::fs::read(&resolved_path) {
         Ok(body) => {
             let mime = content_type_for_path(&resolved_path);
-            let is_html = mime.starts_with("text/html");
+            // Attach strict CSP on HTML documents AND JavaScript/module scripts so Web Workers
+            // (`pdf.worker.mjs`, etc.) inherit the same strict policy (`[R2-LOW-04]`).
+            let include_csp =
+                mime.starts_with("text/html") || mime.starts_with("application/javascript");
             HttpResponse {
                 status: "200 OK",
                 content_type: mime,
-                include_csp: is_html,
+                include_csp,
                 body: if head_only { Vec::new() } else { body },
             }
         }

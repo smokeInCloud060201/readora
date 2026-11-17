@@ -21,12 +21,8 @@ if is_safe_dir "$DATA_DIR"; then
     -o -name ".*.tmp-*" \
   \) -delete 2>/dev/null || true
 
-  if is_safe_dir "$DATA_DIR/updates"; then
-    find -P "$DATA_DIR/updates" -maxdepth 1 -type f \( \
-      -name "release-manifest.json" \
-      -o -name "*.tmp" \
-      -o -name ".*.tmp-*" \
-    \) -delete 2>/dev/null || true
+  if [ -d "$DATA_DIR/updates" ] && [ ! -L "$DATA_DIR/updates" ]; then
+    find -P "$DATA_DIR/updates" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
     rmdir "$DATA_DIR/updates" 2>/dev/null || true
   fi
 

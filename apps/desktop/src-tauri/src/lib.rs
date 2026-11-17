@@ -32,9 +32,11 @@ mod tests {
     use serde_json::json;
 
     use super::server::{
-        CONTENT_SECURITY_POLICY, build_init_script, constant_time_eq, generate_session_token,
-        is_allowed_navigation_url, read_and_authorize_http_request, route_http_request,
-        verify_downloaded_asset_staged,
+        CONTENT_SECURITY_POLICY, MAX_RELEASE_MANIFEST_BYTES, build_init_script, constant_time_eq,
+        generate_session_token, is_allowed_github_https_url, is_allowed_navigation_url,
+        parse_and_resolve_github_release_manifest, read_and_authorize_http_request,
+        resolve_selected_asset_sha256, resolve_trusted_ui_dist_dir_with_fhs, route_http_request,
+        route_http_request_with_export_dir, verify_downloaded_asset_staged,
     };
     use super::*;
 
@@ -370,23 +372,35 @@ mod tests {
             b"<!doctype html><title>Readora</title>",
         )
         .unwrap();
+        std::fs::write(dir.path().join("app.js"), b"console.log('main');").unwrap();
+        std::fs::write(
+            dir.path().join("pdf.worker.mjs"),
+            b"self.onmessage = () => {};",
+        )
+        .unwrap();
         let handler = DesktopCommandHandler::try_new_in_memory().unwrap();
         let port = 52420_u16;
         let token = generate_session_token();
 
-        // Static index.html includes CSP without script-src 'unsafe-inline'
-        let get_html = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
-        let mut cursor = Cursor::new(get_html.into_bytes());
-        let parsed = read_and_authorize_http_request(&mut cursor, port, &token)
-            .unwrap()
-            .unwrap();
-        let resp = route_http_request(parsed, dir.path(), &handler, |_, _| r#"{"status":"noop"}"#);
-        assert_eq!(resp.status, "200 OK");
-        assert!(resp.include_csp);
-        let mut wire = Vec::new();
-        resp.write_to(&mut wire);
-        let wire_str = String::from_utf8_lossy(&wire);
-        assert!(wire_str.contains(CONTENT_SECURITY_POLICY));
+        // Static index.html, .js, and .mjs (Web Workers) include CSP without script-src 'unsafe-inline'
+        for asset_path in ["/", "/app.js", "/pdf.worker.mjs"] {
+            let get_req = format!("GET {asset_path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+            let mut cursor = Cursor::new(get_req.into_bytes());
+            let parsed = read_and_authorize_http_request(&mut cursor, port, &token)
+                .unwrap()
+                .unwrap();
+            let resp =
+                route_http_request(parsed, dir.path(), &handler, |_, _| r#"{"status":"noop"}"#);
+            assert_eq!(resp.status, "200 OK");
+            assert!(
+                resp.include_csp,
+                "expected CSP header on static response for {asset_path}"
+            );
+            let mut wire = Vec::new();
+            resp.write_to(&mut wire);
+            let wire_str = String::from_utf8_lossy(&wire);
+            assert!(wire_str.contains(CONTENT_SECURITY_POLICY));
+        }
 
         // Authenticated PDF import (including ?query string stripping) + RPC roundtrip through SQLite AppCore
         let pdf_bytes = build_synthetic_pdf_bytes(
@@ -457,5 +471,291 @@ mod tests {
         assert_eq!(rpc_resp.status, "200 OK");
         let rpc_json: serde_json::Value = serde_json::from_slice(&rpc_resp.body).unwrap();
         assert_eq!(rpc_json["data"][0]["document_id"], json!(doc_id));
+    }
+
+    #[test]
+    fn trusted_ui_dist_dir_resolves_only_exe_anchored_and_fhs_paths() {
+        let temp = tempfile::tempdir().unwrap();
+
+        // 1. Bare binary in an untrusted directory (e.g. ~/Downloads) with no bundled UI -> None
+        let untrusted_dir = temp.path().join("Downloads");
+        std::fs::create_dir_all(untrusted_dir.join("apps/desktop/ui/dist")).unwrap();
+        std::fs::write(
+            untrusted_dir.join("apps/desktop/ui/dist/index.html"),
+            b"<script>evil()</script>",
+        )
+        .unwrap();
+        let bare_exe = untrusted_dir.join("readora-desktop");
+        std::fs::write(&bare_exe, b"bin").unwrap();
+        assert!(resolve_trusted_ui_dist_dir_with_fhs(Some(&bare_exe), &[]).is_none());
+
+        // 2. macOS `.app` bundle (`<exe_dir>/../Resources/ui`)
+        let mac_macos_dir = temp.path().join("Readora.app/Contents/MacOS");
+        let mac_ui_dir = temp.path().join("Readora.app/Contents/Resources/ui");
+        std::fs::create_dir_all(&mac_macos_dir).unwrap();
+        std::fs::create_dir_all(&mac_ui_dir).unwrap();
+        std::fs::write(mac_ui_dir.join("index.html"), b"<html>mac</html>").unwrap();
+        let mac_exe = mac_macos_dir.join("readora-desktop");
+        assert_eq!(
+            resolve_trusted_ui_dist_dir_with_fhs(Some(&mac_exe), &[]).unwrap(),
+            mac_macos_dir.join("../Resources/ui")
+        );
+
+        // 3. Windows / portable bundle (`<exe_dir>/ui`)
+        let win_dir = temp.path().join("win-bundle");
+        std::fs::create_dir_all(win_dir.join("ui")).unwrap();
+        std::fs::write(win_dir.join("ui/index.html"), b"<html>win</html>").unwrap();
+        let win_exe = win_dir.join("Readora.exe");
+        assert_eq!(
+            resolve_trusted_ui_dist_dir_with_fhs(Some(&win_exe), &[]).unwrap(),
+            win_dir.join("ui")
+        );
+
+        // 4. Linux `.deb` / FHS install (`<exe_dir>/../lib/readora/ui` and FHS `/usr/lib/readora/ui`)
+        let deb_bin_dir = temp.path().join("deb/usr/bin");
+        let deb_lib_ui = temp.path().join("deb/usr/lib/readora/ui");
+        std::fs::create_dir_all(&deb_bin_dir).unwrap();
+        std::fs::create_dir_all(&deb_lib_ui).unwrap();
+        std::fs::write(deb_lib_ui.join("index.html"), b"<html>deb</html>").unwrap();
+        let deb_exe = deb_bin_dir.join("readora-desktop");
+        assert_eq!(
+            resolve_trusted_ui_dist_dir_with_fhs(Some(&deb_exe), &[]).unwrap(),
+            deb_bin_dir.join("../lib/readora/ui")
+        );
+        assert_eq!(
+            resolve_trusted_ui_dist_dir_with_fhs(Some(&bare_exe), &[deb_lib_ui.as_path()]).unwrap(),
+            deb_lib_ui
+        );
+    }
+
+    #[test]
+    fn annotation_export_rpc_saves_to_downloads_atomically_without_clobbering() {
+        let ui_dir = tempfile::tempdir().unwrap();
+        std::fs::write(ui_dir.path().join("index.html"), b"<!doctype html>").unwrap();
+        let downloads_dir = tempfile::tempdir().unwrap();
+
+        let handler = DesktopCommandHandler::try_new_in_memory().unwrap();
+        let sample_pdf = build_synthetic_pdf_bytes("Export Study", &["Chapter 1 text"], None);
+        let session = handler
+            .document_import_bytes("Export Study.pdf", &sample_pdf, None)
+            .unwrap();
+        let doc_id = session.descriptor.id.as_str().to_owned();
+        handler
+            .annotation_upsert(UpsertAnnotationCommand {
+                id: None,
+                document_id: doc_id.clone(),
+                page_index: 0,
+                kind: AnnotationKind::Highlight,
+                color_hex: "#a9d5b2".to_owned(),
+                quote_text: "Atomic Downloads Export".to_owned(),
+                note_text: "Must never overwrite existing user Markdown files".to_owned(),
+            })
+            .unwrap();
+
+        // Preview expected sanitized filename and pre-seed an existing user file in Downloads
+        let preview = handler.annotation_export(&doc_id, true, None).unwrap();
+        let existing_user_file = downloads_dir.path().join(&preview.file_name);
+        std::fs::write(&existing_user_file, b"USER EXISTING NOTES - DO NOT CLOBBER").unwrap();
+
+        let port = 52425_u16;
+        let token = generate_session_token();
+
+        let run_export_rpc = || -> serde_json::Value {
+            let rpc_body = serde_json::to_vec(&json!({
+                "cmd": "annotation_export",
+                "args": {
+                    "documentId": doc_id,
+                    "includeAnnotations": true,
+                    "destinationPath": null,
+                    "saveToDownloads": true
+                }
+            }))
+            .unwrap();
+            let req_wire = format!(
+                "POST /__readora_rpc HTTP/1.1\r\n\
+                 Host: 127.0.0.1:{port}\r\n\
+                 Origin: http://127.0.0.1:{port}\r\n\
+                 Sec-Fetch-Site: same-origin\r\n\
+                 X-Readora-Token: {token}\r\n\
+                 Content-Length: {}\r\n\r\n",
+                rpc_body.len()
+            );
+            let mut raw = req_wire.into_bytes();
+            raw.extend_from_slice(&rpc_body);
+            let mut cursor = Cursor::new(raw);
+            let parsed = read_and_authorize_http_request(&mut cursor, port, &token)
+                .unwrap()
+                .unwrap();
+            let resp = route_http_request_with_export_dir(
+                parsed,
+                ui_dir.path(),
+                &handler,
+                Some(downloads_dir.path()),
+                |_, _| r#"{"status":"noop"}"#,
+            );
+            assert_eq!(resp.status, "200 OK");
+            serde_json::from_slice(&resp.body).unwrap()
+        };
+
+        // First export must preserve `<stem>.md` and write `<stem>-2.md` atomically
+        let first_json = run_export_rpc();
+        assert_eq!(first_json["ok"], json!(true));
+        let first_saved = first_json["data"]["saved_path"]
+            .as_str()
+            .expect("saved_path must be Some")
+            .to_owned();
+        assert!(first_saved.ends_with("-annotations-2.md"));
+        assert!(
+            std::fs::read_to_string(&first_saved)
+                .unwrap()
+                .contains("Atomic Downloads Export")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&existing_user_file).unwrap(),
+            "USER EXISTING NOTES - DO NOT CLOBBER"
+        );
+
+        // Second export must write `<stem>-3.md` without overwriting `<stem>-2.md`
+        let second_json = run_export_rpc();
+        let second_saved = second_json["data"]["saved_path"]
+            .as_str()
+            .expect("second saved_path must be Some")
+            .to_owned();
+        assert!(second_saved.ends_with("-annotations-3.md"));
+        assert_ne!(first_saved, second_saved);
+        assert!(std::path::Path::new(&second_saved).is_file());
+    }
+
+    #[test]
+    fn release_manifest_digest_prefers_asset_digest_and_validates_https_manifest_fallback() {
+        let valid_sha = "5bfdd07f36e281262a1d65e3dada59a48edec27b2dc15a2b6edf0d6a08d966ec";
+        let other_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+        assert!(is_allowed_github_https_url(
+            "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/release-manifest-macos-aarch64.json"
+        ));
+        assert!(is_allowed_github_https_url(
+            "https://objects.githubusercontent.com/github-production-release-asset/manifest.json"
+        ));
+        assert!(!is_allowed_github_https_url(
+            "http://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/manifest.json"
+        ));
+        assert!(!is_allowed_github_https_url(
+            "https://github.com@attacker.example/manifest.json"
+        ));
+        assert!(!is_allowed_github_https_url(
+            "https://attacker.example/release-manifest-macos-aarch64.json"
+        ));
+
+        let assets = vec![
+            json!({
+                "name": "release-manifest-macos-aarch64.json",
+                "size": 312,
+                "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/release-manifest-macos-aarch64.json",
+                "digest": null
+            }),
+            json!({
+                "name": "Readora_1.1.0_macos-aarch64.app.tar.gz",
+                "size": 18_450_000,
+                "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/Readora_1.1.0_macos-aarch64.app.tar.gz",
+                "digest": null
+            }),
+        ];
+
+        // 1. Direct `asset.digest` (`sha256:<64-hex>`) wins immediately without calling fallback fetcher
+        let direct = resolve_selected_asset_sha256(
+            "Readora_1.1.0_macos-aarch64.app.tar.gz",
+            Some(&format!("sha256:{other_sha}")),
+            &assets,
+            "macos",
+            "aarch64",
+            |_url| panic!("fallback fetcher must not be invoked when asset.digest is present"),
+        );
+        assert_eq!(direct.as_deref(), Some(other_sha));
+
+        // 2. When `asset.digest` is None, falls back to `release-manifest-macos-aarch64.json`
+        let release_json = json!({
+            "tag_name": "v1.1.0",
+            "name": "Focus Reader 1.1.0",
+            "body": "Stapled macOS updater bundle",
+            "draft": false,
+            "prerelease": false,
+            "published_at": "2026-11-17T00:00:00Z",
+            "assets": assets
+        })
+        .to_string();
+
+        let fallback_manifest_bytes = serde_json::to_vec(&json!({
+            "version": "1.1.0",
+            "asset": "Readora_1.1.0_macos-aarch64.app.tar.gz",
+            "sha256": valid_sha
+        }))
+        .unwrap();
+
+        let resolved_dto =
+            parse_and_resolve_github_release_manifest(&release_json, "macos", "aarch64", |url| {
+                assert!(url.ends_with("/release-manifest-macos-aarch64.json"));
+                Ok(fallback_manifest_bytes.clone())
+            })
+            .unwrap();
+        assert_eq!(resolved_dto.version, "1.1.0");
+        assert_eq!(resolved_dto.sha256, valid_sha);
+        assert_eq!(
+            resolved_dto.download_url.as_deref(),
+            Some(
+                "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.0/Readora_1.1.0_macos-aarch64.app.tar.gz"
+            )
+        );
+
+        // 3. Mismatched `"asset"` name in fallback manifest -> rejected (returns None)
+        let mismatched_asset_bytes = serde_json::to_vec(&json!({
+            "version": "1.1.0",
+            "asset": "Readora_1.1.0_macos-aarch64.dmg",
+            "sha256": valid_sha
+        }))
+        .unwrap();
+        assert!(
+            resolve_selected_asset_sha256(
+                "Readora_1.1.0_macos-aarch64.app.tar.gz",
+                None,
+                &assets,
+                "macos",
+                "aarch64",
+                |_| Ok(mismatched_asset_bytes),
+            )
+            .is_none()
+        );
+
+        // 4. Oversized (`> 64 KiB`) fallback manifest -> rejected
+        assert!(
+            resolve_selected_asset_sha256(
+                "Readora_1.1.0_macos-aarch64.app.tar.gz",
+                None,
+                &assets,
+                "macos",
+                "aarch64",
+                |_| Ok(vec![b' '; MAX_RELEASE_MANIFEST_BYTES + 1]),
+            )
+            .is_none()
+        );
+
+        // 5. Non-hex `"sha256"` in fallback manifest -> rejected
+        let bad_sha_bytes = serde_json::to_vec(&json!({
+            "version": "1.1.0",
+            "asset": "Readora_1.1.0_macos-aarch64.app.tar.gz",
+            "sha256": "not-a-valid-64-char-hex-digest"
+        }))
+        .unwrap();
+        assert!(
+            resolve_selected_asset_sha256(
+                "Readora_1.1.0_macos-aarch64.app.tar.gz",
+                None,
+                &assets,
+                "macos",
+                "aarch64",
+                |_| Ok(bad_sha_bytes),
+            )
+            .is_none()
+        );
     }
 }

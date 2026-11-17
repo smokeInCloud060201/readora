@@ -17,7 +17,7 @@ use platform::NativePlatformAdapter;
 use readora_desktop_lib::server::verify_downloaded_asset_staged;
 use readora_desktop_lib::server::{
     build_init_script, generate_session_token, is_allowed_navigation_url,
-    read_and_authorize_http_request, route_http_request,
+    read_and_authorize_http_request, resolve_trusted_ui_dist_dir, route_http_request,
 };
 use readora_desktop_lib::{DesktopCommandHandler, init_tracing};
 use tao::dpi::LogicalSize;
@@ -35,30 +35,34 @@ enum DesktopUserEvent {
     Quit,
 }
 
-fn resolve_ui_dist_dir() -> Option<PathBuf> {
-    if let Ok(exe_path) = std::env::current_exe()
-        && let Some(exe_dir) = exe_path.parent()
+fn resolve_ui_dist_dir_for_exe(exe_path: Option<&Path>) -> Option<PathBuf> {
+    if let Some(trusted) = resolve_trusted_ui_dist_dir(exe_path) {
+        return Some(trusted);
+    }
+
+    // Strictly gate workspace / CWD fallbacks to debug builds only (`[R2-HIGH-06]`).
+    // Release binaries (`#[cfg(not(debug_assertions))]`) NEVER probe `current_dir()` or relative paths.
+    #[cfg(debug_assertions)]
     {
-        let candidates = [
-            exe_dir.join("../Resources/ui"),
-            exe_dir.join("ui"),
-            exe_dir.join("../share/readora/ui"),
-            PathBuf::from("/usr/share/readora/ui"),
+        let manifest_dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/dist");
+        let dev_candidates = [
+            manifest_dist,
+            PathBuf::from("apps/desktop/ui/dist"),
+            PathBuf::from("../ui/dist"),
         ];
-        for candidate in candidates {
-            if candidate.join("index.html").is_file() {
+        for candidate in dev_candidates {
+            if !candidate.is_symlink() && candidate.join("index.html").is_file() {
                 return Some(candidate);
             }
         }
     }
 
-    let workspace_candidates = [
-        PathBuf::from("apps/desktop/ui/dist"),
-        PathBuf::from("../ui/dist"),
-    ];
-    workspace_candidates
-        .into_iter()
-        .find(|candidate| candidate.join("index.html").is_file())
+    None
+}
+
+fn resolve_ui_dist_dir() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok();
+    resolve_ui_dist_dir_for_exe(exe_path.as_deref())
 }
 
 fn is_safe_semver(v: &str) -> bool {
@@ -501,6 +505,11 @@ fn main() {
 
     let webview = match WebViewBuilder::new()
         .with_url(&base_url)
+        // Security note (`wry 0.48`): the boolean parameter is `for_main_only: false`, which forces
+        // WebView2 on Windows to register via `AddScriptToExecuteOnDocumentCreated` rather than the
+        // racy `add_ContentLoading` path. Main-frame + exact-origin isolation is strictly enforced
+        // inside `build_init_script` via `window.top === window.self` and
+        // `window.location.origin === "http://127.0.0.1:<bound_port>"`.
         .with_initialization_script_for_main_only(&init_script, false)
         .with_new_window_req_handler(|_| false)
         .with_navigation_handler(move |target_url| {
