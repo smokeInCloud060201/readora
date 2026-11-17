@@ -626,25 +626,30 @@ mod tests {
         assert_eq!(created.id.as_str(), "ann-custom-1");
 
         // Export rejects dotfiles, traversal, relative paths, reserved Windows names, empty paths, and non-.md extensions
-        for bad_dest in [
-            "",
-            "notes.md",
-            "relative/notes.md",
-            "/Users/victim/.zshrc",
-            "/tmp/.hidden.md",
-            "/tmp/../notes.md",
-            "/tmp/notes.sh",
-            "/tmp/CON.md",
-            "/tmp/nul.md",
-            "/tmp/COM1.md",
-            "/tmp/LPT9.extra.md",
-        ] {
+        let temp_base = std::env::temp_dir();
+        let bad_destinations = [
+            String::new(),
+            "notes.md".to_owned(),
+            "relative/notes.md".to_owned(),
+            temp_base.join(".zshrc").to_string_lossy().into_owned(),
+            temp_base.join(".hidden.md").to_string_lossy().into_owned(),
+            format!("{}/../notes.md", temp_base.to_string_lossy()),
+            temp_base.join("notes.sh").to_string_lossy().into_owned(),
+            temp_base.join("CON.md").to_string_lossy().into_owned(),
+            temp_base.join("nul.md").to_string_lossy().into_owned(),
+            temp_base.join("COM1.md").to_string_lossy().into_owned(),
+            temp_base
+                .join("LPT9.extra.md")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        for bad_dest in &bad_destinations {
             assert!(
                 execute_export_annotations_bundle(
                     doc_id.as_str(),
                     "CON.pdf",
                     true,
-                    Some(bad_dest),
+                    Some(bad_dest.as_str()),
                     &storage,
                     &storage,
                     &platform,
@@ -655,14 +660,11 @@ mod tests {
         }
 
         // Default PlatformPort::is_path_within_dir rejects '..' traversal segments
-        assert!(!platform.is_path_within_dir(
-            "/tmp/library/pdfs/../../outside.pdf",
-            Path::new("/tmp/library/pdfs")
-        ));
-        assert!(platform.is_path_within_dir(
-            "/tmp/library/pdfs/hash/inside.pdf",
-            Path::new("/tmp/library/pdfs")
-        ));
+        let pdfs_dir = temp_base.join("library").join("pdfs");
+        let outside_traversal = format!("{}/../../outside.pdf", pdfs_dir.to_string_lossy());
+        let inside_file = pdfs_dir.join("hash").join("inside.pdf");
+        assert!(!platform.is_path_within_dir(&outside_traversal, &pdfs_dir));
+        assert!(platform.is_path_within_dir(&inside_file.to_string_lossy(), &pdfs_dir));
 
         // HiDPI render scale up to 10.0x succeeds via ScaleBucket::from_render_scale
         let hidpi_render = execute_render_page(
@@ -700,11 +702,12 @@ mod tests {
             .is_err()
         );
 
+        let safe_export_dest = temp_base.join("safe-notes.md");
         let ok_export = execute_export_annotations_bundle(
             doc_id.as_str(),
             "CON.pdf",
             true,
-            Some("/tmp/safe-notes.md"),
+            Some(&safe_export_dest.to_string_lossy()),
             &storage,
             &storage,
             &platform,

@@ -988,15 +988,18 @@ mod tests {
         }
 
         // macOS bundle probe checks ../Frameworks BEFORE ../Resources
-        let dirs =
-            candidate_bundle_library_dirs(Path::new("/Applications/Readora.app/Contents/MacOS"));
+        let macos_bin_dir = std::env::temp_dir()
+            .join("Readora.app")
+            .join("Contents")
+            .join("MacOS");
+        let dirs = candidate_bundle_library_dirs(&macos_bin_dir);
         let fw_idx = dirs
             .iter()
-            .position(|p| p.ends_with("../Frameworks"))
+            .position(|p| p.file_name().and_then(|n| n.to_str()) == Some("Frameworks"))
             .unwrap();
         let res_idx = dirs
             .iter()
-            .position(|p| p.ends_with("../Resources"))
+            .position(|p| p.file_name().and_then(|n| n.to_str()) == Some("Resources"))
             .unwrap();
         assert!(fw_idx < res_idx);
 
