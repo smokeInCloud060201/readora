@@ -29,8 +29,8 @@ pnpm install --frozen-lockfile
 
 # Rust formatting, strict Clippy lints, and workspace tests (9 crates)
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
 
 # Frontend lint, strict TypeScript check, Vitest suite, and production bundle
 pnpm lint
@@ -46,12 +46,12 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 
 ## CI & release pipeline (`.github/workflows/`)
 
-1. **`.github/workflows/ci.yml`**: Runs `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --workspace`, and `pnpm lint` / `typecheck` / `test` / `build` across `ubuntu-latest`, `macos-latest`, and `windows-latest`.
+1. **`.github/workflows/ci.yml`**: Runs `cargo fmt`, `cargo clippy --locked -- -D warnings`, `cargo test --workspace --locked`, and `pnpm lint` / `typecheck` / `test` / `build` across `ubuntu-latest`, `macos-latest`, and `windows-latest`.
 2. **`.github/workflows/release.yml`**:
    - Triggered on `v*.*.*` tags or manual `workflow_dispatch` (defaulting `VITE_APP_VERSION` and `CLEAN_VERSION` to `1.0.6`).
    - Fetches PDFium pinned deterministically to `PDFIUM_TAG="chromium%2F6723"` from `bblanchon/pdfium-binaries` and fails closed if `curl`, `tar`, or library extraction fails.
-   - Signs macOS nested `libpdfium.dylib` **first without entitlements**, then signs `Readora.app` with [`apps/desktop/src-tauri/Entitlements.plist`](../apps/desktop/src-tauri/Entitlements.plist) **without `--deep`** so app entitlements are never stamped onto nested dynamic libraries, followed by `codesign --verify --deep --strict`.
-   - Generates `release-manifest-<label>.json`, `.sha256` checksum lists, and GitHub Sigstore SLSA build provenance attestations.
+   - Places macOS `libpdfium.dylib` inside `Contents/Frameworks/libpdfium.dylib`, signs it **first without entitlements**, then signs `Readora.app` with `--options runtime --entitlements apps/desktop/src-tauri/Entitlements.plist` **without `--deep`**, followed by `codesign --verify --deep --strict`, notarizes and staples `Readora.app` **before** archiving `Readora_<ver>_macos-aarch64.app.tar.gz` and building/notarizing/stapling the `.dmg`.
+   - Generates `release-manifest-<label>.json` (recording exact `"asset"` and `"sha256"`), `.sha256` checksum lists, and GitHub Sigstore SLSA build provenance attestations.
 
 ## PDFium binary packaging rules
 
@@ -64,8 +64,8 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 | OS | Data Directory | Cache Directory | Uninstall Cleanup |
 |---|---|---|---|
 | macOS | `~/Library/Application Support/com.readora.desktop` | `~/Library/Caches/com.readora.desktop` | `readora-desktop --uninstall-cleanup` or [`uninstall-cleanup.sh`](../apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh) |
-| Windows | `%APPDATA%\Readora` | `%LOCALAPPDATA%\Readora\Cache` | NSIS [`nsis-hooks.nsh`](../apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) (non-recursive `RMDir`) |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/readora` | `${XDG_CACHE_HOME:-~/.cache}/readora` | Debian [`postrm`](../apps/desktop/src-tauri/installer/linux/postrm) **only on `purge`** (never `remove`/`upgrade`), dropping privileges via `runuser` and refusing symlinks |
+| Windows | `%APPDATA%\Readora` | `%LOCALAPPDATA%\Readora\Cache` | Portable `.zip` builds use in-app **Clean up app data** or `.\Readora.exe --uninstall-cleanup` (NSIS [`nsis-hooks.nsh`](../apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) retained for NSIS packaging) |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/readora` | `${XDG_CACHE_HOME:-~/.cache}/readora` | Debian [`postrm`](../apps/desktop/src-tauri/installer/linux/postrm) **only on `purge`** (never `remove`/`upgrade`), enforcing fail-closed privilege drop via `runuser`/`su` (never `uid 0`) and refusing symlinks |
 
 - **Database upgrades**: `SqliteStorage::open` applies append-only schema migrations (`0001` → `0002` → `0003` → `0004`) transactionally.
 - **Self-update safety**: Downloads stage inside a mode-`0700` CSPRNG directory under `<data_dir>/updates/.stage-*`, verify 64-hex SHA-256 digests fail-closed against the staged manifest, verify macOS `codesign --verify --deep --strict`, and atomically back up & roll back `Readora.app` on move failure.

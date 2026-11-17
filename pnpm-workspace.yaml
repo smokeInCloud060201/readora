@@ -1,5 +1,4 @@
 packages:
   - "apps/desktop/ui"
-sharedWorkspaceLockfile: false
 allowBuilds:
   esbuild: true

@@ -1,7 +1,7 @@
 # Third-Party Open-Source Notices and Acknowledgements
 
 Readora (`1.0.6`) is free, open-source software distributed under the **MIT OR Apache-2.0** dual license ([`LICENSE-MIT`](LICENSE-MIT) / [`LICENSE-APACHE`](LICENSE-APACHE)).
-This distribution incorporates or links against the following open-source components (synced with [`sbom.cdx.json`](sbom.cdx.json), [`Cargo.lock`](Cargo.lock), and [`apps/desktop/ui/pnpm-lock.yaml`](apps/desktop/ui/pnpm-lock.yaml)):
+This distribution incorporates or links against the following open-source components (synced with [`sbom.cdx.json`](sbom.cdx.json), [`Cargo.lock`](Cargo.lock), and [`pnpm-lock.yaml`](pnpm-lock.yaml)):
 
 ---
 
@@ -58,7 +58,7 @@ this software without specific prior written permission.
 
 ---
 
-## 3. Frontend Production & Build Dependencies (`apps/desktop/ui/pnpm-lock.yaml`)
+## 3. Frontend Production & Build Dependencies (`pnpm-lock.yaml`)
 
 | Package | Version | License | Purpose |
 |---|---|---|---|

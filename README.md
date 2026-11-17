@@ -46,7 +46,7 @@
 
 ### 5. Opt-In GitHub Releases Updates & Strictly-Scoped Uninstall
 - **Opt-In Update Checks & Fail-Closed SHA-256 Verification:** Automatic background network requests are disabled by default (100% offline out-of-the-box). When manually triggered or explicitly opted into in **Preferences → General**, Readora queries `https://api.github.com/repos/{owner}/{repo}/releases/latest`, stages the release manifest, and enforces fail-closed 64-char SHA-256 digest and macOS code-signature verification inside a mode-`0700` staging directory with atomic bundle backup/rollback before replacing an app bundle.
-- **Clean Uninstall & Data Reset Guarantee:** Native OS uninstaller hooks (Windows NSIS, Debian `postrm` strictly on `purge`, macOS helper, and `--uninstall-cleanup` CLI flag) plus an in-app **Clean up application data & cache** action remove **only** Readora-created SQLite files, staged library/update files, and render cache entries—never touching external user PDF files on disk.
+- **Clean Uninstall & Data Reset Guarantee:** Automated cleanup scripts on Linux `.deb` (`apt purge` via [`postrm`](apps/desktop/src-tauri/installer/linux/postrm) with fail-closed non-root privilege drop) and macOS ([`uninstall-cleanup.sh`](apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh)), plus the in-app **Clean up application data & cache** action, `--uninstall-cleanup` CLI flag, and documented PowerShell command for Windows portable/`.zip` builds (with [`nsis-hooks.nsh`](apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) retained for NSIS packaging) remove **only** Readora-created SQLite files, staged library/update files, and render cache entries—never touching external user PDF files on disk.
 
 ---
 
@@ -145,8 +145,8 @@ flowchart TD
    ```bash
    # 1. Rust formatting, strict Clippy lints, and workspace unit/contract/integration tests
    cargo fmt --all -- --check
-   cargo clippy --workspace --all-targets --all-features -- -D warnings
-   cargo test --workspace
+   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+   cargo test --workspace --locked
 
    # 2. Frontend ESLint, TypeScript strict typecheck, Vitest vertical-slice tests, and Vite production build
    pnpm lint
@@ -182,14 +182,19 @@ Readora stores its local SQLite database, internal library staging, and render c
 
 | Operating System | Application Data (`readora.sqlite`) | Render Cache | Uninstall Mechanism |
 | :--- | :--- | :--- | :--- |
-| **macOS** | `~/Library/Application Support/com.readora.desktop` | `~/Library/Caches/com.readora.desktop` | In-app **Preferences → General → Clean up app data** or [`uninstall-cleanup.sh`](apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh) |
-| **Windows** | `%APPDATA%\Readora` | `%LOCALAPPDATA%\Readora\Cache` | Automatic via NSIS [`nsis-hooks.nsh`](apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) on uninstall |
-| **Linux** | `~/.local/share/readora` | `~/.cache/readora` | Automatic via Debian [`postrm`](apps/desktop/src-tauri/installer/linux/postrm) strictly on `apt purge` (preserved across `remove` / `upgrade`) |
+| **macOS** | `~/Library/Application Support/com.readora.desktop` | `~/Library/Caches/com.readora.desktop` | Automated via [`uninstall-cleanup.sh`](apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh), `readora-desktop --uninstall-cleanup`, or in-app **Preferences → General → Clean up app data** |
+| **Windows** | `%APPDATA%\Readora` | `%LOCALAPPDATA%\Readora\Cache` | Portable `.zip` builds use in-app **Preferences → General → Clean up app data**, `Readora.exe --uninstall-cleanup`, or the PowerShell command below ([`nsis-hooks.nsh`](apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) is included for NSIS installer builds) |
+| **Linux** | `~/.local/share/readora` | `~/.cache/readora` | Automated via Debian [`postrm`](apps/desktop/src-tauri/installer/linux/postrm) strictly on `apt purge` (preserved across `remove` / `upgrade`), or `readora-desktop --uninstall-cleanup` for `.tar.gz` builds |
 
-You can also invoke the native binary directly to clean up all Readora-created database, staging, and cache artifacts:
+You can invoke the native binary directly on any platform (or run the Windows PowerShell cleanup command for portable `.zip` installs) to remove all Readora-created database, staging, and cache artifacts:
 
 ```bash
 readora-desktop --uninstall-cleanup
+```
+
+```powershell
+# Windows portable/zip cleanup (PowerShell)
+.\Readora.exe --uninstall-cleanup
 ```
 
 ---

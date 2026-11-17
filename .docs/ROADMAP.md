@@ -83,14 +83,14 @@ systems
     reason to split it.
 -   Keep PDF-engine-specific code inside `pdfium-adapter`.
 -   Keep SQL and database-specific code inside `storage`.
--   Keep domain rules independent of Tauri, React, SQLite, and PDFium.
--   Use typed commands and events across the Tauri boundary.
+-   Keep domain rules independent of the native desktop shell (`tao` + `wry`), React, SQLite, and PDFium.
+-   Use typed commands and DTOs across the desktop RPC boundary (`apps/desktop/src-tauri`).
 -   Do not send large rendered bitmaps through JSON IPC; use an
     efficient transfer mechanism.
 -   Use bounded worker pools, render cancellation, and memory-aware
     caching.
 -   Treat every PDF as untrusted input.
--   Keep Tauri capabilities and filesystem permissions minimal.
+-   Keep WebView navigation, loopback RPC authentication, and filesystem permissions minimal.
 -   Add tests and documentation when changing architecture or feature
     behavior.
 
@@ -154,8 +154,8 @@ file dialogs and printing
 `app-core`                          Dependency composition and
 application wiring
 
-`src-tauri`                         Tauri commands, events, app setup,
-and capabilities
+`src-tauri`                         Native `tao` + `wry` desktop composition root,
+                                    authenticated loopback RPC server, commands, and installer hooks
 
 `ui`                                React components, state, and reader
 feature modules
@@ -192,7 +192,7 @@ before building the full application.
 4.  Build a small Rust proof of concept for each target OS and
     architecture.
 5.  Test native library loading and packaging.
-6.  Test Tauri command/event communication.
+6.  Test native `tao` + `wry` loopback RPC command communication.
 7.  Benchmark page rendering, memory usage, and document-open latency.
 8.  Decide how rendered image data moves from Rust to the UI.
 9.  Define the initial supported OS and CPU architecture matrix.
@@ -252,7 +252,7 @@ architecture boundaries that future features must follow.
     adapters implement ports; composition wires dependencies.
 -   Do not allow UI components to call PDFium directly.
 -   Do not let SQL queries leak outside the storage crate.
--   Avoid broad filesystem permissions in Tauri.
+-   Avoid broad filesystem exposure in the native `tao` + `wry` desktop RPC shell (`apps/desktop/src-tauri`).
 -   Ensure a clean checkout can build without undocumented local setup.
 
 **Expected result**
@@ -265,8 +265,8 @@ functioning Rust workspace, frontend, typed IPC, and CI.
 -   [x] Clean checkout builds using documented instructions.
 -   [x] Desktop shell launches on macOS, Windows, and Linux.
 -   [x] CI runs formatting, linting, tests, and relevant build checks.
--   [x] Tauri commands use typed contracts.
--   [x] Tauri capabilities are minimal and reviewed.
+-   [x] Desktop RPC commands use typed contracts.
+-   [x] Native WebView and loopback RPC security controls are minimal and reviewed.
 -   [x] Architecture and coding rules are documented.
 
 ------------------------------------------------------------------------
@@ -637,7 +637,7 @@ These requirements apply throughout every phase.
 -   Keep filesystem access scoped to user-selected files and required
     application data.
 -   Validate all frontend-to-backend command inputs.
--   Keep Tauri capabilities minimal.
+-   Keep native `tao` + `wry` WebView navigation and loopback RPC capabilities minimal.
 -   Avoid logging document contents or sensitive information.
 -   Test malformed, encrypted, and unusually large PDFs.
 

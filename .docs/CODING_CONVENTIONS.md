@@ -54,7 +54,7 @@ src/
 
 - Strict TypeScript; use `unknown` at untrusted boundaries and validate it.
 - Components use `PascalCase`; hooks use `useX`; functions/variables use `camelCase`.
-- Keep Tauri commands in `src/lib/tauri/`; expose typed functions to feature modules.
+- Keep desktop RPC client calls in `src/lib/tauri/` (bridging to the native `tao` + `wry` composition root in `apps/desktop/src-tauri`); expose typed functions to feature modules.
 - Use feature-first folders rather than one global components dump.
 - Avoid business logic in components; use hooks/services/view models.
 - Keep components small and accessible; semantic HTML and keyboard behavior are mandatory.
@@ -83,7 +83,7 @@ ui/src/
 
 ## API and serialization
 
-- Use explicit request/response DTOs at the Tauri boundary.
+- Use explicit request/response DTOs across the native `tao` + `wry` desktop RPC boundary (`apps/desktop/src-tauri`).
 - Keep internal domain types separate from serialized IPC DTOs where their needs differ.
 - Version persisted schemas and long-lived event contracts.
 - Never serialize engine handles or native pointers.
