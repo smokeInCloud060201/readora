@@ -145,13 +145,21 @@ pub const MAX_TRACKED_GENERATION_DOCUMENTS: usize = 4_096;
 struct GenerationRegistryInner {
     generations: HashMap<DocumentId, u64>,
     order: VecDeque<DocumentId>,
+    next_id: u64,
 }
 
 impl GenerationRegistryInner {
     fn advance(&mut self, document_id: &DocumentId) -> u64 {
+        self.next_id = self.next_id.saturating_add(1);
+        let assigned = self.next_id;
+
         if let Some(counter) = self.generations.get_mut(document_id) {
-            *counter = counter.saturating_add(1);
-            return *counter;
+            *counter = assigned;
+            if let Some(pos) = self.order.iter().position(|id| id == document_id) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(document_id.clone());
+            return assigned;
         }
 
         while self.generations.len() >= MAX_TRACKED_GENERATION_DOCUMENTS {
@@ -163,8 +171,8 @@ impl GenerationRegistryInner {
         }
 
         self.order.push_back(document_id.clone());
-        self.generations.insert(document_id.clone(), 1);
-        1
+        self.generations.insert(document_id.clone(), assigned);
+        assigned
     }
 }
 
@@ -299,7 +307,12 @@ mod tests {
             let d = DocumentId::new(format!("doc-cap-{idx}")).unwrap();
             let _ = registry.next_generation(&d);
         }
-        let guard = registry.inner.lock().unwrap();
-        assert_eq!(guard.generations.len(), MAX_TRACKED_GENERATION_DOCUMENTS);
+        {
+            let guard = registry.inner.lock().unwrap();
+            assert_eq!(guard.generations.len(), MAX_TRACKED_GENERATION_DOCUMENTS);
+        }
+        // Evicted key must never reset back to 1 when advanced again
+        let re_opened_gen = registry.next_generation(&doc);
+        assert!(re_opened_gen > MAX_TRACKED_GENERATION_DOCUMENTS as u64);
     }
 }

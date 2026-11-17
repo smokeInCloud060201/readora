@@ -48,9 +48,23 @@ pub trait PlatformPort: Send + Sync {
         Ok(false)
     }
 
-    /// Returns `true` if `candidate_path` resolves strictly inside `parent_dir`.
+    /// Returns `true` if `candidate_path` resolves strictly inside `parent_dir`,
+    /// rejecting any `..` or `.` path traversal components.
     fn is_path_within_dir(&self, candidate_path: &str, parent_dir: &Path) -> bool {
+        use std::path::Component;
         let candidate = Path::new(candidate_path);
+        let has_unsafe_components = |p: &Path| {
+            p.components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+        };
+        if has_unsafe_components(candidate)
+            || has_unsafe_components(parent_dir)
+            || candidate_path
+                .split(['/', '\\'])
+                .any(|seg| seg == ".." || seg == ".")
+        {
+            return false;
+        }
         candidate != parent_dir && candidate.starts_with(parent_dir)
     }
 }

@@ -13,8 +13,7 @@ impl BookmarkRepository for SqliteStorage {
             "INSERT INTO bookmarks (id, document_id, page_index, label, created_at_unix_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(document_id, page_index) DO UPDATE SET
-                 label = excluded.label,
-                 created_at_unix_ms = excluded.created_at_unix_ms",
+                 label = excluded.label",
             params![
                 bookmark.id.as_str(),
                 bookmark.document_id.as_str(),

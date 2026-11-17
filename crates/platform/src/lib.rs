@@ -928,24 +928,50 @@ impl PlatformPort for NativePlatformAdapter {
     }
 
     fn is_path_within_dir(&self, candidate_path: &str, parent_dir: &Path) -> bool {
-        let Ok(canon_parent) = fs::canonicalize(parent_dir) else {
-            let candidate = Path::new(candidate_path);
-            return candidate != parent_dir && candidate.starts_with(parent_dir);
-        };
-        let candidate = Path::new(candidate_path);
-        let resolved_candidate = fs::canonicalize(candidate).or_else(|_| {
-            let parent = candidate
-                .parent()
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
-            let name = candidate
-                .file_name()
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-            fs::canonicalize(parent).map(|cp| cp.join(name))
-        });
-        match resolved_candidate {
-            Ok(canon_cand) => canon_cand != canon_parent && canon_cand.starts_with(&canon_parent),
-            Err(_) => false,
+        use std::path::Component;
+
+        let trimmed = candidate_path.trim();
+        if trimmed.is_empty() {
+            return false;
         }
+        let Ok(canon_parent) = fs::canonicalize(parent_dir) else {
+            return false;
+        };
+        let candidate = Path::new(trimmed);
+        if candidate
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+            || trimmed.split(['/', '\\']).any(|seg| seg == "..")
+        {
+            return false;
+        }
+
+        if let Ok(canon_cand) = fs::canonicalize(candidate) {
+            return canon_cand != canon_parent && canon_cand.starts_with(&canon_parent);
+        }
+
+        // Only allow resolving `candidate.parent()` when `candidate` itself does not exist at all
+        // (even as a broken symlink), has a valid file_name, and contains zero `..` or `.` segments.
+        if fs::symlink_metadata(candidate).is_ok() {
+            return false;
+        }
+        if candidate
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+            || trimmed
+                .split(['/', '\\'])
+                .any(|seg| seg == ".." || seg == ".")
+        {
+            return false;
+        }
+        let (Some(cand_parent), Some(name)) = (candidate.parent(), candidate.file_name()) else {
+            return false;
+        };
+        let Ok(canon_cand_parent) = fs::canonicalize(cand_parent) else {
+            return false;
+        };
+        let canon_cand = canon_cand_parent.join(name);
+        canon_cand != canon_parent && canon_cand.starts_with(&canon_parent)
     }
 }
 
@@ -1196,5 +1222,45 @@ mod tests {
         .unwrap();
         assert!(linux_parsed.download_url.is_none());
         assert_eq!(linux_parsed.sha256, "");
+    }
+
+    #[test]
+    fn is_path_within_dir_blocks_dotdot_traversal_even_when_parent_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = NativePlatformAdapter::new();
+        let outside_file = dir.path().join("outside.pdf");
+        fs::write(&outside_file, b"%PDF-1.7\n%%EOF").unwrap();
+
+        let library_pdfs = dir
+            .path()
+            .join("com.readora.desktop")
+            .join("library")
+            .join("pdfs");
+        assert!(!library_pdfs.exists());
+
+        let traversal = format!("{}/../../../outside.pdf", library_pdfs.to_string_lossy());
+        assert!(!adapter.is_path_within_dir(&traversal, &library_pdfs));
+
+        let nonexistent_inside = format!("{}/abc/staged.pdf", library_pdfs.to_string_lossy());
+        assert!(!adapter.is_path_within_dir(&nonexistent_inside, &library_pdfs));
+
+        // Now create `library/pdfs/abc` and verify traversal is still rejected while legitimate child succeeds
+        let sub_dir = library_pdfs.join("abc");
+        fs::create_dir_all(&sub_dir).unwrap();
+        let staged_file = sub_dir.join("staged.pdf");
+        fs::write(&staged_file, b"%PDF-1.7\n%%EOF").unwrap();
+
+        assert!(!adapter.is_path_within_dir(&traversal, &library_pdfs));
+        assert!(!adapter.is_path_within_dir(&library_pdfs.to_string_lossy(), &library_pdfs));
+        assert!(adapter.is_path_within_dir(&staged_file.to_string_lossy(), &library_pdfs));
+        assert!(adapter.is_path_within_dir(&sub_dir.to_string_lossy(), &library_pdfs));
+
+        // After staged_file is removed, checking its already-removed path or its parent subdir still works safely
+        fs::remove_file(&staged_file).unwrap();
+        assert!(adapter.is_path_within_dir(&staged_file.to_string_lossy(), &library_pdfs));
+        assert!(!adapter.is_path_within_dir(
+            &format!("{}/./staged.pdf", sub_dir.to_string_lossy()),
+            &library_pdfs
+        ));
     }
 }

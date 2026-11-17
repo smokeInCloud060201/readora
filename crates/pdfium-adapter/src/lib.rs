@@ -5,7 +5,8 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
@@ -16,7 +17,7 @@ pub mod pdfium_dynamic;
 pub mod png_encoder;
 
 use fallback_engine::FallbackPdfDocument;
-use pdfium_dynamic::{DynamicPdfiumDocument, try_bind_pdfium};
+use pdfium_dynamic::{DynamicPdfiumDocument, has_native_pdfium_worker};
 
 /// Adapter implementing `PdfEngine` using PDFium dynamic loading with a pure-Rust fallback.
 #[derive(Debug, Clone, Default)]
@@ -46,7 +47,7 @@ impl PdfiumEngineAdapter {
     }
 
     fn has_native_pdfium(&self) -> bool {
-        try_bind_pdfium(self.library_dir.as_deref()).is_some()
+        has_native_pdfium_worker(self.library_dir.as_deref())
     }
 }
 
@@ -67,6 +68,11 @@ impl PdfEngine for PdfiumEngineAdapter {
         let meta = fs::metadata(path).map_err(|_| {
             PdfEngineError::IoError("target PDF file does not exist or is unreadable".to_owned())
         })?;
+        if !meta.is_file() {
+            return Err(PdfEngineError::IoError(
+                "target PDF path is not a regular file".to_owned(),
+            ));
+        }
         let max_size = options.effective_max_file_size();
         if meta.len() > max_size {
             return Err(PdfEngineError::FileTooLarge {
@@ -74,8 +80,20 @@ impl PdfEngine for PdfiumEngineAdapter {
                 max_bytes: max_size,
             });
         }
-        let bytes = fs::read(path)
+        let file = File::open(path)
+            .map_err(|_| PdfEngineError::IoError("failed to open PDF file".to_owned()))?;
+        let initial_cap = usize::try_from(meta.len().min(16 * 1024 * 1024)).unwrap_or(64 * 1024);
+        let mut bytes = Vec::with_capacity(initial_cap);
+        file.take(max_size.saturating_add(1))
+            .read_to_end(&mut bytes)
             .map_err(|_| PdfEngineError::IoError("failed to read PDF file bytes".to_owned()))?;
+        if (bytes.len() as u64) > max_size {
+            return Err(PdfEngineError::FileTooLarge {
+                size_bytes: bytes.len() as u64,
+                max_bytes: max_size,
+            });
+        }
+
         let shared = Bytes::from(bytes);
         if self.has_native_pdfium() {
             let doc = DynamicPdfiumDocument::open(shared, options, self.library_dir.clone())?;
@@ -97,6 +115,13 @@ impl PdfEngine for PdfiumEngineAdapter {
         bytes: &[u8],
         options: &OpenDocumentOptions,
     ) -> Result<Box<dyn PdfDocument>, PdfEngineError> {
+        let max_size = options.effective_max_file_size();
+        if (bytes.len() as u64) > max_size {
+            return Err(PdfEngineError::FileTooLarge {
+                size_bytes: bytes.len() as u64,
+                max_bytes: max_size,
+            });
+        }
         if self.has_native_pdfium() {
             let doc = DynamicPdfiumDocument::open(
                 Bytes::copy_from_slice(bytes),
@@ -377,5 +402,184 @@ mod tests {
             img_doc.extract_page_text(PageIndex::FIRST).unwrap(),
             "Fast Bounded Stream"
         );
+    }
+
+    #[test]
+    fn fallback_handles_250k_unclosed_open_parens_in_linear_time() {
+        let mut malformed = Vec::from(
+            &b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n3 0 obj\n<< /Note "[..],
+        );
+        malformed.extend(std::iter::repeat_n(b'(', 250_000));
+        malformed.extend_from_slice(b"\n10 0 obj\n<< /Type /Page >>\nstream\nBT ");
+        malformed.extend(std::iter::repeat_n(b'(', 250_000));
+        malformed.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+
+        let start = std::time::Instant::now();
+        let doc =
+            FallbackPdfDocument::from_bytes(&malformed, &OpenDocumentOptions::default()).unwrap();
+        let _ = doc.extract_page_text(PageIndex::FIRST).unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "expected linear-time scan < 250ms, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_handles_objstm_page_counts_and_mid_stream_tail_encrypt() {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write as _;
+
+        // (a) > 600 KiB PDF with binary '(' bytes before endstream followed by trailer << /Encrypt 9 0 R >>
+        let mut large_enc = Vec::from(
+            &b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n3 0 obj\n<< /Type /XObject /Subtype /Image /Filter /DCTDecode /Length 640000 >>\nstream\n"[..],
+        );
+        large_enc.extend(std::iter::repeat_n(b'(', 640_000));
+        large_enc.extend_from_slice(
+            b"\nendstream\nendobj\n9 0 obj\n<< /Filter /Standard /UserPassword (secret-tail-pw) >>\nendobj\ntrailer\n<< /Root 1 0 R /Encrypt 9 0 R >>\n%%EOF\n",
+        );
+        assert!(large_enc.len() > 600 * 1024);
+        assert!(fallback_engine::has_encrypt_dict_bytes(&large_enc));
+        assert_eq!(
+            FallbackPdfDocument::from_bytes(&large_enc, &OpenDocumentOptions::default()).err(),
+            Some(PdfEngineError::PasswordRequired)
+        );
+        assert!(
+            FallbackPdfDocument::from_bytes(
+                &large_enc,
+                &OpenDocumentOptions {
+                    password: Some("secret-tail-pw".to_owned()),
+                    max_file_size_bytes: 0,
+                }
+            )
+            .is_ok()
+        );
+
+        // Also test when structural cap (> 2 MiB) is exceeded before a mid-stream '(' tail
+        let mut huge_cap_enc =
+            Vec::from(&b"%PDF-1.7\n1 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n"[..]);
+        huge_cap_enc.extend(std::iter::repeat_n(b' ', 2_200_000));
+        huge_cap_enc
+            .extend_from_slice(b"\n3 0 obj\n<< /Subtype /Image /Filter /DCTDecode >>\nstream\n");
+        huge_cap_enc.extend(std::iter::repeat_n(b'(', 300_000));
+        huge_cap_enc.extend_from_slice(
+            b"\nendstream\nendobj\n9 0 obj\n<< /Filter /Standard /UserPassword (cap-pw) >>\nendobj\ntrailer\n<< /Root 1 0 R /Encrypt 9 0 R >>\n%%EOF\n",
+        );
+        assert_eq!(
+            FallbackPdfDocument::from_bytes(&huge_cap_enc, &OpenDocumentOptions::default()).err(),
+            Some(PdfEngineError::PasswordRequired)
+        );
+
+        // (b) PDF 1.5+ whose /Pages << /Type /Pages /Count 12 >> is compressed inside Flate /Type /ObjStm
+        let obj_stm_plain =
+            b"1 0 2 38 << /Type /Catalog /Pages 2 0 R >> << /Type /Pages /Count 12 /MediaBox [0 0 595 842] >>";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(obj_stm_plain).unwrap();
+        let compressed_obj_stm = encoder.finish().unwrap();
+
+        let mut obj_stm_pdf = Vec::from(&b"%PDF-1.6\n"[..]);
+        obj_stm_pdf.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /ObjStm /N 2 /First 10 /Filter /FlateDecode /Length {} >>\nstream\n",
+                compressed_obj_stm.len()
+            )
+            .as_bytes(),
+        );
+        obj_stm_pdf.extend_from_slice(&compressed_obj_stm);
+        obj_stm_pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+
+        let obj_stm_doc =
+            FallbackPdfDocument::from_bytes(&obj_stm_pdf, &OpenDocumentOptions::default()).unwrap();
+        assert_eq!(obj_stm_doc.info().page_count, 12);
+    }
+
+    #[test]
+    fn fallback_renders_short_banner_and_hidpi_a4_without_panicking_and_ignores_body_capabilities()
+    {
+        use app_domain::{FormSupportStatus, SignaturePresenceStatus};
+
+        // Short banner (/MediaBox [0 0 200 50]) at scale = 0.25 (height_px = 13) across all modes & rotations
+        let banner_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 /MediaBox [0 0 200 50] >>\nendobj\n10 0 obj\n<< /Type /Page >>\nstream\nBT (Short Banner) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let banner_doc =
+            FallbackPdfDocument::from_bytes(banner_pdf, &OpenDocumentOptions::default()).unwrap();
+
+        for mode in [
+            RenderMode::Standard,
+            RenderMode::Grayscale,
+            RenderMode::DarkInversion,
+        ] {
+            for rot in [
+                Rotation::Deg0,
+                Rotation::Deg90,
+                Rotation::Deg180,
+                Rotation::Deg270,
+            ] {
+                let rendered = banner_doc
+                    .render_page(&RenderPageRequest {
+                        page_index: PageIndex::FIRST,
+                        scale: 0.25,
+                        rotation: rot,
+                        render_mode: mode,
+                        max_pixel_dimension: 4096,
+                    })
+                    .unwrap();
+                assert!(rendered.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            }
+        }
+
+        // ISO A4 (595 x 842 pt) at scale = 5.0 and scale = 10.0 succeeds with preserved aspect ratio <= 4096 px
+        // Also embed "/AcroForm /Sig /XFA" inside page body text to verify zero false-positive capabilities!
+        let a4_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Title (Discussion of /AcroForm /Sig /XFA) >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 /MediaBox [0 0 595 842] >>\nendobj\n10 0 obj\n<< /Type /Page >>\nstream\nBT (/AcroForm /Sig /XFA /FT /Sig /Type /Sig) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let (forms, form_count, sigs, sig_count) =
+            fallback_engine::inspect_advanced_pdf_capabilities_bytes(a4_pdf);
+        assert_eq!(forms, FormSupportStatus::None);
+        assert_eq!(form_count, 0);
+        assert_eq!(sigs, SignaturePresenceStatus::NoSignatures);
+        assert_eq!(sig_count, 0);
+
+        let a4_doc =
+            FallbackPdfDocument::from_bytes(a4_pdf, &OpenDocumentOptions::default()).unwrap();
+        assert_eq!(a4_doc.info().metadata.form_support, FormSupportStatus::None);
+        assert_eq!(
+            a4_doc.info().metadata.signature_status,
+            SignaturePresenceStatus::NoSignatures
+        );
+
+        for scale in [5.0_f32, 10.0_f32] {
+            let rendered = a4_doc
+                .render_page(&RenderPageRequest {
+                    page_index: PageIndex::FIRST,
+                    scale,
+                    rotation: Rotation::Deg0,
+                    render_mode: RenderMode::Standard,
+                    max_pixel_dimension: 4096,
+                })
+                .unwrap();
+            assert_eq!(rendered.height_px, 4096);
+            assert_eq!(rendered.width_px, 2894);
+            assert!(rendered.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        }
+
+        // open_path checks metadata size BEFORE reading into memory
+        let dir = tempfile::tempdir().unwrap();
+        let big_file = dir.path().join("too_big.pdf");
+        std::fs::write(
+            &big_file,
+            build_synthetic_pdf_bytes("Oversized", &["Hello world"], None),
+        )
+        .unwrap();
+        let adapter = PdfiumEngineAdapter::new_with_fallback(None);
+        let too_large = adapter.open_path(
+            &big_file,
+            &OpenDocumentOptions {
+                password: None,
+                max_file_size_bytes: 32,
+            },
+        );
+        assert!(matches!(
+            too_large,
+            Err(PdfEngineError::FileTooLarge { max_bytes: 32, .. })
+        ));
     }
 }

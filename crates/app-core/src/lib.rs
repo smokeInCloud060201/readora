@@ -26,7 +26,7 @@ use app_application::{
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
-    OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState, compare_semver,
+    OutlineNode, PageIndex, RecentDocument, Rotation, SearchHit, SemVer, ViewState, compare_semver,
     sanitize_export_stem,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
@@ -36,6 +36,7 @@ use platform::NativePlatformAdapter;
 use sha2::{Digest, Sha256};
 use storage::SqliteStorage;
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 static EPHEMERAL_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct ActiveDocumentEntry {
@@ -116,10 +117,20 @@ impl AppCore {
         cache_dir: PathBuf,
         is_ephemeral: bool,
     ) -> Result<Self, ApplicationError> {
-        let initial_budget = storage
-            .load()
-            .map(|s| s.render_cache_budget_bytes)
-            .unwrap_or(DEFAULT_CACHE_BUDGET_BYTES);
+        let initial_budget = match SettingsRepository::load(storage.as_ref()) {
+            Ok(mut settings) => {
+                let budget = settings.render_cache_budget_bytes;
+                if settings.staged_update_version.is_some()
+                    || settings.installed_version.as_deref() != Some(APP_VERSION)
+                {
+                    settings.installed_version = Some(APP_VERSION.to_owned());
+                    settings.staged_update_version = None;
+                    SettingsRepository::save(storage.as_ref(), &settings)?;
+                }
+                budget
+            }
+            Err(_) => DEFAULT_CACHE_BUDGET_BYTES,
+        };
         let library_pdfs_dir = data_dir.join("library").join("pdfs");
 
         Ok(Self {
@@ -137,17 +148,16 @@ impl AppCore {
     }
 
     fn effective_version(settings: &AppSettings) -> String {
-        let pkg_version = env!("CARGO_PKG_VERSION");
         if let Some(installed) = settings
             .installed_version
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            && compare_semver(installed, pkg_version) == Ordering::Greater
+            && compare_semver(installed, APP_VERSION) == Ordering::Greater
         {
             return installed.to_owned();
         }
-        pkg_version.to_owned()
+        APP_VERSION.to_owned()
     }
 
     /// Returns which PDF engine runtime is currently active (`pdfium_dynamic` or `pure_rust_fallback`).
@@ -187,6 +197,7 @@ impl AppCore {
 
         let target_dir = self.library_pdfs_dir.join(&hash_prefix);
         let target_path = target_dir.join(&safe_file_name);
+        let existed_before = target_path.exists();
         let target_str = target_path.to_string_lossy().into_owned();
         self.platform.atomic_write_file(&target_str, bytes)?;
 
@@ -196,10 +207,7 @@ impl AppCore {
         }) {
             Ok(session) => Ok(session),
             Err(err) => {
-                if matches!(
-                    err,
-                    ApplicationError::PdfEngine(pdf_engine::PdfEngineError::InvalidPdfFormat(_))
-                ) {
+                if !existed_before {
                     let _ = self.platform.remove_file_if_exists(&target_str);
                     let _ = self
                         .platform
@@ -341,6 +349,15 @@ impl AppCore {
         };
 
         let mut recent = recent_snapshot;
+        let (remember_page_position, default_zoom) = self
+            .get_settings()
+            .map(|s| (s.remember_page_position, s.default_zoom))
+            .unwrap_or((true, updated_state.zoom));
+        if !remember_page_position {
+            recent.last_page = PageIndex::FIRST;
+            recent.last_zoom = default_zoom;
+            recent.last_rotation = Rotation::Deg0;
+        }
         if let Some(prev) = self.storage.get(&doc_id)? {
             recent.is_favorite = prev.is_favorite;
             recent.is_archived = prev.is_archived;
@@ -434,6 +451,9 @@ impl AppCore {
         self.storage.remove(&doc_id)?;
 
         if let Some(recent) = existing
+            && !Path::new(&recent.file_path)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
             && self
                 .platform
                 .is_path_within_dir(&recent.file_path, &self.library_pdfs_dir)
@@ -669,7 +689,9 @@ impl AppCore {
                 && settings
                     .dismissed_update_version
                     .as_deref()
-                    .is_some_and(|dismissed| dismissed == manifest.version.trim());
+                    .is_some_and(|dismissed| {
+                        compare_semver(dismissed, &manifest.version) == Ordering::Equal
+                    });
             let verified = NativePlatformAdapter::is_hex_sha256(&manifest.sha256)
                 && manifest.package_size_bytes > 0;
 
@@ -699,6 +721,7 @@ impl AppCore {
             }
         }
 
+        let staged_for_restart = settings.staged_update_version.is_some();
         Ok(AppUpdateStatusDto {
             current_version: current_version.clone(),
             update_available: false,
@@ -710,7 +733,7 @@ impl AppCore {
             download_url: None,
             github_repo,
             verified: true,
-            staged_for_restart: false,
+            staged_for_restart,
             checked_at_unix_ms,
         })
     }
@@ -735,7 +758,12 @@ impl AppCore {
         adapter.stage_release_manifest_in(&self.data_dir, &manifest)?;
 
         let mut settings = self.get_settings()?;
-        if settings.dismissed_update_version.as_deref() == Some(manifest.version.trim()) {
+        let normalized_manifest_ver = manifest
+            .version
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .trim();
+        if settings.dismissed_update_version.as_deref() == Some(normalized_manifest_ver) {
             settings.dismissed_update_version = None;
             SettingsRepository::save(self.storage.as_ref(), &settings)?;
         }
@@ -756,6 +784,7 @@ impl AppCore {
                 "target update version must not be empty".to_owned(),
             ));
         }
+        let _ = SemVer::parse(trimmed)?;
 
         let mut settings = self.get_settings()?;
         let github_repo = settings.github_release_repo.clone();
@@ -785,14 +814,10 @@ impl AppCore {
             )));
         }
 
-        if !NativePlatformAdapter::is_hex_sha256(&staged_manifest.sha256) {
-            return Err(ApplicationError::Platform(
-                "cannot install update: staged release manifest lacks a valid SHA-256 digest"
-                    .to_owned(),
-            ));
-        }
+        staged_manifest.validate()?;
 
         settings.installed_version = Some(trimmed.to_owned());
+        settings.staged_update_version = Some(trimmed.to_owned());
         settings.dismissed_update_version = None;
         SettingsRepository::save(self.storage.as_ref(), &settings)?;
 
@@ -817,12 +842,14 @@ impl AppCore {
     /// Defers notification for a specific update version until the user manually checks for updates
     /// or a newer release arrives.
     pub fn dismiss_update(&self, version: &str) -> Result<AppUpdateStatusDto, ApplicationError> {
-        let trimmed = version.trim();
+        let raw_trimmed = version.trim();
         let mut settings = self.get_settings()?;
-        settings.dismissed_update_version = if trimmed.is_empty() {
+        settings.dismissed_update_version = if raw_trimmed.is_empty() {
             None
         } else {
-            Some(trimmed.to_owned())
+            let normalized = raw_trimmed.trim_start_matches(['v', 'V']).trim();
+            let _ = SemVer::parse(normalized)?;
+            Some(normalized.to_owned())
         };
         SettingsRepository::save(self.storage.as_ref(), &settings)?;
         self.check_for_updates(false)
@@ -902,5 +929,184 @@ mod tests {
         let sanitized = sanitize_pdf_filename(&huge);
         assert!(sanitized.len() <= 128);
         assert!(sanitized.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn delete_recent_document_never_deletes_external_file_via_dotdot_traversal() {
+        let ext_dir = tempfile::tempdir().unwrap();
+        let outside_pdf = ext_dir.path().join("outside-victim.pdf");
+        std::fs::write(
+            &outside_pdf,
+            build_synthetic_pdf_bytes("Victim", &["Important user file"], None),
+        )
+        .unwrap();
+
+        let core = AppCore::new_in_memory().unwrap();
+        // `library/pdfs` does NOT exist on disk yet!
+        assert!(!core.library_pdfs_dir.exists());
+
+        // Construct a malicious `file_path` starting with `library/pdfs` followed by `..` traversal
+        // to `outside_pdf`.
+        let depth = core.library_pdfs_dir.components().count();
+        let up_segments = vec![".."; depth].join("/");
+        let rel_outside = outside_pdf
+            .to_string_lossy()
+            .trim_start_matches('/')
+            .to_owned();
+        let traversal_path = format!(
+            "{}/{up_segments}/{rel_outside}",
+            core.library_pdfs_dir.to_string_lossy()
+        );
+
+        let fake_id = DocumentId::new("doc-traversal-attack").unwrap();
+        let view = ViewState::new(fake_id.clone(), 1).unwrap();
+        let malicious_recent =
+            RecentDocument::from_view_state(&traversal_path, "victim.pdf", &view, 1_000);
+        RecentDocumentRepository::upsert(core.storage.as_ref(), &malicious_recent).unwrap();
+
+        core.delete_recent_document(fake_id.as_str()).unwrap();
+        assert!(
+            outside_pdf.exists(),
+            "external file must NEVER be deleted via '..' traversal when library/pdfs is missing"
+        );
+
+        // Repeat when `library/pdfs` DOES exist on disk
+        std::fs::create_dir_all(&core.library_pdfs_dir).unwrap();
+        RecentDocumentRepository::upsert(core.storage.as_ref(), &malicious_recent).unwrap();
+        core.delete_recent_document(fake_id.as_str()).unwrap();
+        assert!(
+            outside_pdf.exists(),
+            "external file must NEVER be deleted via '..' traversal when library/pdfs exists"
+        );
+    }
+
+    #[test]
+    fn failed_encrypted_import_cleans_staged_file_and_cold_restart_reconciles_version() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("com.readora.desktop");
+        let cache_dir = temp_dir.path().join("readora-cache");
+        let db_path = data_dir.join("readora.sqlite");
+        let storage = Arc::new(SqliteStorage::open(&db_path).unwrap());
+
+        let core = AppCore::with_storage_and_dirs(
+            Arc::clone(&storage),
+            data_dir.clone(),
+            cache_dir.clone(),
+            false,
+        )
+        .unwrap();
+
+        // 1. Importing encrypted PDF without password fails and leaves ZERO orphaned files in library/pdfs
+        let enc_bytes =
+            build_synthetic_pdf_bytes("Encrypted Import", &["Secret"], Some("correct-pw"));
+        let err = core
+            .import_document_bytes("confidential.pdf", &enc_bytes, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("password-protected"));
+
+        if core.library_pdfs_dir.exists() {
+            let leftover: Vec<_> = std::fs::read_dir(&core.library_pdfs_dir)
+                .unwrap()
+                .flatten()
+                .collect();
+            assert!(
+                leftover.is_empty(),
+                "expected zero orphaned entries in library/pdfs after failed import, got {leftover:?}"
+            );
+        }
+
+        // Importing with correct password succeeds, and a subsequent failed re-import preserves the owned file
+        let imported = core
+            .import_document_bytes(
+                "confidential.pdf",
+                &enc_bytes,
+                Some("correct-pw".to_owned()),
+            )
+            .unwrap();
+        let owned_path = core.list_recent_documents(5).unwrap()[0].file_path.clone();
+        assert!(Path::new(&owned_path).is_file());
+        assert!(
+            core.import_document_bytes("confidential.pdf", &enc_bytes, None)
+                .is_err()
+        );
+        assert!(Path::new(&owned_path).is_file());
+
+        // 2. remember_page_position == false prevents navigate() from persisting page/zoom/rotation
+        let sample_path = core.create_sample_pdf(temp_dir.path()).unwrap();
+        let sample_session = core
+            .open_document(OpenDocumentRequest {
+                path: sample_path,
+                password: None,
+            })
+            .unwrap();
+        let sample_id = sample_session.descriptor.id.as_str().to_owned();
+        core.update_settings(SettingsPatchDto {
+            remember_page_position: Some(false),
+            ..SettingsPatchDto::default()
+        })
+        .unwrap();
+        let nav = core
+            .navigate(&sample_id, NavigationAction::GoToPage(3))
+            .unwrap();
+        assert_eq!(nav.current_page.zero_based(), 3);
+        let _ = core
+            .navigate(&sample_id, NavigationAction::RotateClockwise)
+            .unwrap();
+        let sample_recent = core
+            .list_recent_documents(10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.document_id.as_str() == sample_id)
+            .unwrap();
+        assert_eq!(sample_recent.last_page, PageIndex::FIRST);
+        assert_eq!(sample_recent.last_rotation, Rotation::Deg0);
+        let _ = imported;
+
+        // 3. dismiss_update strips leading 'v'/'V' and validates SemVer; install_update validates manifest
+        core.stage_update_manifest(ReleaseManifestDto {
+            version: "9.8.0".to_owned(),
+            title: "Zero Size".to_owned(),
+            notes: "Invalid zero size".to_owned(),
+            package_size_bytes: 0,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
+            published_at: "2026-11-17T00:00:00Z".to_owned(),
+            download_url: None,
+        })
+        .unwrap();
+        assert!(core.install_update("9.8.0").is_err());
+
+        core.stage_update_manifest(ReleaseManifestDto {
+            version: "9.8.0".to_owned(),
+            title: "Release 9.8.0".to_owned(),
+            notes: "Valid".to_owned(),
+            package_size_bytes: 2048,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
+            published_at: "2026-11-17T00:00:00Z".to_owned(),
+            download_url: Some(
+                "https://github.com/smokeInCloud060201/readora/releases/tag/v9.8.0".to_owned(),
+            ),
+        })
+        .unwrap();
+        assert!(core.dismiss_update("not-a-semver").is_err());
+        let dismissed = core.dismiss_update("v9.8.0").unwrap();
+        assert!(!dismissed.update_available);
+
+        let installed = core.install_update("v9.8.0").unwrap();
+        assert_eq!(installed.current_version, "9.8.0");
+        assert!(installed.staged_for_restart);
+        assert!(core.check_for_updates(false).unwrap().staged_for_restart);
+        assert_eq!(core.system_diagnostics().unwrap().app_version, "9.8.0");
+
+        // 4. Cold restart (re-constructing AppCore over persisted storage) reconciles version to APP_VERSION!
+        drop(core);
+        let restarted =
+            AppCore::with_storage_and_dirs(storage, data_dir, cache_dir, false).unwrap();
+        assert_eq!(
+            restarted.system_diagnostics().unwrap().app_version,
+            APP_VERSION
+        );
+        let post_restart_update = restarted.check_for_updates(false).unwrap();
+        assert_eq!(post_restart_update.current_version, APP_VERSION);
+        assert!(!post_restart_update.staged_for_restart);
     }
 }

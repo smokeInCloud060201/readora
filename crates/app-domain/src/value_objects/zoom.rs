@@ -6,8 +6,10 @@ use crate::error::DomainError;
 
 /// Minimum supported zoom factor (25%).
 pub const MIN_ZOOM_FACTOR: f32 = 0.25;
-/// Maximum supported zoom factor (500%).
+/// Maximum supported manual UI zoom factor (500%).
 pub const MAX_ZOOM_FACTOR: f32 = 5.0;
+/// Maximum supported effective render scale factor (`zoom * devicePixelRatio`, e.g. 500% on 2x Retina = `10.0`).
+pub const MAX_RENDER_SCALE_FACTOR: f32 = 10.0;
 /// Standard discrete zoom presets for stepping in and out.
 pub const ZOOM_PRESETS: [f32; 11] = [0.25, 0.5, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0];
 
@@ -17,13 +19,25 @@ pub const ZOOM_PRESETS: [f32; 11] = [0.25, 0.5, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75,
 pub struct ScaleBucket(u16);
 
 impl ScaleBucket {
-    /// Creates a `ScaleBucket` quantized to 5% increments from a scale factor.
+    /// Creates a `ScaleBucket` quantized to 5% increments from a scale factor, clamping into
+    /// `MIN_ZOOM_FACTOR..=MAX_RENDER_SCALE_FACTOR`.
     #[must_use]
     pub fn from_scale(scale: f32) -> Self {
-        let clamped = scale.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+        let clamped = scale.clamp(MIN_ZOOM_FACTOR, MAX_RENDER_SCALE_FACTOR);
         let pct = (clamped * 100.0).round() as u16;
         let quantized = ((pct + 2) / 5) * 5;
-        Self(quantized.max(25))
+        Self(quantized.clamp(25, 1000))
+    }
+
+    /// Validates an effective render scale (`0.25..=10.0` for HiDPI / Retina viewports) and
+    /// quantizes it to a 5% `ScaleBucket`.
+    pub fn from_render_scale(scale: f32) -> Result<Self, DomainError> {
+        if !scale.is_finite() || !(MIN_ZOOM_FACTOR..=MAX_RENDER_SCALE_FACTOR).contains(&scale) {
+            return Err(DomainError::InvalidZoomLevel(scale));
+        }
+        let pct = (scale * 100.0).round() as u16;
+        let quantized = ((pct + 2) / 5) * 5;
+        Ok(Self(quantized.clamp(25, 1000)))
     }
 
     /// Returns the bucket value in integer percentage points (e.g., `100` for 1.0x).

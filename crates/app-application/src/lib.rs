@@ -92,6 +92,9 @@ mod tests {
                 page_index: PageIndex::FIRST,
                 match_index: 0,
                 snippet: format!("Matched: {query}"),
+                match_text: Some(query.to_owned()),
+                bounding_box: None,
+                bounding_boxes: Vec::new(),
             }])
         }
 
@@ -622,13 +625,19 @@ mod tests {
         .unwrap();
         assert_eq!(created.id.as_str(), "ann-custom-1");
 
-        // Export rejects dotfiles, traversal, empty paths, and non-.md extensions
+        // Export rejects dotfiles, traversal, relative paths, reserved Windows names, empty paths, and non-.md extensions
         for bad_dest in [
             "",
+            "notes.md",
+            "relative/notes.md",
             "/Users/victim/.zshrc",
             "/tmp/.hidden.md",
             "/tmp/../notes.md",
             "/tmp/notes.sh",
+            "/tmp/CON.md",
+            "/tmp/nul.md",
+            "/tmp/COM1.md",
+            "/tmp/LPT9.extra.md",
         ] {
             assert!(
                 execute_export_annotations_bundle(
@@ -644,6 +653,52 @@ mod tests {
                 "expected export destination '{bad_dest}' to be rejected"
             );
         }
+
+        // Default PlatformPort::is_path_within_dir rejects '..' traversal segments
+        assert!(!platform.is_path_within_dir(
+            "/tmp/library/pdfs/../../outside.pdf",
+            Path::new("/tmp/library/pdfs")
+        ));
+        assert!(platform.is_path_within_dir(
+            "/tmp/library/pdfs/hash/inside.pdf",
+            Path::new("/tmp/library/pdfs")
+        ));
+
+        // HiDPI render scale up to 10.0x succeeds via ScaleBucket::from_render_scale
+        let hidpi_render = execute_render_page(
+            &RenderPageCommand {
+                document_id: doc_id.as_str().to_owned(),
+                page_index: 0,
+                scale: 10.0,
+                rotation_degrees: 0,
+                render_mode: RenderMode::Standard,
+                generation: None,
+            },
+            reopened.document.as_ref(),
+            &infra,
+            &infra,
+            |_| "data:image/png;base64,AAAA".to_owned(),
+        )
+        .unwrap();
+        assert!(!hidpi_render.cache_hit);
+
+        assert!(
+            execute_render_page(
+                &RenderPageCommand {
+                    document_id: doc_id.as_str().to_owned(),
+                    page_index: 0,
+                    scale: 10.5,
+                    rotation_degrees: 0,
+                    render_mode: RenderMode::Standard,
+                    generation: None,
+                },
+                reopened.document.as_ref(),
+                &infra,
+                &infra,
+                |_| "data:image/png;base64,AAAA".to_owned(),
+            )
+            .is_err()
+        );
 
         let ok_export = execute_export_annotations_bundle(
             doc_id.as_str(),

@@ -1,8 +1,6 @@
 //! Use case for rendering a PDF page with LRU byte-budget caching and stale-request cancellation.
 
-use app_domain::{
-    DocumentId, MAX_RENDER_DIMENSION_PX, PageIndex, Rotation, ScaleBucket, ZoomLevel,
-};
+use app_domain::{DocumentId, MAX_RENDER_DIMENSION_PX, PageIndex, Rotation, ScaleBucket};
 use pdf_engine::{PdfDocument, RenderPageRequest};
 
 use crate::dto::{RenderPageCommand, RenderedPageResultDto};
@@ -27,8 +25,7 @@ where
     let page_count = document.info().page_count;
     let page_index = PageIndex::within(command.page_index, page_count)?;
     let rotation = Rotation::from_degrees(command.rotation_degrees)?;
-    let zoom = ZoomLevel::new(command.scale)?;
-    let scale_bucket = ScaleBucket::from_scale(zoom.factor());
+    let scale_bucket = ScaleBucket::from_render_scale(command.scale)?;
 
     let effective_gen = command
         .generation

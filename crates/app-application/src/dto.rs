@@ -4,9 +4,11 @@ use std::fmt;
 
 use app_domain::{
     AnnotationKind, Bookmark, DocumentDescriptor, FitMode, LayoutMode, OutlineNode, RenderMode,
-    ThemePreference, ViewState,
+    SemVer, ThemePreference, ViewState,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::error::ApplicationError;
 
 /// Request to open a local PDF file.
 #[derive(Clone, Deserialize)]
@@ -214,6 +216,40 @@ pub struct ReleaseManifestDto {
     /// Direct download URL or GitHub Release page URL.
     #[serde(default)]
     pub download_url: Option<String>,
+}
+
+impl ReleaseManifestDto {
+    /// Validates that this release manifest carries a valid semantic version, non-zero package
+    /// size, a 64-hex-character SHA-256 checksum, and (when present) an `https://` download URL.
+    pub fn validate(&self) -> Result<(), ApplicationError> {
+        let normalized_version = self.version.trim().trim_start_matches(['v', 'V']).trim();
+        let _ = SemVer::parse(normalized_version)?;
+        if self.package_size_bytes == 0 {
+            return Err(ApplicationError::Platform(
+                "release manifest package_size_bytes must be greater than 0".to_owned(),
+            ));
+        }
+        let clean_sha = self.sha256.trim().trim_start_matches("sha256:");
+        if clean_sha.len() != 64 || !clean_sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(ApplicationError::Platform(
+                "cannot install update: staged release manifest lacks a valid SHA-256 digest"
+                    .to_owned(),
+            ));
+        }
+        if let Some(ref url) = self.download_url {
+            let trimmed_url = url.trim();
+            if !trimmed_url.starts_with("https://")
+                || trimmed_url
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err(ApplicationError::Platform(
+                    "release manifest download_url must be a valid https:// URL".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Live application update status evaluated against the installed version and release manifest.

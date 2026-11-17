@@ -16,19 +16,18 @@ pub const MAX_ANNOTATION_TEXT_LEN: usize = 2000;
 pub struct AnnotationId(String);
 
 impl AnnotationId {
-    /// Wraps an existing annotation ID string, trimming surrounding whitespace.
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into().trim().to_owned())
-    }
-
-    /// Validates and constructs a non-empty `AnnotationId`.
-    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
-        let trimmed = raw.into().trim().to_owned();
+    /// Validates and constructs a non-empty `AnnotationId`, trimming surrounding whitespace.
+    pub fn new(id: impl Into<String>) -> Result<Self, DomainError> {
+        let trimmed = id.into().trim().to_owned();
         if trimmed.is_empty() {
             return Err(DomainError::EmptyAnnotationId);
         }
         Ok(Self(trimmed))
+    }
+
+    /// Validates and constructs a non-empty `AnnotationId`.
+    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
+        Self::new(raw)
     }
 
     /// Generates a new random annotation ID.

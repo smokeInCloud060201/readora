@@ -105,4 +105,42 @@ impl PageDimensions {
         }
         Ok((width_px, height_px))
     }
+
+    /// Computes target pixel dimensions `(width_px, height_px)` for the given scale and rotation,
+    /// proportionally clamping both axes to `max_dimension_px.min(MAX_RENDER_DIMENSION_PX)` when
+    /// high-DPI scales exceed the maximum bitmap dimension so aspect ratio is preserved.
+    pub fn clamped_target_pixel_size(
+        self,
+        scale: f32,
+        rotation: Rotation,
+        max_dimension_px: u32,
+    ) -> Result<(u32, u32), DomainError> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(DomainError::InvalidZoomLevel(scale));
+        }
+        let cap = max_dimension_px.clamp(1, MAX_RENDER_DIMENSION_PX);
+        let (oriented_w, oriented_h) = match rotation {
+            Rotation::Deg0 | Rotation::Deg180 => (self.width_pt, self.height_pt),
+            Rotation::Deg90 | Rotation::Deg270 => (self.height_pt, self.width_pt),
+        };
+        let raw_w = oriented_w * scale;
+        let raw_h = oriented_h * scale;
+        if !raw_w.is_finite() || !raw_h.is_finite() {
+            return Err(DomainError::InvalidZoomLevel(scale));
+        }
+        let cap_f = cap as f32;
+        let max_raw = raw_w.max(raw_h);
+        let (width_px, height_px) = if max_raw > cap_f {
+            let downscale = cap_f / max_raw;
+            let w = ((raw_w * downscale).round().max(1.0) as u32).min(cap);
+            let h = ((raw_h * downscale).round().max(1.0) as u32).min(cap);
+            (w, h)
+        } else {
+            (
+                (raw_w.round().max(1.0) as u32).min(cap),
+                (raw_h.round().max(1.0) as u32).min(cap),
+            )
+        };
+        Ok((width_px, height_px))
+    }
 }

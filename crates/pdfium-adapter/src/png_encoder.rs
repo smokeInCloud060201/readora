@@ -36,6 +36,12 @@ pub fn apply_render_mode_rgba(rgba: &mut [u8], mode: RenderMode) {
 
 /// Encodes an RGBA8 buffer of `width x height` pixels into a valid PNG byte vector.
 pub fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, PdfEngineError> {
+    if width == 0 || height == 0 {
+        return Err(PdfEngineError::Internal(format!(
+            "PNG dimensions must be non-zero, got {width}x{height}"
+        )));
+    }
+
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .and_then(|px| px.checked_mul(4))
@@ -49,7 +55,11 @@ pub fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8
     }
 
     let row_bytes = (width as usize) * 4;
-    let mut raw_scanlines = Vec::with_capacity((row_bytes + 1) * (height as usize));
+    let raw_cap = row_bytes
+        .checked_add(1)
+        .and_then(|stride| stride.checked_mul(height as usize))
+        .ok_or_else(|| PdfEngineError::Internal("PNG scanline buffer size overflow".to_owned()))?;
+    let mut raw_scanlines = Vec::with_capacity(raw_cap);
     for row in rgba.chunks_exact(row_bytes) {
         raw_scanlines.push(0u8); // Filter type 0 (None)
         raw_scanlines.extend_from_slice(row);
@@ -92,4 +102,20 @@ fn write_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
     hasher.update(data);
     let crc = hasher.finalize();
     out.extend_from_slice(&crc.to_be_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn png_encoder_rejects_zero_dimensions_and_encodes_one_by_one_pixel() {
+        assert!(encode_rgba_to_png(0, 10, &[]).is_err());
+        assert!(encode_rgba_to_png(10, 0, &[]).is_err());
+        assert!(encode_rgba_to_png(0, 0, &[]).is_err());
+        assert!(encode_rgba_to_png(2, 2, &[0u8; 12]).is_err());
+
+        let png = encode_rgba_to_png(1, 1, &[255, 128, 64, 255]).unwrap();
+        assert!(png.starts_with(&PNG_SIGNATURE));
+    }
 }

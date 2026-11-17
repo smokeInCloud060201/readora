@@ -9,31 +9,60 @@ use crate::SqliteStorage;
 impl AnnotationRepository for SqliteStorage {
     fn upsert(&self, annotation: &Annotation) -> Result<Annotation, ApplicationError> {
         let conn = self.lock_connection()?;
-        conn.execute(
-            "INSERT INTO annotations (
-                 id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO UPDATE SET
-                 kind = excluded.kind,
-                 color_hex = excluded.color_hex,
-                 quote_text = excluded.quote_text,
-                 note_text = excluded.note_text,
-                 created_at_unix_ms = excluded.created_at_unix_ms",
-            params![
-                annotation.id.as_str(),
-                annotation.document_id.as_str(),
-                annotation.page_index.zero_based(),
-                annotation.kind.as_str(),
-                annotation.color_hex,
-                annotation.quote_text,
-                annotation.note_text,
-                annotation.created_at_unix_ms,
-            ],
-        )
-        .map_err(|e| ApplicationError::Storage(format!("failed to upsert annotation: {e}")))?;
+        let rows_affected = conn
+            .execute(
+                "INSERT INTO annotations (
+                     id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                     kind = excluded.kind,
+                     color_hex = excluded.color_hex,
+                     quote_text = excluded.quote_text,
+                     note_text = excluded.note_text
+                 WHERE annotations.document_id = excluded.document_id",
+                params![
+                    annotation.id.as_str(),
+                    annotation.document_id.as_str(),
+                    annotation.page_index.zero_based(),
+                    annotation.kind.as_str(),
+                    annotation.color_hex,
+                    annotation.quote_text,
+                    annotation.note_text,
+                    annotation.created_at_unix_ms,
+                ],
+            )
+            .map_err(|e| ApplicationError::Storage(format!("failed to upsert annotation: {e}")))?;
 
-        Ok(annotation.clone())
+        if rows_affected == 0 {
+            return Err(ApplicationError::Storage(
+                "annotation id belongs to a different document".to_owned(),
+            ));
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
+                 FROM annotations
+                 WHERE id = ?1 AND document_id = ?2",
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("prepare annotation read failed: {e}"))
+            })?;
+
+        let mut rows = stmt
+            .query(params![
+                annotation.id.as_str(),
+                annotation.document_id.as_str()
+            ])
+            .map_err(|e| ApplicationError::Storage(format!("query annotation failed: {e}")))?;
+
+        let row = rows
+            .next()
+            .map_err(|e| ApplicationError::Storage(format!("annotation fetch failed: {e}")))?
+            .ok_or_else(|| ApplicationError::Storage("upserted annotation not found".to_owned()))?;
+
+        map_annotation_row(row)
     }
 
     fn list_for_document(

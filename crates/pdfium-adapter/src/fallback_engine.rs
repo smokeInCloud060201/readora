@@ -17,10 +17,14 @@ use crate::png_encoder::{apply_render_mode_rgba, encode_rgba_to_png};
 
 /// Maximum non-stream structural dictionary bytes buffered in fallback mode (2 MiB).
 const MAX_STRUCTURAL_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum decompressed `/Type /ObjStm` structural bytes buffered in fallback mode (2 MiB).
+const MAX_OBJSTM_STRUCTURAL_BYTES: usize = 2 * 1024 * 1024;
 /// Tail window preserved for trailer/xref inspection on huge files (256 KiB).
 const MAX_TAIL_WINDOW_BYTES: usize = 256 * 1024;
 /// Maximum total page content stream bytes buffered/decompressed in fallback mode (8 MiB).
 const MAX_CONTENT_STREAM_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum decoded UTF-8 bytes accumulated for a single PDF `(...)` literal string (64 KiB).
+const MAX_PDF_LITERAL_ACCUM_BYTES: usize = 64 * 1024;
 
 /// Parsed in-memory representation of a PDF document for the fallback engine.
 pub struct FallbackPdfDocument {
@@ -64,10 +68,13 @@ impl FallbackPdfDocument {
 
         let (structural_text, content_text) = extract_bounded_pdf_regions(bytes);
 
-        let is_encrypted = has_pdf_dict_key(&structural_text, "/Encrypt");
+        let is_encrypted =
+            has_pdf_dict_key(&structural_text, "/Encrypt") || has_encrypt_dict_bytes(bytes);
         if is_encrypted {
             let supplied_pw = options.password.as_deref().filter(|pw| !pw.is_empty());
-            if let Some(expected_pw) = extract_pdf_string_value(&structural_text, "/UserPassword") {
+            let expected_pw = extract_pdf_string_value(&structural_text, "/UserPassword")
+                .or_else(|| extract_tail_pdf_string_value(bytes, "/UserPassword"));
+            if let Some(expected_pw) = expected_pw {
                 let Some(pw) = supplied_pw else {
                     return Err(PdfEngineError::PasswordRequired);
                 };
@@ -201,25 +208,14 @@ impl PdfDocument for FallbackPdfDocument {
         }
 
         let effective_rotation = self.intrinsic_rotation.combine(request.rotation);
-        let (width_px, height_px) = match self.page_dimensions.target_pixel_size(
-            request.scale,
-            effective_rotation,
-            request.max_pixel_dimension,
-        ) {
-            Ok(pair) => pair,
-            Err(app_domain::DomainError::RenderDimensionsExceedLimit {
-                width_px,
-                height_px,
-                max_px,
-            }) => {
-                return Err(PdfEngineError::RenderDimensionsExceedLimit {
-                    width_px,
-                    height_px,
-                    max_px,
-                });
-            }
-            Err(err) => return Err(PdfEngineError::Internal(err.to_string())),
-        };
+        let (width_px, height_px) = self
+            .page_dimensions
+            .clamped_target_pixel_size(
+                request.scale,
+                effective_rotation,
+                request.max_pixel_dimension,
+            )
+            .map_err(|err| PdfEngineError::Internal(err.to_string()))?;
 
         let mut rgba = render_synthetic_page_rgba(width_px, height_px, idx, self.info.page_count);
         apply_render_mode_rgba(&mut rgba, request.render_mode);
@@ -255,20 +251,87 @@ pub(crate) fn extract_header_pdf_version(bytes: &[u8]) -> Option<String> {
     }
 }
 
-/// Inspects bounded header and trailer windows of `bytes` for a structural `/Encrypt` dictionary key.
+/// Inspects bounded header and trailer windows of `bytes` for a structural `/Encrypt` dictionary key,
+/// trimming any leading mid-stream binary tail bytes before `endstream` so stray `'('` (`0x28`) bytes
+/// inside compressed streams cannot swallow `trailer << /Encrypt ... >>`.
 #[must_use]
 pub(crate) fn has_encrypt_dict_bytes(bytes: &[u8]) -> bool {
-    let head_end = bytes.len().min(64 * 1024);
+    let head_end = bytes.len().min(MAX_TAIL_WINDOW_BYTES);
     let head_str = extract_non_stream_text(&bytes[..head_end]);
     if has_pdf_dict_key(&head_str, "/Encrypt") {
         return true;
     }
     if bytes.len() > head_end {
-        let tail_start = bytes.len().saturating_sub(64 * 1024).max(head_end);
-        let tail_str = extract_non_stream_text(&bytes[tail_start..]);
+        let tail_start = bytes
+            .len()
+            .saturating_sub(MAX_TAIL_WINDOW_BYTES)
+            .max(head_end);
+        let tail_slice = trim_leading_partial_stream(&bytes[tail_start..]);
+        let tail_str = extract_non_stream_text(tail_slice);
         if has_pdf_dict_key(&tail_str, "/Encrypt") {
             return true;
         }
+    }
+    false
+}
+
+fn extract_tail_pdf_string_value(bytes: &[u8], key: &str) -> Option<String> {
+    let tail_start = bytes.len().saturating_sub(MAX_TAIL_WINDOW_BYTES);
+    let tail_slice = if tail_start > 0 {
+        trim_leading_partial_stream(&bytes[tail_start..])
+    } else {
+        bytes
+    };
+    let tail_str = extract_non_stream_text(tail_slice);
+    extract_pdf_string_value(&tail_str, key)
+}
+
+/// When slicing into the tail of a large PDF (`tail_start > 0`), the slice often begins inside
+/// a binary stream whose opening `stream` keyword preceded `tail_start`. If an `endstream`
+/// keyword appears before the first `stream` keyword in `slice`, advance past that `endstream`
+/// so binary stream bytes (`0x28` `'('`) are never misinterpreted as structural PDF syntax.
+fn trim_leading_partial_stream(slice: &[u8]) -> &[u8] {
+    if let Some(end_pos) = find_endstream_keyword(slice)
+        && find_stream_keyword(slice).is_none_or(|st_pos| end_pos < st_pos)
+    {
+        return &slice[end_pos + 9..];
+    }
+    slice
+}
+
+fn find_endstream_keyword(haystack: &[u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    while offset + 9 <= haystack.len() {
+        let rel = find_byte_subslice(&haystack[offset..], b"endstream")?;
+        let pos = offset + rel;
+        let next_ok = haystack
+            .get(pos + 9)
+            .is_none_or(|&b| is_pdf_token_delim_or_ws(b));
+        if next_ok {
+            return Some(pos);
+        }
+        offset = pos + 9;
+    }
+    None
+}
+
+fn contains_pdf_name(haystack: &[u8], name: &[u8]) -> bool {
+    if name.is_empty() || haystack.len() < name.len() {
+        return false;
+    }
+    let mut offset = 0usize;
+    while offset + name.len() <= haystack.len() {
+        let Some(rel) = find_byte_subslice(&haystack[offset..], name) else {
+            return false;
+        };
+        let pos = offset + rel;
+        let boundary_ok = haystack
+            .get(pos + name.len())
+            .is_none_or(|&b| is_pdf_token_delim_or_ws(b));
+        if boundary_ok {
+            return true;
+        }
+        offset = pos + name.len();
     }
     false
 }
@@ -283,14 +346,14 @@ fn extract_non_stream_text(slice: &[u8]) -> String {
         };
         let stream_pos = cursor + stream_rel;
         buf.extend_from_slice(&slice[cursor..stream_pos]);
-        let mut data_start = stream_pos + 6;
-        if slice.get(data_start) == Some(&b'\r') {
-            data_start += 1;
+        let Some(mut data_start) = advance_past_stream_eol(slice, stream_pos) else {
+            cursor = stream_pos + 6;
+            continue;
+        };
+        if data_start > slice.len() {
+            data_start = slice.len();
         }
-        if slice.get(data_start) == Some(&b'\n') {
-            data_start += 1;
-        }
-        if let Some(end_rel) = find_byte_subslice(&slice[data_start..], b"endstream") {
+        if let Some(end_rel) = find_endstream_keyword(&slice[data_start..]) {
             cursor = data_start + end_rel + 9;
             buf.push(b'\n');
         } else {
@@ -300,16 +363,36 @@ fn extract_non_stream_text(slice: &[u8]) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+fn advance_past_stream_eol(bytes: &[u8], stream_pos: usize) -> Option<usize> {
+    let mut idx = stream_pos.checked_add(6)?;
+    while matches!(bytes.get(idx), Some(b' ' | b'\t')) {
+        idx += 1;
+    }
+    if bytes.get(idx) == Some(&b'\r') {
+        idx += 1;
+        if bytes.get(idx) == Some(&b'\n') {
+            idx += 1;
+        }
+        Some(idx)
+    } else if bytes.get(idx) == Some(&b'\n') {
+        Some(idx + 1)
+    } else {
+        None
+    }
+}
+
 fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
     let mut structural = Vec::with_capacity(bytes.len().min(64 * 1024));
     let mut content = Vec::new();
     let mut cursor = 0usize;
+    let mut non_stream_structural_bytes = 0usize;
+    let mut objstm_structural_bytes = 0usize;
     let mut hit_structural_cap = false;
 
     while cursor < bytes.len() {
         let Some(stream_rel) = find_stream_keyword(&bytes[cursor..]) else {
             let rem = &bytes[cursor..];
-            let room = MAX_STRUCTURAL_BYTES.saturating_sub(structural.len());
+            let room = MAX_STRUCTURAL_BYTES.saturating_sub(non_stream_structural_bytes);
             if room > 0 {
                 let take_n = rem.len().min(room);
                 structural.extend_from_slice(&rem[..take_n]);
@@ -324,11 +407,12 @@ fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
 
         let stream_pos = cursor + stream_rel;
         let non_stream = &bytes[cursor..stream_pos];
-        let room = MAX_STRUCTURAL_BYTES.saturating_sub(structural.len());
+        let room = MAX_STRUCTURAL_BYTES.saturating_sub(non_stream_structural_bytes);
         if room > 0 {
             let take_n = non_stream.len().min(room);
             structural.extend_from_slice(&non_stream[..take_n]);
             structural.push(b'\n');
+            non_stream_structural_bytes += take_n;
             if take_n < non_stream.len() {
                 hit_structural_cap = true;
             }
@@ -336,21 +420,15 @@ fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
             hit_structural_cap = true;
         }
 
-        let mut data_start = stream_pos + 6;
-        if bytes.get(data_start) == Some(&b'\r') {
-            data_start += 1;
-        }
-        if bytes.get(data_start) == Some(&b'\n') {
-            data_start += 1;
-        } else {
-            cursor = data_start;
+        let Some(data_start) = advance_past_stream_eol(bytes, stream_pos) else {
+            cursor = stream_pos + 6;
             continue;
-        }
+        };
 
         let dict_window_start = stream_pos.saturating_sub(512);
         let dict_header = &bytes[dict_window_start..stream_pos];
 
-        let Some(end_rel) = find_byte_subslice(&bytes[data_start..], b"endstream") else {
+        let Some(end_rel) = find_endstream_keyword(&bytes[data_start..]) else {
             break;
         };
         let mut data_end = data_start + end_rel;
@@ -358,11 +436,42 @@ fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
             data_end -= 1;
         }
 
-        let remaining_content = MAX_CONTENT_STREAM_BYTES.saturating_sub(content.len());
-        if remaining_content > 0 && !is_binary_non_text_stream_dict(dict_header) {
-            let raw_stream = &bytes[data_start..data_end];
-            if !raw_stream.is_empty() && raw_stream.len() <= 16 * 1024 * 1024 {
-                let is_flate = find_byte_subslice(dict_header, b"/FlateDecode").is_some();
+        let raw_stream = &bytes[data_start..data_end];
+        let is_flate = contains_pdf_name(dict_header, b"/FlateDecode");
+        let is_obj_stm = contains_pdf_name(dict_header, b"/ObjStm");
+
+        if is_obj_stm {
+            let rem_objstm = MAX_OBJSTM_STRUCTURAL_BYTES.saturating_sub(objstm_structural_bytes);
+            if rem_objstm > 0 && !raw_stream.is_empty() && raw_stream.len() <= 16 * 1024 * 1024 {
+                if is_flate {
+                    let decoder = ZlibDecoder::new(raw_stream);
+                    let mut chunk = Vec::new();
+                    if decoder
+                        .take(rem_objstm as u64)
+                        .read_to_end(&mut chunk)
+                        .is_ok()
+                        && !chunk.is_empty()
+                    {
+                        structural.push(b'\n');
+                        structural.extend_from_slice(&chunk);
+                        structural.push(b'\n');
+                        objstm_structural_bytes += chunk.len();
+                    }
+                } else {
+                    let take_n = raw_stream.len().min(rem_objstm);
+                    structural.push(b'\n');
+                    structural.extend_from_slice(&raw_stream[..take_n]);
+                    structural.push(b'\n');
+                    objstm_structural_bytes += take_n;
+                }
+            }
+        } else {
+            let remaining_content = MAX_CONTENT_STREAM_BYTES.saturating_sub(content.len());
+            if remaining_content > 0
+                && !is_binary_non_text_stream_dict(dict_header)
+                && !raw_stream.is_empty()
+                && raw_stream.len() <= 16 * 1024 * 1024
+            {
                 let mut appended = false;
                 if is_flate || find_byte_subslice(raw_stream, b"BT").is_none() {
                     let decoder = ZlibDecoder::new(raw_stream);
@@ -389,11 +498,16 @@ fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
         cursor = data_start + end_rel + 9;
     }
 
-    if hit_structural_cap && bytes.len() > MAX_TAIL_WINDOW_BYTES {
-        let tail_slice = &bytes[bytes.len() - MAX_TAIL_WINDOW_BYTES..];
-        let tail_non_stream = extract_non_stream_text(tail_slice);
-        structural.push(b'\n');
-        structural.extend_from_slice(tail_non_stream.as_bytes());
+    let head_end = MAX_TAIL_WINDOW_BYTES;
+    let tail_start = bytes.len().saturating_sub(MAX_TAIL_WINDOW_BYTES);
+    if (hit_structural_cap && bytes.len() > MAX_TAIL_WINDOW_BYTES) || tail_start > head_end {
+        let raw_tail = &bytes[tail_start..];
+        let trimmed_tail = trim_leading_partial_stream(raw_tail);
+        if hit_structural_cap {
+            let tail_non_stream = extract_non_stream_text(trimmed_tail);
+            structural.push(b'\n');
+            structural.extend_from_slice(tail_non_stream.as_bytes());
+        }
     }
 
     (
@@ -412,10 +526,7 @@ fn find_stream_keyword(haystack: &[u8]) -> Option<usize> {
                 haystack[pos - 1],
                 b'\r' | b'\n' | b' ' | b'\t' | b'>' | 0x0C
             );
-        let after = haystack.get(pos + 6).copied();
-        let next_ok =
-            after == Some(b'\n') || (after == Some(b'\r') && haystack.get(pos + 7) == Some(&b'\n'));
-        if prev_ok && next_ok {
+        if prev_ok && advance_past_stream_eol(haystack, pos).is_some() {
             return Some(pos);
         }
         offset = pos + 6;
@@ -484,8 +595,20 @@ const fn is_pdf_token_delim_or_ws(b: u8) -> bool {
     )
 }
 
+enum LiteralParseOutcome {
+    Parsed { text: String, next_index: usize },
+    UnclosedAtEof,
+}
+
+#[inline]
+fn push_bounded_char(out: &mut String, ch: char) {
+    if out.len() + ch.len_utf8() <= MAX_PDF_LITERAL_ACCUM_BYTES {
+        out.push(ch);
+    }
+}
+
 /// Checks whether `key` (e.g. `"/Encrypt"`) appears as an actual PDF dictionary key in
-/// `structural_text`, skipping `%` comments and balanced `(...)` literal strings.
+/// `structural_text`, skipping `%` comments and balanced `(...)` literal strings in `O(N)` time.
 fn has_pdf_dict_key(structural_text: &str, key: &str) -> bool {
     let bytes = structural_text.as_bytes();
     let key_bytes = key.as_bytes();
@@ -500,14 +623,12 @@ fn has_pdf_dict_key(structural_text: &str, key: &str) -> bool {
                     i += 1;
                 }
             }
-            b'(' => {
-                if let Some((_, consumed)) = parse_pdf_literal_after_open(&structural_text[i + 1..])
-                {
-                    i += 1 + consumed;
-                } else {
-                    i += 1;
+            b'(' => match parse_pdf_literal_after_open(&structural_text[i + 1..]) {
+                LiteralParseOutcome::Parsed { next_index, .. } => {
+                    i += 1 + next_index;
                 }
-            }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
             b'/' if i + key_bytes.len() <= bytes.len()
                 && &bytes[i..i + key_bytes.len()] == key_bytes =>
             {
@@ -527,8 +648,10 @@ fn has_pdf_dict_key(structural_text: &str, key: &str) -> bool {
 
 /// Parses a PDF literal string starting immediately after the opening `'('`, handling
 /// `\(`, `\)`, `\\`, `\n`, `\r`, `\t`, octal escapes, and balanced nested parentheses.
-/// Returns `(decoded_string, bytes_consumed_including_closing_paren)`.
-fn parse_pdf_literal_after_open(after_open: &str) -> Option<(String, usize)> {
+/// Caps `out` accumulation at `MAX_PDF_LITERAL_ACCUM_BYTES` (`64 KiB`) while continuing to scan
+/// for the matching closing `')'` or EOF so malformed inputs never cause `O(N^2)` rescanning
+/// or transient memory spikes.
+fn parse_pdf_literal_after_open(after_open: &str) -> LiteralParseOutcome {
     let mut out = String::new();
     let mut depth = 1usize;
     let mut chars = after_open.char_indices();
@@ -537,14 +660,14 @@ fn parse_pdf_literal_after_open(after_open: &str) -> Option<(String, usize)> {
             '\\' => {
                 if let Some((esc_idx, esc)) = chars.next() {
                     match esc {
-                        'n' => out.push('\n'),
-                        'r' => out.push('\r'),
-                        't' => out.push('\t'),
-                        'b' => out.push('\u{0008}'),
-                        'f' => out.push('\u{000C}'),
-                        '(' => out.push('('),
-                        ')' => out.push(')'),
-                        '\\' => out.push('\\'),
+                        'n' => push_bounded_char(&mut out, '\n'),
+                        'r' => push_bounded_char(&mut out, '\r'),
+                        't' => push_bounded_char(&mut out, '\t'),
+                        'b' => push_bounded_char(&mut out, '\u{0008}'),
+                        'f' => push_bounded_char(&mut out, '\u{000C}'),
+                        '(' => push_bounded_char(&mut out, '('),
+                        ')' => push_bounded_char(&mut out, ')'),
+                        '\\' => push_bounded_char(&mut out, '\\'),
                         '\r' => {
                             if after_open[esc_idx + 1..].starts_with('\n') {
                                 let _ = chars.next();
@@ -566,27 +689,33 @@ fn parse_pdf_literal_after_open(after_open: &str) -> Option<(String, usize)> {
                             for _ in 0..extra {
                                 let _ = chars.next();
                             }
-                            out.push(char::from_u32(oct & 0xFF).unwrap_or('\u{FFFD}'));
+                            push_bounded_char(
+                                &mut out,
+                                char::from_u32(oct & 0xFF).unwrap_or('\u{FFFD}'),
+                            );
                         }
-                        other => out.push(other),
+                        other => push_bounded_char(&mut out, other),
                     }
                 }
             }
             '(' => {
                 depth += 1;
-                out.push('(');
+                push_bounded_char(&mut out, '(');
             }
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some((out, idx + 1));
+                    return LiteralParseOutcome::Parsed {
+                        text: out,
+                        next_index: idx + 1,
+                    };
                 }
-                out.push(')');
+                push_bounded_char(&mut out, ')');
             }
-            other => out.push(other),
+            other => push_bounded_char(&mut out, other),
         }
     }
-    None
+    LiteralParseOutcome::UnclosedAtEof
 }
 
 fn render_synthetic_page_rgba(
@@ -595,12 +724,17 @@ fn render_synthetic_page_rgba(
     page_index: u32,
     page_count: u32,
 ) -> Vec<u8> {
-    let total_bytes = (width_px as usize) * (height_px as usize) * 4;
+    if width_px == 0 || height_px == 0 {
+        return Vec::new();
+    }
+    let total_bytes = (width_px as usize)
+        .saturating_mul(height_px as usize)
+        .saturating_mul(4);
     let mut buf = vec![252u8; total_bytes];
 
-    let header_height = (height_px / 12).clamp(16, 64);
-    let margin_x = (width_px / 10).clamp(8, 80);
-    let line_spacing = (height_px / 22).clamp(10, 32);
+    let header_height = (height_px / 12).clamp(16, 64).min(height_px);
+    let margin_x = (width_px / 10).clamp(8, 80).min(width_px / 2);
+    let line_spacing = (height_px / 22).clamp(10, 32).max(1);
 
     // Distinct accent color per page so visual navigation is immediately obvious.
     let accent_r = 35u8.wrapping_add(((page_index * 37) % 120) as u8);
@@ -609,8 +743,12 @@ fn render_synthetic_page_rgba(
 
     for y in 0..height_px {
         for x in 0..width_px {
-            let offset = ((y * width_px + x) as usize) * 4;
-            let is_border = x < 2 || y < 2 || x + 2 >= width_px || y + 2 >= height_px;
+            let offset =
+                (((y as usize) * (width_px as usize) + (x as usize)) * 4).min(total_bytes - 4);
+            let is_border = x < 2
+                || y < 2
+                || x.saturating_add(2) >= width_px
+                || y.saturating_add(2) >= height_px;
             if is_border {
                 buf[offset] = 180;
                 buf[offset + 1] = 186;
@@ -626,16 +764,17 @@ fn render_synthetic_page_rgba(
                 let body_y = y - header_height;
                 let row_idx = body_y / line_spacing;
                 let within_row = body_y % line_spacing;
+                let usable_w = width_px.saturating_sub(margin_x.saturating_mul(2));
                 let bar_width = if row_idx % 5 == 4 {
-                    (width_px.saturating_sub(margin_x * 2)) * 3 / 5
+                    usable_w * 3 / 5
                 } else {
-                    width_px.saturating_sub(margin_x * 2)
+                    usable_w
                 };
                 if row_idx >= 2
                     && row_idx < (14 + (page_index % 4))
                     && within_row < (line_spacing / 3).max(2)
                     && x >= margin_x
-                    && x < margin_x + bar_width
+                    && x < margin_x.saturating_add(bar_width)
                 {
                     buf[offset] = 68;
                     buf[offset + 1] = 76;
@@ -652,12 +791,14 @@ fn render_synthetic_page_rgba(
     }
 
     // Draw a progress indicator bar inside the header showing (page_index + 1) / page_count
-    let progress_y_start = header_height.saturating_sub(4);
-    let progress_width =
-        ((u64::from(width_px) * u64::from(page_index + 1)) / u64::from(page_count.max(1))) as u32;
-    for y in progress_y_start..header_height {
+    let progress_y_end = header_height.min(height_px);
+    let progress_y_start = progress_y_end.saturating_sub(4);
+    let progress_width = ((u64::from(width_px) * u64::from(page_index.saturating_add(1)))
+        / u64::from(page_count.max(1)))
+    .min(u64::from(width_px)) as u32;
+    for y in progress_y_start..progress_y_end {
         for x in 0..progress_width.min(width_px) {
-            let offset = ((y * width_px + x) as usize) * 4;
+            let offset = ((y as usize) * (width_px as usize) + (x as usize)) * 4;
             buf[offset] = 240;
             buf[offset + 1] = 190;
             buf[offset + 2] = 70;
@@ -789,13 +930,12 @@ fn extract_pdf_string_value(text: &str, key: &str) -> Option<String> {
                     i += 1;
                 }
             }
-            b'(' => {
-                if let Some((_, consumed)) = parse_pdf_literal_after_open(&text[i + 1..]) {
-                    i += 1 + consumed;
-                } else {
-                    i += 1;
+            b'(' => match parse_pdf_literal_after_open(&text[i + 1..]) {
+                LiteralParseOutcome::Parsed { next_index, .. } => {
+                    i += 1 + next_index;
                 }
-            }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
             b'/' if i + key_bytes.len() <= bytes.len()
                 && &bytes[i..i + key_bytes.len()] == key_bytes =>
             {
@@ -805,13 +945,16 @@ fn extract_pdf_string_value(text: &str, key: &str) -> Option<String> {
                     .first()
                     .is_none_or(|&b| is_pdf_token_delim_or_ws(b))
                 {
-                    let trimmed = after_key.trim_start_matches([' ', '\t']);
-                    if let Some(after_open) = trimmed.strip_prefix('(')
-                        && let Some((decoded, _)) = parse_pdf_literal_after_open(after_open)
-                    {
-                        let clean = decoded.trim();
-                        if !clean.is_empty() {
-                            return Some(clean.to_owned());
+                    let trimmed = after_key.trim_start_matches([' ', '\t', '\r', '\n']);
+                    if let Some(after_open) = trimmed.strip_prefix('(') {
+                        match parse_pdf_literal_after_open(after_open) {
+                            LiteralParseOutcome::Parsed { text: decoded, .. } => {
+                                let clean = decoded.trim();
+                                if !clean.is_empty() {
+                                    return Some(clean.to_owned());
+                                }
+                            }
+                            LiteralParseOutcome::UnclosedAtEof => break,
                         }
                     }
                 }
@@ -837,18 +980,18 @@ fn extract_texts_per_page(content_text: &str, page_count: u32) -> Vec<String> {
                     i += 1;
                 }
             }
-            b'(' => {
-                if let Some((decoded, consumed)) =
-                    parse_pdf_literal_after_open(&content_text[i + 1..])
-                {
+            b'(' => match parse_pdf_literal_after_open(&content_text[i + 1..]) {
+                LiteralParseOutcome::Parsed {
+                    text: decoded,
+                    next_index,
+                } => {
                     if in_bt && !decoded.is_empty() {
                         current_parts.push(decoded);
                     }
-                    i += 1 + consumed;
-                } else {
-                    i += 1;
+                    i += 1 + next_index;
                 }
-            }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
             b'B' if bytes.get(i + 1) == Some(&b'T') => {
                 let prev_ok = i == 0 || is_pdf_token_delim_or_ws(bytes[i - 1]);
                 let next_ok = i + 2 == bytes.len() || is_pdf_token_delim_or_ws(bytes[i + 2]);
@@ -889,20 +1032,60 @@ fn extract_texts_per_page(content_text: &str, page_count: u32) -> Vec<String> {
 
 fn extract_outline_nodes(text: &str, page_count: u32) -> Vec<OutlineNode> {
     let mut nodes = Vec::new();
-    let mut search_from = 0usize;
+    let bytes = text.as_bytes();
+    let key = b"/OutlineTitle";
+    let mut i = 0usize;
     let mut page_cursor = 0u32;
-    while let Some(pos) = text[search_from..].find("/OutlineTitle") {
-        let abs = search_from + pos;
-        if let Some(title) = extract_pdf_string_value(&text[abs..], "/OutlineTitle") {
-            let target_page = page_cursor.min(page_count.saturating_sub(1));
-            nodes.push(OutlineNode {
-                title,
-                page_index: Some(PageIndex::new(target_page)),
-                children: Vec::new(),
-            });
-            page_cursor = page_cursor.saturating_add(1);
+
+    while i + key.len() <= bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
+                    i += 1;
+                }
+            }
+            b'(' => match parse_pdf_literal_after_open(&text[i + 1..]) {
+                LiteralParseOutcome::Parsed { next_index, .. } => {
+                    i += 1 + next_index;
+                }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
+            b'/' if &bytes[i..i + key.len()] == key => {
+                let after = &text[i + key.len()..];
+                if after
+                    .as_bytes()
+                    .first()
+                    .is_none_or(|&b| is_pdf_token_delim_or_ws(b))
+                {
+                    let trimmed = after.trim_start_matches([' ', '\t', '\r', '\n']);
+                    if let Some(after_open) = trimmed.strip_prefix('(') {
+                        match parse_pdf_literal_after_open(after_open) {
+                            LiteralParseOutcome::Parsed {
+                                text: decoded,
+                                next_index,
+                            } => {
+                                let clean = decoded.trim();
+                                if !clean.is_empty() {
+                                    let target_page = page_cursor.min(page_count.saturating_sub(1));
+                                    nodes.push(OutlineNode {
+                                        title: clean.to_owned(),
+                                        page_index: Some(PageIndex::new(target_page)),
+                                        children: Vec::new(),
+                                    });
+                                    page_cursor = page_cursor.saturating_add(1);
+                                }
+                                let ws_len = after.len() - trimmed.len();
+                                i += key.len() + ws_len + 1 + next_index;
+                                continue;
+                            }
+                            LiteralParseOutcome::UnclosedAtEof => break,
+                        }
+                    }
+                }
+                i += key.len();
+            }
+            _ => i += 1,
         }
-        search_from = abs + 13;
     }
 
     if nodes.is_empty() && page_count > 0 {
@@ -943,6 +1126,9 @@ pub(crate) fn search_page_text_hits(
                 page_index,
                 match_index,
                 snippet: extract_clamped_snippet(page_text, abs_start, abs_end),
+                match_text: page_text.get(abs_start..abs_end).map(ToOwned::to_owned),
+                bounding_box: None,
+                bounding_boxes: Vec::new(),
             });
             if hits.len() >= max_hits {
                 break;
@@ -968,6 +1154,9 @@ pub(crate) fn search_page_text_hits(
                     page_index,
                     match_index,
                     snippet: extract_clamped_snippet(page_text, pos, end),
+                    match_text: page_text.get(pos..end).map(ToOwned::to_owned),
+                    bounding_box: None,
+                    bounding_boxes: Vec::new(),
                 });
                 if hits.len() >= max_hits {
                     break;
@@ -1013,6 +1202,9 @@ pub(crate) fn search_page_text_hits(
                 page_index,
                 match_index,
                 snippet: extract_clamped_snippet(page_text, start_byte, end_byte),
+                match_text: page_text.get(start_byte..end_byte).map(ToOwned::to_owned),
+                bounding_box: None,
+                bounding_boxes: Vec::new(),
             });
             if hits.len() >= max_hits {
                 break;
@@ -1062,12 +1254,27 @@ fn skip_pdf_ascii_ws(bytes: &[u8]) -> &[u8] {
     &bytes[idx..]
 }
 
-/// Single-pass zero-allocation byte-level inspection of raw PDF dictionary markers for
+/// Inspects structural (non-content-stream) PDF dictionary regions of `bytes` for
 /// interactive forms (`/AcroForm`, `/XFA`) and digital signature fields (`/FT /Sig`, `/Type /Sig`).
+///
+/// Never inspects page content streams, so body text mentioning `/AcroForm` or `/Sig` cannot
+/// produce false positives.
 #[must_use]
 pub fn inspect_advanced_pdf_capabilities_bytes(
     bytes: &[u8],
 ) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
+    let (structural_text, _) = extract_bounded_pdf_regions(bytes);
+    inspect_advanced_pdf_capabilities(&structural_text)
+}
+
+/// Inspects structural PDF dictionary markers for interactive forms (`/AcroForm`, `/XFA`)
+/// and digital signature fields (`/FT /Sig`, `/Type /Sig`), skipping `%` comments and
+/// balanced `(...)` literal strings.
+#[must_use]
+pub fn inspect_advanced_pdf_capabilities(
+    text: &str,
+) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
+    let bytes = text.as_bytes();
     let mut has_xfa = false;
     let mut has_acroform = false;
     let mut tx_fields = 0usize;
@@ -1075,11 +1282,25 @@ pub fn inspect_advanced_pdf_capabilities_bytes(
 
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] != b'/' {
-            let Some(next_slash) = bytes[i + 1..].iter().position(|&b| b == b'/') else {
-                break;
-            };
-            i += 1 + next_slash;
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
+                    i += 1;
+                }
+                continue;
+            }
+            b'(' => match parse_pdf_literal_after_open(&text[i + 1..]) {
+                LiteralParseOutcome::Parsed { next_index, .. } => {
+                    i += 1 + next_index;
+                    continue;
+                }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
+            b'/' => {}
+            _ => {
+                i += 1;
+                continue;
+            }
         }
         let rem = &bytes[i..];
         if rem.starts_with(b"/XFA") && rem.get(4).is_none_or(|&b| is_pdf_token_delim_or_ws(b)) {
@@ -1150,13 +1371,4 @@ pub fn inspect_advanced_pdf_capabilities_bytes(
         signature_status,
         signature_field_count,
     )
-}
-
-/// Inspects raw PDF dictionary markers for interactive forms (`/AcroForm`, `/XFA`)
-/// and digital signature fields (`/FT /Sig`, `/Type /Sig`).
-#[must_use]
-pub fn inspect_advanced_pdf_capabilities(
-    text: &str,
-) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
-    inspect_advanced_pdf_capabilities_bytes(text.as_bytes())
 }

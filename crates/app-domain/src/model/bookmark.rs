@@ -16,19 +16,18 @@ pub const MAX_BOOKMARK_LABEL_LEN: usize = 200;
 pub struct BookmarkId(String);
 
 impl BookmarkId {
-    /// Wraps an existing bookmark ID string, trimming surrounding whitespace.
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into().trim().to_owned())
-    }
-
-    /// Validates and constructs a non-empty `BookmarkId`.
-    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
-        let trimmed = raw.into().trim().to_owned();
+    /// Validates and constructs a non-empty `BookmarkId`, trimming surrounding whitespace.
+    pub fn new(id: impl Into<String>) -> Result<Self, DomainError> {
+        let trimmed = id.into().trim().to_owned();
         if trimmed.is_empty() {
             return Err(DomainError::EmptyBookmarkId);
         }
         Ok(Self(trimmed))
+    }
+
+    /// Validates and constructs a non-empty `BookmarkId`.
+    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
+        Self::new(raw)
     }
 
     /// Generates a new random bookmark ID.

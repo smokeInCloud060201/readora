@@ -13,13 +13,14 @@ pub use error::DomainError;
 pub use model::annotation::{Annotation, AnnotationId, AnnotationKind, MAX_ANNOTATION_TEXT_LEN};
 pub use model::bookmark::{Bookmark, BookmarkId, MAX_BOOKMARK_LABEL_LEN};
 pub use model::document::{
-    DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchHit,
-    SignaturePresenceStatus, sanitize_display_name, sanitize_export_stem,
+    DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchBoundingBox,
+    SearchHit, SignaturePresenceStatus, is_windows_reserved_device_name, sanitize_display_name,
+    sanitize_export_stem,
 };
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{
     AppSettings, DEFAULT_CACHE_BUDGET_BYTES, MAX_CACHE_BUDGET_BYTES, MAX_PREFETCH_WINDOW,
-    MIN_CACHE_BUDGET_BYTES, compare_semver, is_valid_github_repo_slug,
+    MIN_CACHE_BUDGET_BYTES, SemVer, compare_semver, is_valid_github_repo_slug,
 };
 pub use model::view_state::ViewState;
 pub use value_objects::document_id::DocumentId;
@@ -28,7 +29,8 @@ pub use value_objects::render_mode::{MAX_RENDER_DIMENSION_PX, PageDimensions, Re
 pub use value_objects::rotation::Rotation;
 pub use value_objects::theme::{LayoutMode, ThemePreference};
 pub use value_objects::zoom::{
-    FitMode, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR, ScaleBucket, ZOOM_PRESETS, ZoomLevel,
+    FitMode, MAX_RENDER_SCALE_FACTOR, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR, ScaleBucket, ZOOM_PRESETS,
+    ZoomLevel,
 };
 
 #[cfg(test)]
@@ -37,7 +39,21 @@ mod tests {
 
     #[test]
     fn document_id_rejects_empty_and_trims_whitespace() {
-        assert_eq!(DocumentId::new("   "), Err(DomainError::EmptyDocumentId));
+        assert_eq!(DocumentId::new(""), Err(DomainError::EmptyDocumentId));
+        assert_eq!(
+            DocumentId::new("   \t\n "),
+            Err(DomainError::EmptyDocumentId)
+        );
+        assert_eq!(BookmarkId::new(""), Err(DomainError::EmptyBookmarkId));
+        assert_eq!(
+            BookmarkId::new("   \t\n "),
+            Err(DomainError::EmptyBookmarkId)
+        );
+        assert_eq!(AnnotationId::new(""), Err(DomainError::EmptyAnnotationId));
+        assert_eq!(
+            AnnotationId::new("   \t\n "),
+            Err(DomainError::EmptyAnnotationId)
+        );
         let id = DocumentId::new("  doc-123  ").unwrap();
         assert_eq!(id.as_str(), "doc-123");
     }
@@ -161,6 +177,67 @@ mod tests {
         );
         assert_eq!(compare_semver("v1.0.7+build.42", "1.0.7"), Ordering::Equal);
         assert_eq!(compare_semver("1.1.0-alpha.1", "1.0.9"), Ordering::Greater);
+        assert_eq!(
+            compare_semver("1.0.0-alpha.2", "1.0.0-alpha.10"),
+            Ordering::Less
+        );
+
+        let chain = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.2",
+            "1.0.0-alpha.10",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for pair in chain.windows(2) {
+            assert_eq!(
+                compare_semver(pair[0], pair[1]),
+                Ordering::Less,
+                "expected {} < {}",
+                pair[0],
+                pair[1]
+            );
+            let left = SemVer::parse(pair[0]).unwrap();
+            let right = SemVer::parse(pair[1]).unwrap();
+            assert!(left < right, "expected SemVer {} < {}", pair[0], pair[1]);
+        }
+        assert!(SemVer::parse("").is_err());
+        assert!(SemVer::parse("1.0").is_err());
+        assert!(SemVer::parse("1.0.0-").is_err());
+        assert!(SemVer::parse("1.0.0+").is_err());
+    }
+
+    #[test]
+    fn hidpi_render_scale_and_iso_a4_proportional_clamping_preserve_aspect_ratio() {
+        assert!(ScaleBucket::from_render_scale(0.24).is_err());
+        assert!(ScaleBucket::from_render_scale(10.01).is_err());
+        assert!(ScaleBucket::from_render_scale(f32::NAN).is_err());
+        assert_eq!(
+            ScaleBucket::from_render_scale(10.0).unwrap().percentage(),
+            1000
+        );
+        assert_eq!(ScaleBucket::from_scale(10.0).percentage(), 1000);
+
+        let a4 = PageDimensions::new(595.0, 842.0).unwrap();
+        let expected_ratio = 595.0_f32 / 842.0_f32;
+
+        for scale in [5.0_f32, 10.0_f32] {
+            let (w, h) = a4
+                .clamped_target_pixel_size(scale, Rotation::Deg0, MAX_RENDER_DIMENSION_PX)
+                .unwrap();
+            assert!(w <= MAX_RENDER_DIMENSION_PX && h <= MAX_RENDER_DIMENSION_PX);
+            assert_eq!(h, MAX_RENDER_DIMENSION_PX);
+            let actual_ratio = (w as f32) / (h as f32);
+            assert!(
+                (actual_ratio - expected_ratio).abs() < 0.002,
+                "scale={scale}: got {w}x{h} (ratio {actual_ratio}, expected {expected_ratio})"
+            );
+        }
     }
 
     #[test]

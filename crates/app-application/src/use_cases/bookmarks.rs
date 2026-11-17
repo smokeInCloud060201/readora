@@ -3,8 +3,8 @@
 use std::path::{Component, Path};
 
 use app_domain::{
-    Annotation, AnnotationId, Bookmark, BookmarkId, DocumentId, PageIndex, sanitize_display_name,
-    sanitize_export_stem,
+    Annotation, AnnotationId, Bookmark, BookmarkId, DocumentId, PageIndex,
+    is_windows_reserved_device_name, sanitize_display_name, sanitize_export_stem,
 };
 
 use crate::dto::{ExportAnnotationsBundleDto, UpsertAnnotationCommand, UpsertBookmarkCommand};
@@ -59,7 +59,7 @@ pub fn execute_upsert_annotation(
     let doc_id = DocumentId::new(&command.document_id)?;
     let page_index = PageIndex::within(command.page_index, page_count)?;
     let annotation_id = match command.id.as_deref().map(str::trim) {
-        Some(existing) if !existing.is_empty() => AnnotationId::new(existing),
+        Some(existing) if !existing.is_empty() => AnnotationId::new(existing)?,
         _ => AnnotationId::generate(),
     };
     let annotation = Annotation::new(
@@ -106,6 +106,11 @@ fn validate_markdown_export_destination(raw_dest: &str) -> Result<&str, Applicat
         ));
     }
     let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        return Err(ApplicationError::Platform(
+            "export destination path must be an absolute path".to_owned(),
+        ));
+    }
     if path.components().any(|c| matches!(c, Component::ParentDir))
         || trimmed.split(['/', '\\']).any(|seg| seg == "..")
     {
@@ -121,6 +126,11 @@ fn validate_markdown_export_destination(raw_dest: &str) -> Result<&str, Applicat
     if file_name.starts_with('.') {
         return Err(ApplicationError::Platform(
             "export destination file name must not start with '.'".to_owned(),
+        ));
+    }
+    if is_windows_reserved_device_name(file_name) {
+        return Err(ApplicationError::Platform(
+            "export destination file name uses a Windows reserved device name".to_owned(),
         ));
     }
     let has_md_ext = path

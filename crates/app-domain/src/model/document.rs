@@ -142,8 +142,21 @@ pub struct OutlineNode {
     pub children: Vec<OutlineNode>,
 }
 
+/// Normalized page-relative bounding box (`0.0..=1.0` from top-left origin) for a search match.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SearchBoundingBox {
+    /// Left edge ratio (`0.0..=1.0`).
+    pub x_ratio: f32,
+    /// Top edge ratio (`0.0..=1.0`).
+    pub y_ratio: f32,
+    /// Width ratio (`0.0..=1.0`).
+    pub width_ratio: f32,
+    /// Height ratio (`0.0..=1.0`).
+    pub height_ratio: f32,
+}
+
 /// A text search match within a document page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchHit {
     /// Page where the match occurred.
     pub page_index: PageIndex,
@@ -151,6 +164,15 @@ pub struct SearchHit {
     pub match_index: u32,
     /// Short surrounding snippet for navigation display.
     pub snippet: String,
+    /// Exact matched substring on the page, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_text: Option<String>,
+    /// Primary normalized bounding box enclosing the match on the page, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounding_box: Option<SearchBoundingBox>,
+    /// Individual normalized segment bounding boxes for the match on the page, when available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounding_boxes: Vec<SearchBoundingBox>,
 }
 
 /// Sanitizes an arbitrary filename or title into safe single-line display text.
@@ -169,7 +191,10 @@ pub fn sanitize_display_name(raw: &str) -> String {
     }
 }
 
-fn is_windows_reserved_device_name(stem: &str) -> bool {
+/// Returns `true` if `stem` (or the segment before the first `.`) matches a Windows reserved
+/// device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`..`COM9`, `LPT1`..`LPT9`).
+#[must_use]
+pub fn is_windows_reserved_device_name(stem: &str) -> bool {
     let head = stem.split('.').next().unwrap_or(stem).trim();
     let upper = head.to_ascii_uppercase();
     matches!(

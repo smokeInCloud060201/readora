@@ -373,4 +373,96 @@ mod tests {
         assert!(!recent.is_favorite);
         assert!(!recent.is_archived);
     }
+
+    #[test]
+    fn annotation_and_bookmark_upserts_isolate_documents_and_preserve_created_timestamps() {
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        let doc_a = DocumentId::new("doc-iso-a").unwrap();
+        let doc_b = DocumentId::new("doc-iso-b").unwrap();
+
+        // Bookmark upsert preserves original id and created_at_unix_ms on same (document_id, page_index)
+        let bm_initial = Bookmark::new(
+            BookmarkId::new("bm-orig-1").unwrap(),
+            doc_a.clone(),
+            PageIndex::new(1),
+            "First Label",
+            1_000,
+        )
+        .unwrap();
+        let bm_saved_1 = BookmarkRepository::upsert(&storage, &bm_initial).unwrap();
+        assert_eq!(bm_saved_1.created_at_unix_ms, 1_000);
+
+        let bm_update = Bookmark::new(
+            BookmarkId::new("bm-new-ignored").unwrap(),
+            doc_a.clone(),
+            PageIndex::new(1),
+            "Edited Label",
+            9_999,
+        )
+        .unwrap();
+        let bm_saved_2 = BookmarkRepository::upsert(&storage, &bm_update).unwrap();
+        assert_eq!(bm_saved_2.id.as_str(), "bm-orig-1");
+        assert_eq!(bm_saved_2.label, "Edited Label");
+        assert_eq!(bm_saved_2.created_at_unix_ms, 1_000);
+
+        // Annotation upsert preserves original created_at_unix_ms and page_index on update
+        let ann_id = AnnotationId::new("ann-shared-id").unwrap();
+        let ann_initial = Annotation::new(
+            ann_id.clone(),
+            doc_a.clone(),
+            PageIndex::new(2),
+            AnnotationKind::Highlight,
+            "#f3d96b",
+            "Original quote",
+            "Original note",
+            2_500,
+        )
+        .unwrap();
+        let ann_saved_1 = AnnotationRepository::upsert(&storage, &ann_initial).unwrap();
+        assert_eq!(ann_saved_1.created_at_unix_ms, 2_500);
+
+        let ann_same_doc_edit = Annotation::new(
+            ann_id.clone(),
+            doc_a.clone(),
+            PageIndex::new(7),
+            AnnotationKind::Comment,
+            "#a9d5b2",
+            "Edited quote",
+            "Edited note",
+            8_888,
+        )
+        .unwrap();
+        let ann_saved_2 = AnnotationRepository::upsert(&storage, &ann_same_doc_edit).unwrap();
+        assert_eq!(ann_saved_2.created_at_unix_ms, 2_500);
+        assert_eq!(ann_saved_2.page_index.zero_based(), 2);
+        assert_eq!(ann_saved_2.kind, AnnotationKind::Comment);
+        assert_eq!(ann_saved_2.note_text, "Edited note");
+
+        // Cross-document ID collision is rejected and never overwrites doc_a's annotation
+        let ann_cross_doc = Annotation::new(
+            ann_id,
+            doc_b.clone(),
+            PageIndex::new(0),
+            AnnotationKind::Underline,
+            "#9bc8e0",
+            "Attacker quote",
+            "Attacker note",
+            12_345,
+        )
+        .unwrap();
+        let err = AnnotationRepository::upsert(&storage, &ann_cross_doc).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("annotation id belongs to a different document")
+        );
+
+        let doc_a_anns = AnnotationRepository::list_for_document(&storage, &doc_a).unwrap();
+        assert_eq!(doc_a_anns.len(), 1);
+        assert_eq!(doc_a_anns[0].note_text, "Edited note");
+        assert!(
+            AnnotationRepository::list_for_document(&storage, &doc_b)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
