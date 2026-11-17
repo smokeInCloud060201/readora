@@ -33,6 +33,38 @@ export interface ParsedPdfJsDocument {
   pageLayouts: Map<number, PageTextLayout>;
 }
 
+export function destroyParsedPdf(
+  parsed: ParsedPdfJsDocument | null | undefined,
+): void {
+  if (!parsed) {
+    return;
+  }
+  parsed.pageTexts.clear();
+  parsed.pageLayouts.clear();
+  const maybeDestroyable = parsed.pdfDoc as pdfjsLib.PDFDocumentProxy & {
+    destroy?: () => Promise<void>;
+  };
+  if (typeof maybeDestroyable.destroy === "function") {
+    void maybeDestroyable.destroy().catch(() => {});
+  } else if (parsed.pdfDoc.loadingTask) {
+    void parsed.pdfDoc.loadingTask.destroy().catch(() => {});
+  } else {
+    void parsed.pdfDoc.cleanup(false).catch(() => {});
+  }
+}
+
+export function purgeDocumentRenderCache(
+  renderCache: Map<string, string>,
+  documentId: string,
+): void {
+  const prefix = `${documentId}:`;
+  for (const key of Array.from(renderCache.keys())) {
+    if (key.startsWith(prefix)) {
+      renderCache.delete(key);
+    }
+  }
+}
+
 function makePdfError(code: string, message: string): CommandErrorDto {
   return { code, message };
 }

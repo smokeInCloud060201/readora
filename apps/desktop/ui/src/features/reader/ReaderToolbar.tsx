@@ -25,6 +25,7 @@ interface ReaderToolbarProps {
   onToggleSidebar: (tab: Exclude<SidebarTab, null>) => void;
   onToggleRightPanel?: () => void;
   onCloseDocument: () => void;
+  onShowLibraryRecents?: () => void;
   onPrevPage: () => void;
   onNextPage: () => void;
   onGoToPage: (zeroBasedPage: number) => void;
@@ -48,12 +49,15 @@ interface ReaderToolbarProps {
   onOpenShare?: () => void;
   onOpenShortcuts?: () => void;
   onCopyPageText?: () => void;
+  onFocusCommentComposer?: () => void;
   hasUpdateAvailable?: boolean;
   onOpenUpdateDialog?: () => void;
 }
 
 function formatFileSize(bytes?: number | null): string {
-  if (!bytes || bytes <= 0) return "Local PDF";
+  if (bytes === undefined || bytes === null) return "Local PDF";
+  if (bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
@@ -69,6 +73,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onToggleSidebar,
   onToggleRightPanel,
   onCloseDocument,
+  onShowLibraryRecents,
   onPrevPage,
   onNextPage,
   onGoToPage,
@@ -92,6 +97,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   onOpenShare,
   onOpenShortcuts,
   onCopyPageText,
+  onFocusCommentComposer,
   hasUpdateAvailable = false,
   onOpenUpdateDialog,
 }) => {
@@ -187,6 +193,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
         onToggleSidebar={onToggleSidebar}
         onToggleRightPanel={onToggleRightPanel}
         onCloseDocument={onCloseDocument}
+        onShowLibraryRecents={onShowLibraryRecents}
         onSetZoom={onSetZoom}
         onSetFitMode={onSetFitMode}
         onSetLayoutMode={onSetLayoutMode}
@@ -200,6 +207,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
         onOpenShare={onOpenShare}
         onOpenShortcuts={onOpenShortcuts}
         onCopyPageText={onCopyPageText}
+        onFocusCommentComposer={onFocusCommentComposer}
         onOpenUpdateDialog={onOpenUpdateDialog}
       />
 
@@ -457,6 +465,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 data-testid="zoom-indicator"
                 onClick={() => setShowZoomMenu((prev) => !prev)}
                 aria-label="Zoom presets"
+                aria-haspopup="menu"
+                aria-expanded={showZoomMenu}
                 data-node-id="2:51"
               >
                 <span>{zoomPercent}%</span>
@@ -472,6 +482,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 >
                   <button
                     type="button"
+                    role="menuitem"
                     className={`zoom-menu-item ${
                       viewState.fit_mode === "fit_page" ? "selected" : ""
                     }`}
@@ -485,6 +496,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   </button>
                   <button
                     type="button"
+                    role="menuitem"
                     className={`zoom-menu-item ${
                       viewState.fit_mode === "fit_width" ? "selected" : ""
                     }`}
@@ -498,6 +510,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   </button>
                   <button
                     type="button"
+                    role="menuitem"
                     className="zoom-menu-item"
                     onClick={() => {
                       onSetZoom?.(1.0);
@@ -512,6 +525,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                     <button
                       key={preset}
                       type="button"
+                      role="menuitem"
                       className={`zoom-menu-item ${
                         Math.abs(viewState.zoom - preset) < 0.02
                           ? "selected"

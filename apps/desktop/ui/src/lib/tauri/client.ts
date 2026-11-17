@@ -34,8 +34,10 @@ import {
 } from "../../types/ipc";
 import { hasUsableCanvas2D, readFileToUint8Array } from "../pdf/indexedDbStore";
 import {
+  destroyParsedPdf,
   extractPdfJsPageLayout,
   parsePdfWithPdfJs,
+  purgeDocumentRenderCache,
   renderPdfJsPageToDataUrl,
   searchPdfJsDocument,
   type ParsedPdfJsDocument,
@@ -141,6 +143,10 @@ async function ensureNativeCanvasDoc(
     return null;
   }
   const parsed = await parsePdfWithPdfJs(fileNameHint, bytes, password);
+  const previous = nativeCanvasDocs.get(documentId);
+  if (previous && previous !== parsed) {
+    destroyParsedPdf(previous);
+  }
   nativeCanvasDocs.set(documentId, parsed);
   return parsed;
 }
@@ -213,6 +219,10 @@ export const readoraApi = {
         password,
       );
       if (parsedCanvasDoc) {
+        const previous = nativeCanvasDocs.get(session.descriptor.id);
+        if (previous && previous !== parsedCanvasDoc) {
+          destroyParsedPdf(previous);
+        }
         nativeCanvasDocs.set(session.descriptor.id, parsedCanvasDoc);
         return {
           ...session,
@@ -285,7 +295,9 @@ export const readoraApi = {
   },
 
   async closeDocument(documentId: string): Promise<void> {
+    destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
+    purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       await invoke<void>("document_close", { documentId });
@@ -405,7 +417,9 @@ export const readoraApi = {
   },
 
   async deleteRecentDocument(documentId: string): Promise<void> {
+    destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
+    purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       await invoke<void>("recent_document_delete", { documentId });
@@ -579,6 +593,9 @@ export const readoraApi = {
   },
 
   async cleanupApplicationData(): Promise<AppCleanupReportDto> {
+    for (const parsed of nativeCanvasDocs.values()) {
+      destroyParsedPdf(parsed);
+    }
     nativeCanvasDocs.clear();
     nativeCanvasRenderCache.clear();
     const invoke = getNativeTauriInvoke();

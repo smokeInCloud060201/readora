@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { useModalDialog } from "../../shared/hooks/useModalDialog";
 import {
   type DocumentDescriptorDto,
   type RenderedPageResultDto,
@@ -11,7 +12,39 @@ interface PrintDialogProps {
   viewState: ViewStateDto;
   renderedPage: RenderedPageResultDto | null;
   onClose: () => void;
-  onConfirmPrint: (summary: string) => void;
+  onConfirmPrint: (summary: string, includeAnnotations: boolean) => void;
+}
+
+const PAGE_RANGE_PATTERN =
+  /^\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*$/;
+
+export function validateCustomPageRange(
+  rawInput: string,
+  pageCount: number,
+): string | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed || !PAGE_RANGE_PATTERN.test(trimmed)) {
+    return `Enter valid page numbers between 1 and ${pageCount} (e.g. 1-${Math.min(3, pageCount)}).`;
+  }
+  const segments = trimmed.split(",");
+  for (const segment of segments) {
+    const parts = segment.trim().split("-");
+    const start = Number.parseInt(parts[0] ?? "", 10);
+    const end =
+      parts.length > 1 ? Number.parseInt(parts[1] ?? "", 10) : start;
+    if (
+      Number.isNaN(start) ||
+      Number.isNaN(end) ||
+      start < 1 ||
+      end < 1 ||
+      start > pageCount ||
+      end > pageCount ||
+      start > end
+    ) {
+      return `Page range must stay within 1–${pageCount}.`;
+    }
+  }
+  return null;
 }
 
 export const PrintDialog: React.FC<PrintDialogProps> = ({
@@ -27,20 +60,37 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
   const [pageRangeInput, setPageRangeInput] = useState(
     `1-${descriptor.page_count}`,
   );
+  const [rangeError, setRangeError] = useState<string | null>(null);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
 
   const handlePrint = (e: React.FormEvent) => {
     e.preventDefault();
+    if (pageScope === "range") {
+      const validationMessage = validateCustomPageRange(
+        pageRangeInput,
+        descriptor.page_count,
+      );
+      if (validationMessage) {
+        setRangeError(validationMessage);
+        return;
+      }
+    }
+    setRangeError(null);
     const scopeLabel =
       pageScope === "all"
         ? `all ${descriptor.page_count} pages`
         : pageScope === "current"
           ? `page ${viewState.current_page + 1}`
-          : `pages ${pageRangeInput}`;
+          : `pages ${pageRangeInput.trim()}`;
+    const annotationsLabel = includeAnnotations
+      ? "with annotations"
+      : "without annotations";
     onConfirmPrint(
       `Sent ${descriptor.file_name} (${scopeLabel}, ${copies} cop${
         copies === 1 ? "y" : "ies"
-      }) to ${printer}`,
+      }, ${annotationsLabel}) to ${printer}`,
+      includeAnnotations,
     );
   };
 
@@ -50,8 +100,9 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Print Document Dialog"
+      onMouseDown={handleBackdropMouseDown}
     >
-      <div className="print-dialog-card">
+      <div ref={dialogRef} tabIndex={-1} className="print-dialog-card">
         <div className="print-dialog-header">
           <div>
             <p className="eyebrow-label">PRINT</p>
@@ -87,7 +138,8 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
               )}
             </div>
             <span className="print-preview-caption">
-              Page {viewState.current_page + 1} of {descriptor.page_count}
+              Page {viewState.current_page + 1} of {descriptor.page_count} ·{" "}
+              {includeAnnotations ? "Annotations included" : "Clean page only"}
             </span>
           </div>
 
@@ -134,7 +186,11 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
 
             <div className="print-field-group">
               <span className="print-label">Pages</span>
-              <div className="print-radio-list" role="radiogroup" aria-label="Pages to print">
+              <div
+                className="print-radio-list"
+                role="radiogroup"
+                aria-label="Pages to print"
+              >
                 <button
                   type="button"
                   role="radio"
@@ -142,7 +198,10 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
                   className={`print-radio-row ${
                     pageScope === "all" ? "selected" : ""
                   }`}
-                  onClick={() => setPageScope("all")}
+                  onClick={() => {
+                    setPageScope("all");
+                    setRangeError(null);
+                  }}
                 >
                   <span>
                     {pageScope === "all" ? "●" : "○"} &nbsp; All{" "}
@@ -156,35 +215,59 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
                   className={`print-radio-row ${
                     pageScope === "current" ? "selected" : ""
                   }`}
-                  onClick={() => setPageScope("current")}
+                  onClick={() => {
+                    setPageScope("current");
+                    setRangeError(null);
+                  }}
                 >
                   <span>
                     {pageScope === "current" ? "●" : "○"} &nbsp; Current page
                     (page {viewState.current_page + 1})
                   </span>
                 </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={pageScope === "range"}
-                  className={`print-radio-row ${
+                <div
+                  className={`print-range-option ${
                     pageScope === "range" ? "selected" : ""
                   }`}
-                  onClick={() => setPageScope("range")}
                 >
-                  <span>{pageScope === "range" ? "●" : "○"} &nbsp; Range…</span>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={pageScope === "range"}
+                    className={`print-radio-row ${
+                      pageScope === "range" ? "selected" : ""
+                    }`}
+                    onClick={() => {
+                      setPageScope("range");
+                      setRangeError(null);
+                    }}
+                  >
+                    <span>
+                      {pageScope === "range" ? "●" : "○"} &nbsp; Range…
+                    </span>
+                  </button>
                   {pageScope === "range" && (
                     <input
                       type="text"
                       value={pageRangeInput}
-                      onChange={(e) => setPageRangeInput(e.target.value)}
+                      onChange={(e) => {
+                        setPageRangeInput(e.target.value);
+                        if (rangeError) {
+                          setRangeError(null);
+                        }
+                      }}
                       aria-label="Custom page range"
+                      aria-invalid={Boolean(rangeError)}
                       className="focus-input compact"
-                      onClick={(e) => e.stopPropagation()}
                     />
                   )}
-                </button>
+                </div>
               </div>
+              {rangeError && (
+                <p className="print-validation-error" role="alert">
+                  {rangeError}
+                </p>
+              )}
             </div>
 
             <div className="print-toggle-row">

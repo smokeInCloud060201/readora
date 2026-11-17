@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import {
   type AnnotationDto,
@@ -11,15 +11,23 @@ interface BookmarksPanelProps {
   annotations?: AnnotationDto[];
   currentPage: number;
   descriptor?: DocumentDescriptorDto | null;
+  requestedTab?: "notes" | "details";
+  requestedTabTrigger?: number;
   onAddBookmark: (label: string) => void;
+  onAddComment?: (noteText: string) => void;
   onDeleteBookmark: (bookmarkId: string) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
   onSelectPage: (zeroBasedPage: number) => void;
   onClosePanel?: () => void;
 }
 
-function formatBytes(bytes?: number): string {
-  if (!bytes || bytes <= 0) return "12.4 KB";
+export function formatBytes(bytes?: number | null): string {
+  if (bytes === undefined || bytes === null || bytes <= 0) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
@@ -31,20 +39,43 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
   annotations = [],
   currentPage,
   descriptor,
+  requestedTab,
+  requestedTabTrigger = 0,
   onAddBookmark,
+  onAddComment,
   onDeleteBookmark,
   onDeleteAnnotation,
   onSelectPage,
   onClosePanel,
 }) => {
-  const [activeTab, setActiveTab] = useState<"notes" | "details">("notes");
-  const [label, setLabel] = useState("");
+  const [activeTab, setActiveTab] = useState<"notes" | "details">(
+    requestedTab ?? "notes",
+  );
+  const [bookmarkLabel, setBookmarkLabel] = useState("");
+  const [commentText, setCommentText] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab, requestedTabTrigger]);
+
+  const handleBookmarkSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = label.trim() || `Page ${currentPage + 1} Bookmark`;
+    const trimmed =
+      bookmarkLabel.trim() || `Page ${currentPage + 1} Bookmark`;
     onAddBookmark(trimmed);
-    setLabel("");
+    setBookmarkLabel("");
+  };
+
+  const handleCommentSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = commentText.trim();
+    if (!trimmed || !onAddComment) {
+      return;
+    }
+    onAddComment(trimmed);
+    setCommentText("");
   };
 
   return (
@@ -84,15 +115,51 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
 
       {activeTab === "notes" ? (
         <div className="notes-tab-body">
+          {onAddComment && (
+            <form
+              onSubmit={handleCommentSubmit}
+              className="comment-composer-card"
+              aria-label="Add Comment Composer"
+            >
+              <div className="comment-composer-header">
+                <span className="icon-inline-label">
+                  <FocusIcon name="comment" size={14} />
+                  <span>New comment</span>
+                </span>
+                <span className="comment-composer-page">
+                  Page {currentPage + 1}
+                </span>
+              </div>
+              <input
+                type="text"
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                placeholder={`Write a comment on page ${currentPage + 1}…`}
+                aria-label="New comment"
+                className="focus-input full-width comment-composer-input"
+              />
+              <div className="comment-composer-footer">
+                <span className="comment-composer-hint">Enter to save</span>
+                <button
+                  type="submit"
+                  className="add-comment-submit-btn"
+                  disabled={!commentText.trim()}
+                >
+                  Add Comment on Page {currentPage + 1}
+                </button>
+              </div>
+            </form>
+          )}
+
           <form
-            onSubmit={handleSubmit}
+            onSubmit={handleBookmarkSubmit}
             className="comment-composer-card"
-            aria-label="Add Comment Composer"
+            aria-label="Add Bookmark Form"
           >
             <div className="comment-composer-header">
               <span className="icon-inline-label">
-                <FocusIcon name="comment" size={14} />
-                <span>New comment</span>
+                <FocusIcon name="bookmark" size={14} />
+                <span>Page bookmark</span>
               </span>
               <span className="comment-composer-page">
                 Page {currentPage + 1}
@@ -100,14 +167,14 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
             </div>
             <input
               type="text"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder={`Write a comment on page ${currentPage + 1}…`}
+              value={bookmarkLabel}
+              onChange={(e) => setBookmarkLabel(e.target.value)}
+              placeholder={`Bookmark label for page ${currentPage + 1}…`}
               aria-label="New bookmark label"
               className="focus-input full-width"
             />
             <div className="comment-composer-footer">
-              <span className="comment-composer-hint">Enter to save</span>
+              <span className="comment-composer-hint">Pins current page</span>
               <button type="submit" className="add-comment-submit-btn">
                 Save Bookmark on Page {currentPage + 1}
               </button>
@@ -129,72 +196,73 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
               </div>
               <p className="sidebar-empty">
                 No bookmarks or highlights saved for this document yet. Add a
-                note above to pin this page.
+                comment or bookmark above to pin this page.
               </p>
             </div>
           ) : (
             <ul className="notes-card-list">
-              {annotations.map((ann) => (
-                <li
-                  key={ann.id}
-                  className="note-card highlight-accent"
-                  style={{ borderLeftColor: ann.color_hex }}
-                >
-                  <div className="note-card-header">
-                    <span className="icon-inline-label">
-                      <FocusIcon name="highlight" size={13} />
-                      <span>
-                        {ann.kind === "underline" ? "Underline" : "Highlight"} ·
-                        Page {ann.page_index + 1}
-                      </span>
-                    </span>
-                    {onDeleteAnnotation && (
-                      <button
-                        type="button"
-                        className="delete-icon-btn"
-                        onClick={() => onDeleteAnnotation(ann.id)}
-                        aria-label={`Delete annotation ${ann.note_text || ann.quote_text}`}
-                      >
-                        <FocusIcon name="trash" size={13} />
-                      </button>
-                    )}
-                  </div>
-                  {ann.quote_text && (
-                    <blockquote className="note-quote-box">
-                      “{ann.quote_text}”
-                    </blockquote>
-                  )}
-                  <button
-                    type="button"
-                    className="note-card-jump-btn"
-                    onClick={() => onSelectPage(ann.page_index)}
+              {annotations.map((ann) => {
+                const kindLabel =
+                  ann.kind === "comment"
+                    ? "Comment"
+                    : ann.kind === "underline"
+                      ? "Underline"
+                      : "Highlight";
+                const accentClass =
+                  ann.kind === "comment"
+                    ? "comment-accent"
+                    : "highlight-accent";
+                return (
+                  <li
+                    key={ann.id}
+                    className={`note-card ${accentClass}`}
+                    style={{ borderLeftColor: ann.color_hex }}
                   >
-                    <span className="note-card-label">
-                      {ann.note_text || "Highlighted excerpt"}
-                    </span>
-                    <span className="page-pill">p. {ann.page_index + 1}</span>
-                  </button>
-                  <div className="note-card-author">MK &nbsp; You</div>
-                </li>
-              ))}
-              {bookmarks.map((bm, idx) => (
-                <li
-                  key={bm.id}
-                  className={`note-card ${
-                    idx % 2 === 0 ? "highlight-accent" : "comment-accent"
-                  }`}
-                >
+                    <div className="note-card-header">
+                      <span className="icon-inline-label">
+                        <FocusIcon
+                          name={ann.kind === "comment" ? "comment" : "highlight"}
+                          size={13}
+                        />
+                        <span>
+                          {kindLabel} · Page {ann.page_index + 1}
+                        </span>
+                      </span>
+                      {onDeleteAnnotation && (
+                        <button
+                          type="button"
+                          className="delete-icon-btn"
+                          onClick={() => onDeleteAnnotation(ann.id)}
+                          aria-label={`Delete annotation ${ann.note_text || ann.quote_text}`}
+                        >
+                          <FocusIcon name="trash" size={13} />
+                        </button>
+                      )}
+                    </div>
+                    {ann.quote_text && (
+                      <blockquote className="note-quote-box">
+                        “{ann.quote_text}”
+                      </blockquote>
+                    )}
+                    <button
+                      type="button"
+                      className="note-card-jump-btn"
+                      onClick={() => onSelectPage(ann.page_index)}
+                    >
+                      <span className="note-card-label">
+                        {ann.note_text || "Highlighted excerpt"}
+                      </span>
+                      <span className="page-pill">p. {ann.page_index + 1}</span>
+                    </button>
+                  </li>
+                );
+              })}
+              {bookmarks.map((bm) => (
+                <li key={bm.id} className="note-card highlight-accent">
                   <div className="note-card-header">
                     <span className="icon-inline-label">
-                      <FocusIcon
-                        name={idx % 2 === 0 ? "bookmark" : "comment"}
-                        size={13}
-                        filled={idx % 2 === 0}
-                      />
-                      <span>
-                        {idx % 2 === 0 ? "Bookmark" : "Note"} · Page{" "}
-                        {bm.page_index + 1}
-                      </span>
+                      <FocusIcon name="bookmark" size={13} filled />
+                      <span>Bookmark · Page {bm.page_index + 1}</span>
                     </span>
                     <button
                       type="button"
@@ -213,7 +281,6 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                     <span className="note-card-label">{bm.label}</span>
                     <span className="page-pill">p. {bm.page_index + 1}</span>
                   </button>
-                  <div className="note-card-author">MK &nbsp; You</div>
                 </li>
               ))}
             </ul>
@@ -242,7 +309,7 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
             </div>
             <div className="details-meta-row">
               <dt>Author</dt>
-              <dd>{descriptor?.metadata.author || "Local Author"}</dd>
+              <dd>{descriptor?.metadata.author || "Unknown"}</dd>
             </div>
             <div className="details-meta-row">
               <dt>PDF Version</dt>

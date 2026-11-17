@@ -34,8 +34,10 @@ import {
   savePdfBytesToIndexedDb,
 } from "../pdf/indexedDbStore";
 import {
+  destroyParsedPdf,
   extractPdfJsPageLayout,
   parsePdfWithPdfJs,
+  purgeDocumentRenderCache,
   renderPdfJsPageToDataUrl,
   searchPdfJsDocument,
   type ParsedPdfJsDocument,
@@ -43,6 +45,7 @@ import {
 import {
   compareSemver,
   DEFAULT_APP_VERSION,
+  isValidSha256Hex,
   parseGithubReleasePayload,
 } from "../pdf/releaseParser";
 import {
@@ -115,8 +118,11 @@ export class BrowserFallbackBridge {
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
+    reopen_last_document: false,
+    remember_page_position: true,
+    confirm_before_delete: false,
     show_extracted_text_layer: false,
-    auto_check_updates: true,
+    auto_check_updates: false,
     github_release_repo: "smokeInCloud060201/readora",
     installed_version: DEFAULT_APP_VERSION,
     dismissed_update_version: null,
@@ -273,7 +279,7 @@ export class BrowserFallbackBridge {
     let pageCount = SAMPLE_PAGES.length;
     let metadata: DocumentMetadataDto = {
       title: fileName.replace(/\.pdf$/i, ""),
-      author: "Local Author",
+      author: null,
       subject: null,
       creator: null,
       pdf_version: "1.7",
@@ -323,6 +329,11 @@ export class BrowserFallbackBridge {
       }));
     }
 
+    const prevRecord = this.storedPdfsByDocId.get(docId);
+    if (prevRecord?.parsedPdf && prevRecord.parsedPdf !== parsedPdf) {
+      destroyParsedPdf(prevRecord.parsedPdf);
+    }
+
     const record: StoredPdfRecord = {
       docId,
       filePath: cleanPath,
@@ -339,9 +350,12 @@ export class BrowserFallbackBridge {
       void savePdfBytesToIndexedDb(docId, bytes);
     }
 
-    const initialPage = existingRecent
-      ? Math.min(existingRecent.last_page, Math.max(0, pageCount - 1))
-      : 0;
+    const shouldRememberPosition =
+      this.settings.remember_page_position !== false;
+    const initialPage =
+      existingRecent && shouldRememberPosition
+        ? Math.min(existingRecent.last_page, Math.max(0, pageCount - 1))
+        : 0;
 
     const viewState: ViewStateDto = {
       document_id: docId,
@@ -447,7 +461,8 @@ export class BrowserFallbackBridge {
     this.generation += 1;
     const recent = this.recents.find((r) => r.document_id === documentId);
     if (recent) {
-      recent.last_page = vs.current_page;
+      recent.last_page =
+        this.settings.remember_page_position !== false ? vs.current_page : 0;
       recent.last_zoom = vs.zoom;
       recent.last_rotation = vs.rotation;
       recent.last_opened_unix_ms = Date.now();
@@ -649,17 +664,28 @@ export class BrowserFallbackBridge {
 
   upsertAnnotation(command: UpsertAnnotationCommandDto): AnnotationDto {
     const list = this.annotations.get(command.document_id) ?? [];
+    const requestedId = command.id?.trim() || null;
+    const existingIdx = requestedId
+      ? list.findIndex((item) => item.id === requestedId)
+      : -1;
+    const existingItem = existingIdx >= 0 ? list[existingIdx] : undefined;
     const created: AnnotationDto = {
-      id: `ann-${command.document_id}-${command.page_index}-${Date.now()}`,
+      id:
+        requestedId ||
+        `ann-${command.document_id}-${command.page_index}-${Date.now()}-${list.length}`,
       document_id: command.document_id,
       page_index: command.page_index,
       kind: command.kind,
       color_hex: command.color_hex,
-      quote_text: command.quote_text.trim(),
-      note_text: command.note_text.trim(),
-      created_at_unix_ms: Date.now(),
+      quote_text: command.quote_text.trim().slice(0, 2000),
+      note_text: command.note_text.trim().slice(0, 2000),
+      created_at_unix_ms: existingItem?.created_at_unix_ms ?? Date.now(),
     };
-    const next = [...list, created].sort((a, b) => a.page_index - b.page_index);
+    const updatedList =
+      existingIdx >= 0
+        ? list.map((item, idx) => (idx === existingIdx ? created : item))
+        : [...list, created];
+    const next = updatedList.sort((a, b) => a.page_index - b.page_index);
     this.annotations.set(command.document_id, next);
     this.persistState();
     return structuredClone(created);
@@ -705,12 +731,19 @@ export class BrowserFallbackBridge {
   }
 
   deleteRecentDocument(documentId: string): void {
+    const record = this.storedPdfsByDocId.get(documentId);
+    if (record?.parsedPdf) {
+      destroyParsedPdf(record.parsedPdf);
+      record.parsedPdf = null;
+    }
+    purgeDocumentRenderCache(this.renderCache, documentId);
     const existing = this.recents.find((r) => r.document_id === documentId);
     if (existing) {
       this.storedPdfsByPath.delete(existing.file_path);
     }
     this.recents = this.recents.filter((r) => r.document_id !== documentId);
     this.storedPdfsByDocId.delete(documentId);
+    this.sessions.delete(documentId);
     this.bookmarks.delete(documentId);
     this.annotations.delete(documentId);
     void deletePdfBytesFromIndexedDb(documentId);
@@ -718,6 +751,12 @@ export class BrowserFallbackBridge {
   }
 
   closeDocument(documentId: string): void {
+    const record = this.storedPdfsByDocId.get(documentId);
+    if (record?.parsedPdf) {
+      destroyParsedPdf(record.parsedPdf);
+      record.parsedPdf = null;
+    }
+    purgeDocumentRenderCache(this.renderCache, documentId);
     this.sessions.delete(documentId);
   }
 
@@ -741,6 +780,15 @@ export class BrowserFallbackBridge {
     }
     if (patch.prefetch_window !== undefined) {
       this.settings.prefetch_window = patch.prefetch_window;
+    }
+    if (patch.reopen_last_document !== undefined) {
+      this.settings.reopen_last_document = patch.reopen_last_document;
+    }
+    if (patch.remember_page_position !== undefined) {
+      this.settings.remember_page_position = patch.remember_page_position;
+    }
+    if (patch.confirm_before_delete !== undefined) {
+      this.settings.confirm_before_delete = patch.confirm_before_delete;
     }
     if (patch.show_extracted_text_layer !== undefined) {
       this.settings.show_extracted_text_layer = patch.show_extracted_text_layer;
@@ -781,6 +829,10 @@ export class BrowserFallbackBridge {
       `- **Bookmarks:** ${bookmarks.length}`,
       `- **Annotations:** ${annotations.length}`,
     ];
+    for (const bm of bookmarks) {
+      lines.push(`\n### Bookmark · Page ${bm.page_index + 1}`);
+      lines.push(bm.label);
+    }
     for (const ann of annotations) {
       lines.push(
         `\n### Page ${ann.page_index + 1} · ${ann.kind} (${ann.color_hex})`,
@@ -795,7 +847,7 @@ export class BrowserFallbackBridge {
 
     return {
       file_name: `${stem}-annotations.md`,
-      share_uri: `readora://document/${documentId}`,
+      share_uri: `${fileName} (Document ID: ${documentId})`,
       annotation_count: annotations.length,
       bookmark_count: bookmarks.length,
       markdown_content: lines.join("\n"),
@@ -913,15 +965,15 @@ export class BrowserFallbackBridge {
         !includeDismissed &&
         this.settings.dismissed_update_version === manifest.version.trim();
       const verified =
-        manifest.sha256.trim().length > 0 && manifest.package_size_bytes > 0;
+        isValidSha256Hex(manifest.sha256) && manifest.package_size_bytes > 0;
       return {
         current_version: currentVersion,
-        update_available: !isDismissed && verified,
+        update_available: !isDismissed,
         latest_version: manifest.version,
         release_title: manifest.title,
         release_notes: manifest.notes,
         package_size_bytes: manifest.package_size_bytes,
-        sha256_checksum: manifest.sha256,
+        sha256_checksum: verified ? manifest.sha256.trim().toLowerCase() : null,
         download_url: manifest.download_url ?? null,
         github_repo: githubRepo,
         verified,
@@ -940,7 +992,7 @@ export class BrowserFallbackBridge {
       sha256_checksum: null,
       download_url: null,
       github_repo: githubRepo,
-      verified: true,
+      verified: false,
       staged_for_restart: false,
       checked_at_unix_ms: now,
     };
@@ -952,10 +1004,10 @@ export class BrowserFallbackBridge {
   }
 
   stageUpdateManifest(manifest: ReleaseManifestDto): AppUpdateStatusDto {
-    if (!manifest.version?.trim() || !manifest.sha256?.trim()) {
+    if (!manifest.version?.trim()) {
       throw this.makeError(
         "platform_error",
-        "Release manifest must include non-empty version and sha256 fields",
+        "Release manifest must include a non-empty version field",
       );
     }
     this.stagedManifest = structuredClone(manifest);
@@ -1010,6 +1062,9 @@ export class BrowserFallbackBridge {
       this.renderCache.size +
       this.storedPdfsByDocId.size +
       this.sessions.size;
+    for (const record of this.storedPdfsByDocId.values()) {
+      destroyParsedPdf(record.parsedPdf);
+    }
     this.sessions.clear();
     this.storedPdfsByDocId.clear();
     this.storedPdfsByPath.clear();
@@ -1025,8 +1080,11 @@ export class BrowserFallbackBridge {
       default_zoom: 1.0,
       render_cache_budget_bytes: 64 * 1024 * 1024,
       prefetch_window: 1,
+      reopen_last_document: false,
+      remember_page_position: true,
+      confirm_before_delete: false,
       show_extracted_text_layer: false,
-      auto_check_updates: true,
+      auto_check_updates: false,
       github_release_repo: "smokeInCloud060201/readora",
       installed_version: DEFAULT_APP_VERSION,
       dismissed_update_version: null,

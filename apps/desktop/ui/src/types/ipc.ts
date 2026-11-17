@@ -163,6 +163,7 @@ export interface AnnotationDto {
 }
 
 export interface UpsertAnnotationCommandDto {
+  id?: string | null;
   document_id: string;
   page_index: number;
   kind: AnnotationKind;
@@ -187,6 +188,9 @@ export interface AppSettingsDto {
   default_zoom: number;
   render_cache_budget_bytes: number;
   prefetch_window: number;
+  reopen_last_document?: boolean;
+  remember_page_position?: boolean;
+  confirm_before_delete?: boolean;
   show_extracted_text_layer?: boolean;
   auto_check_updates?: boolean;
   github_release_repo?: string;
@@ -201,6 +205,9 @@ export interface SettingsPatchDto {
   default_zoom_factor?: number;
   render_cache_budget_bytes?: number;
   prefetch_window?: number;
+  reopen_last_document?: boolean;
+  remember_page_position?: boolean;
+  confirm_before_delete?: boolean;
   show_extracted_text_layer?: boolean;
   auto_check_updates?: boolean;
   github_release_repo?: string;

@@ -35,6 +35,8 @@ export const DocumentActionsMenu: React.FC<DocumentActionsMenuProps> = ({
         className={`focus-icon-btn ${isOpen ? "active" : ""}`}
         onClick={onToggleOpen}
         aria-label="More Document Actions"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
         title="More Document Actions"
         data-node-id="2:61"
       >

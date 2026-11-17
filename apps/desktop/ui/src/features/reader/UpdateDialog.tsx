@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
+import { useModalDialog } from "../../shared/hooks/useModalDialog";
 import type { AppUpdateStatusDto } from "../../types/ipc";
 
 interface UpdateDialogProps {
@@ -15,13 +16,13 @@ function formatPackageMeta(status: AppUpdateStatusDto): string {
   if (!status.update_available) {
     return status.staged_for_restart
       ? "Staged to apply on next application restart"
-      : "Installed and verified";
+      : "Current installed build";
   }
   const sizeBytes = status.package_size_bytes ?? 0;
   const mb = Math.max(1, Math.round(sizeBytes / (1024 * 1024)));
   const verificationLabel = status.verified
-    ? "Downloaded and verified"
-    : "Pending checksum verification";
+    ? "Available to download · Verified SHA-256"
+    : "Available to download · Unverified checksum";
   return `${mb} MB · ${verificationLabel}`;
 }
 
@@ -58,6 +59,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
   onClose,
 }) => {
   const [isInstalling, setIsInstalling] = useState(false);
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
   const targetVersion =
     updateStatus.latest_version ?? updateStatus.current_version;
   const isAvailable = updateStatus.update_available;
@@ -65,14 +67,14 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
     ? (updateStatus.release_title ??
       `Focus Reader ${targetVersion} is ready`)
     : `Focus Reader ${updateStatus.current_version} is up to date`;
+  const defaultAvailableCopy = updateStatus.verified
+    ? `Version ${targetVersion} is available to download (Verified SHA-256).`
+    : `Version ${targetVersion} is available to download (checksum unverified).`;
   const rawNotes = isAvailable
-    ? (updateStatus.release_notes ??
-      `Version ${targetVersion} has been verified and is ready to install.`)
-    : `You are running the latest verified build of Focus Reader (${updateStatus.current_version}).`;
+    ? (updateStatus.release_notes ?? defaultAvailableCopy)
+    : `You are running Focus Reader ${updateStatus.current_version}.`;
   const hasChangelogBlocks = isAvailable && isStructuredChangelog(rawNotes);
-  const subtitleText = hasChangelogBlocks
-    ? `Version ${targetVersion} has been verified and is ready to install.`
-    : rawNotes;
+  const subtitleText = hasChangelogBlocks ? defaultAvailableCopy : rawNotes;
   const metaLabel = formatPackageMeta(updateStatus);
 
   const changelogLines = hasChangelogBlocks
@@ -88,8 +90,11 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Update Available Dialog"
+      onMouseDown={handleBackdropMouseDown}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={`update-dialog-card ${
           hasChangelogBlocks ? "has-changelog" : ""
         }`.trim()}
@@ -119,10 +124,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
         </p>
 
         {hasChangelogBlocks && (
-          <div
-            className="update-changelog-box"
-            aria-label="Release Notes"
-          >
+          <div className="update-changelog-box" aria-label="Release Notes">
             {changelogLines.map((line, index) => {
               if (/^#{1,3}\s+/.test(line)) {
                 const heading = line.replace(/^#{1,3}\s+/, "");
@@ -136,7 +138,10 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
                 const item = line.replace(/^[-*•]\s+/, "");
                 return (
                   <div key={index} className="update-changelog-item">
-                    <span className="update-changelog-bullet" aria-hidden="true">
+                    <span
+                      className="update-changelog-bullet"
+                      aria-hidden="true"
+                    >
                       •
                     </span>
                     <span>{renderInlineMarkdown(item)}</span>
@@ -162,7 +167,11 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
             </span>
           </div>
           {updateStatus.verified && (
-            <span className="update-verified-mark" aria-label="Verified">
+            <span
+              className="update-verified-mark"
+              aria-label="Verified SHA-256"
+              title="Verified SHA-256"
+            >
               <FocusIcon name="check" size={16} />
             </span>
           )}

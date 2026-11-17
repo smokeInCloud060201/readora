@@ -92,12 +92,6 @@ export const AppNavigationRail: React.FC<AppNavigationRailProps> = ({
           <FocusIcon name="grid" size={16} />
         </button>
       </div>
-
-      <div className="app-rail-bottom">
-        <div className="app-rail-avatar" title="Local Reader Profile">
-          MK
-        </div>
-      </div>
     </nav>
   );
 };

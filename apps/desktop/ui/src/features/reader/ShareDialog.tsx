@@ -1,11 +1,12 @@
 import React, { useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { useModalDialog } from "../../shared/hooks/useModalDialog";
 import { type DocumentDescriptorDto } from "../../types/ipc";
 
 interface ShareDialogProps {
   descriptor: DocumentDescriptorDto;
   onExportAnnotations: (includeAnnotations: boolean) => void;
-  onCopyShareLink: (shareUri: string) => void;
+  onCopyShareLink: (citation: string) => void;
   onClose: () => void;
 }
 
@@ -17,11 +18,12 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
 }) => {
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
   const [copied, setCopied] = useState(false);
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
   const title = descriptor.metadata.title || descriptor.file_name;
-  const localShareUri = `readora://document/${descriptor.id}`;
+  const localCitation = `${descriptor.file_name} (Document ID: ${descriptor.id})`;
 
   const handleCopy = () => {
-    onCopyShareLink(localShareUri);
+    onCopyShareLink(localCitation);
     setCopied(true);
   };
 
@@ -31,11 +33,17 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Share Document Dialog"
+      onMouseDown={handleBackdropMouseDown}
     >
-      <div className="share-dialog-shell" data-node-id="7:351">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="share-dialog-shell"
+        data-node-id="7:351"
+      >
         <div className="share-dialog-header">
           <div>
-            <p className="eyebrow-label">SHARE DOCUMENT</p>
+            <p className="eyebrow-label">SHARE &amp; EXPORT</p>
             <h2 className="share-dialog-title">Share {title}</h2>
           </div>
           <button
@@ -51,32 +59,35 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
         <div className="share-doc-summary-card">
           <span className="pdf-badge">PDF</span>
           <div className="share-doc-summary-meta">
-            <span className="share-doc-summary-name">{descriptor.file_name}</span>
+            <span className="share-doc-summary-name">
+              {descriptor.file_name}
+            </span>
             <span className="share-doc-summary-sub">
-              {descriptor.page_count} {descriptor.page_count === 1 ? "page" : "pages"} · Local document
+              {descriptor.page_count}{" "}
+              {descriptor.page_count === 1 ? "page" : "pages"} · Local document
             </span>
           </div>
         </div>
 
         <div className="share-dialog-section">
           <div className="share-section-copy">
-            <p className="share-section-heading">Local document reference</p>
+            <p className="share-section-heading">Document citation</p>
             <p className="share-section-sub">
-              Copy a local Readora deep link to open this document directly on your
-              workstation.
+              Copy a local Markdown citation and document identifier for your
+              reading notes.
             </p>
           </div>
 
           <div className="share-link-box">
             <span className="share-link-text" data-testid="share-uri-value">
-              {localShareUri}
+              {localCitation}
             </span>
             <button
               type="button"
               className="focus-btn primary compact share-copy-btn"
               onClick={handleCopy}
             >
-              {copied ? "Copied" : "Copy link"}
+              {copied ? "Copied" : "Copy citation"}
             </button>
           </div>
         </div>
@@ -85,9 +96,10 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
 
         <div className="share-toggle-row">
           <div className="share-section-copy">
-            <p className="share-section-heading">Share annotations</p>
+            <p className="share-section-heading">Include annotations</p>
             <p className="share-section-sub">
-              Include your highlights and comments.
+              Include your highlights and comments in the exported Markdown
+              bundle.
             </p>
           </div>
           <button
@@ -106,9 +118,10 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
 
         <div className="share-export-section">
           <div className="share-section-copy">
-            <p className="share-section-heading">Export instead</p>
+            <p className="share-section-heading">Export reading notes</p>
             <p className="share-section-sub">
-              Export your bookmarks, highlights, and reading notes to a local file.
+              Download your bookmarks, highlights, and comments as a Markdown
+              file (<code>.md</code>).
             </p>
           </div>
           <div className="share-dialog-footer">
@@ -122,9 +135,10 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
             <button
               type="button"
               className="focus-btn primary"
+              aria-label="Export reading notes as Markdown"
               onClick={() => onExportAnnotations(includeAnnotations)}
             >
-              Export annotated PDF
+              Export notes (.md)
             </button>
           </div>
         </div>

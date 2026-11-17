@@ -2,6 +2,8 @@ import React from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import { type AnnotationKind } from "../../types/ipc";
 
+export const MAX_HIGHLIGHT_EXCERPT_LEN = 400;
+
 export const HIGHLIGHT_SWATCHES = [
   { id: "amber", label: "Amber", hex: "#f3d96b" },
   { id: "coral", label: "Coral", hex: "#f0a88f" },
@@ -9,6 +11,27 @@ export const HIGHLIGHT_SWATCHES = [
   { id: "sky", label: "Sky", hex: "#9bc8e0" },
   { id: "lavender", label: "Lavender", hex: "#c9afe2" },
 ] as const;
+
+export function getWindowSelectedText(): string {
+  if (
+    typeof window === "undefined" ||
+    typeof window.getSelection !== "function"
+  ) {
+    return "";
+  }
+  return window.getSelection()?.toString().trim() ?? "";
+}
+
+export function buildSafeQuoteExcerpt(
+  pageText: string,
+  currentPage: number,
+  maxLen = MAX_HIGHLIGHT_EXCERPT_LEN,
+): string {
+  const selected = getWindowSelectedText();
+  const raw =
+    selected || pageText.trim() || `Page ${currentPage + 1} excerpt`;
+  return raw.slice(0, maxLen);
+}
 
 interface FloatingAnnotationToolsProps {
   currentPage: number;
@@ -67,10 +90,14 @@ export const FloatingAnnotationTools: React.FC<
                   className="highlight-pin-link"
                   aria-label="Save page highlight"
                   onClick={() => {
+                    const safeExcerpt = buildSafeQuoteExcerpt(
+                      pageText,
+                      currentPage,
+                    );
                     onCreateAnnotation(
                       underlineInstead ? "underline" : "highlight",
                       selectedColor,
-                      pageText || `Page ${currentPage + 1} excerpt`,
+                      safeExcerpt,
                       underlineInstead
                         ? "Underlined passage"
                         : "Highlighted passage",

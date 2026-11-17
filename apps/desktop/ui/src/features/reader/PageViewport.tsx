@@ -26,6 +26,8 @@ interface PageViewportProps {
   annotations?: AnnotationDto[];
   searchHits?: SearchHitDto[];
   activeSearchHitIndex?: number;
+  showHighlightPopover?: boolean;
+  setShowHighlightPopover?: React.Dispatch<React.SetStateAction<boolean>>;
   onCopyText: () => void;
   onVisiblePageChange?: (zeroBasedPage: number) => void;
   onNextPage?: () => void;
@@ -40,6 +42,9 @@ interface PageViewportProps {
     noteText: string,
   ) => void;
 }
+
+const VIRTUALIZATION_PAGE_THRESHOLD = 30;
+const VIRTUALIZATION_WINDOW_RADIUS = 6;
 
 function rotateBoundingBox(
   box: SearchBoundingBoxDto,
@@ -85,6 +90,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   annotations = [],
   searchHits = [],
   activeSearchHitIndex = 0,
+  showHighlightPopover: controlledShowHighlightPopover,
+  setShowHighlightPopover: controlledSetShowHighlightPopover,
   onCopyText,
   onVisiblePageChange,
   onNextPage,
@@ -109,14 +116,49 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const [renderedPagesMap, setRenderedPagesMap] = useState<
     Record<number, RenderedPageResultDto>
   >({});
+  const [containerSize, setContainerSize] = useState<{
+    width: number;
+    height: number;
+  }>({ width: 0, height: 0 });
 
-  const [showHighlightPopover, setShowHighlightPopover] = useState(false);
+  const [internalShowHighlightPopover, setInternalShowHighlightPopover] =
+    useState(false);
+  const showHighlightPopover =
+    controlledShowHighlightPopover ?? internalShowHighlightPopover;
+  const setShowHighlightPopover =
+    controlledSetShowHighlightPopover ?? setInternalShowHighlightPopover;
+
   const [selectedColor, setSelectedColor] = useState<string>(
     HIGHLIGHT_SWATCHES[0].hex,
   );
   const [underlineInstead, setUnderlineInstead] = useState(false);
   const highlightPopoverRef = useRef<HTMLDivElement | null>(null);
   const floatingToolsRef = useRef<HTMLDivElement | null>(null);
+
+  // Measure real viewport container dimensions via ResizeObserver (0 in jsdom -> safe 680px fallback)
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      setContainerSize((prev) => {
+        const nextW = el.clientWidth;
+        const nextH = el.clientHeight;
+        if (prev.width === nextW && prev.height === nextH) {
+          return prev;
+        }
+        return { width: nextW, height: nextH };
+      });
+    };
+
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!showHighlightPopover) {
@@ -148,7 +190,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       document.removeEventListener("mousedown", handlePointerDownOutside);
       document.removeEventListener("keydown", handleEscapeKey);
     };
-  }, [showHighlightPopover]);
+  }, [setShowHighlightPopover, showHighlightPopover]);
 
   const isContinuous = viewState.layout_mode === "continuous";
 
@@ -166,63 +208,108 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     };
   }, []);
 
-  // Keep renderedPagesMap updated when active renderedPage arrives
+  const aspect =
+    renderedPage && renderedPage.width_px > 0
+      ? renderedPage.height_px / renderedPage.width_px
+      : rotationDeg === 90 || rotationDeg === 270
+        ? 612 / 792
+        : 792 / 612;
+  const basePageWidth = aspect < 1 ? 760 : 608;
+
+  let displayWidthPx: number;
+  if (containerSize.width > 0 && viewState.fit_mode !== "manual") {
+    const availableWidth = Math.max(180, containerSize.width - 156);
+    if (viewState.fit_mode === "fit_page" && containerSize.height > 0) {
+      const availableHeight = Math.max(180, containerSize.height - 182);
+      const widthForHeight = Math.round(
+        availableHeight / Math.max(0.1, aspect),
+      );
+      displayWidthPx = Math.max(180, Math.min(availableWidth, widthForHeight));
+    } else {
+      displayWidthPx = availableWidth;
+    }
+  } else {
+    // Preserves 608px + 72px = 680px at 100% and 760px + 72px = 832px at 125% when containerWidth === 0 in jsdom
+    displayWidthPx = Math.max(
+      180,
+      Math.round(basePageWidth * viewState.zoom),
+    );
+  }
+
+  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
+  const sheetWidthPx = displayWidthPx + 72;
+  const effectiveRenderScale =
+    containerSize.width > 0 && viewState.fit_mode !== "manual"
+      ? Number(
+          Math.min(5.0, Math.max(0.25, displayWidthPx / basePageWidth)).toFixed(
+            2,
+          ),
+        )
+      : viewState.zoom;
+
+  // Clear cached page bitmaps whenever document, effective scale, rotation, or render_mode changes
+  useEffect(() => {
+    setRenderedPagesMap({});
+  }, [
+    effectiveRenderScale,
+    viewState.document_id,
+    viewState.rotation,
+    viewState.render_mode,
+  ]);
+
+  // Insert active renderedPage only when its document_id and scale match
   useEffect(() => {
     if (
       renderedPage &&
-      renderedPage.document_id === viewState.document_id
+      renderedPage.document_id === viewState.document_id &&
+      Math.abs(effectiveRenderScale - viewState.zoom) < 0.02
     ) {
       setRenderedPagesMap((prev) => ({
         ...prev,
         [renderedPage.page_index]: renderedPage,
       }));
     }
-  }, [renderedPage, viewState.document_id]);
-
-  // Reset cached page bitmaps when document, zoom, rotation, or render_mode changes
-  useEffect(() => {
-    setRenderedPagesMap(
-      renderedPage && renderedPage.document_id === viewState.document_id
-        ? { [renderedPage.page_index]: renderedPage }
-        : {},
-    );
   }, [
+    effectiveRenderScale,
+    renderedPage,
     viewState.document_id,
     viewState.zoom,
-    viewState.rotation,
-    viewState.render_mode,
   ]);
 
-  // Render visible + neighbor pages in Continuous Scroll mode (bounded window per AGENTS.md Rule 5)
+  // Render neighbor pages in Continuous Scroll mode without duplicating App.tsx's current_page render
   useEffect(() => {
     if (!isContinuous) return;
     let cancelled = false;
-    const radius = Math.max(2, prefetchWindow + 1);
+    const radius = Math.max(1, prefetchWindow + 1);
     const startPage = Math.max(0, viewState.current_page - radius);
     const endPage = Math.min(
       viewState.page_count - 1,
       viewState.current_page + radius,
     );
+    const usesMeasuredScaleOverride =
+      Math.abs(effectiveRenderScale - viewState.zoom) >= 0.02;
 
     void (async () => {
       for (let idx = startPage; idx <= endPage; idx += 1) {
         if (cancelled) break;
+        if (idx === viewState.current_page && !usesMeasuredScaleOverride) {
+          continue;
+        }
         try {
           const result = await readoraApi.renderPage({
             document_id: viewState.document_id,
             page_index: idx,
-            scale: viewState.zoom,
+            scale: effectiveRenderScale,
             rotation_degrees: rotationDeg,
             render_mode: viewState.render_mode,
             generation: null,
           });
-          if (!cancelled) {
+          if (!cancelled && result.document_id === viewState.document_id) {
             setRenderedPagesMap((prev) => {
               const next: Record<number, RenderedPageResultDto> = {
                 ...prev,
                 [idx]: result,
               };
-              // Evict pages far outside the visible window to bound memory
               for (const key of Object.keys(next)) {
                 const pageNum = Number(key);
                 if (Math.abs(pageNum - viewState.current_page) > radius + 2) {
@@ -242,6 +329,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       cancelled = true;
     };
   }, [
+    effectiveRenderScale,
     isContinuous,
     prefetchWindow,
     rotationDeg,
@@ -294,7 +382,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     const step = (now: number) => {
       const elapsed = now - startTime;
       const progress = Math.min(1, Math.max(0, elapsed / durationMs));
-      // Cubic Ease-Out: 1 - (1 - t)^3
       const eased = 1 - Math.pow(1 - progress, 3);
       container.scrollTop = Math.round(startTop + distance * eased);
 
@@ -308,20 +395,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
     scrollAnimationFrameRef.current = requestAnimationFrame(step);
   }, [isContinuous, programmaticScrollTrigger, viewState.current_page]);
-
-  const aspect =
-    renderedPage && renderedPage.width_px > 0
-      ? renderedPage.height_px / renderedPage.width_px
-      : rotationDeg === 90 || rotationDeg === 270
-        ? 612 / 792
-        : 792 / 612;
-  const basePageWidth = aspect < 1 ? 760 : 608;
-  const displayWidthPx = Math.max(
-    180,
-    Math.round(basePageWidth * viewState.zoom),
-  );
-  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
-  const sheetWidthPx = displayWidthPx + 72;
 
   const handleViewportScroll = () => {
     if (!isContinuous || isProgrammaticScrollRef.current) return;
@@ -371,7 +444,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       return;
     }
 
-    // Cancel any programmatic ease-out scroll immediately so user scroll input has direct control
     if (isProgrammaticScrollRef.current) {
       cancelProgrammaticScroll();
     }
@@ -379,8 +451,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     const el = viewportRef.current;
     if (!el || isLoading) return;
 
-    // In a real browser in Continuous Scroll mode, native scroll handles smooth continuous movement
-    const isRealScrollableContainer = el.scrollHeight > el.clientHeight && el.clientHeight > 0;
+    const isRealScrollableContainer =
+      el.scrollHeight > el.clientHeight && el.clientHeight > 0;
     if (isContinuous && isRealScrollableContainer) {
       return;
     }
@@ -455,6 +527,10 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     ? Array.from({ length: viewState.page_count }, (_, idx) => idx)
     : [viewState.current_page];
 
+  const shouldVirtualizeSheets =
+    isContinuous && viewState.page_count > VIRTUALIZATION_PAGE_THRESHOLD;
+  const estimatedSheetHeightPx = displayHeightPx + 148;
+
   return (
     <main
       ref={viewportRef}
@@ -468,12 +544,43 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       <div className="continuous-pages-stack">
         {pagesToRender.map((pageIdx) => {
           const isCurrentPage = pageIdx === viewState.current_page;
+          if (
+            shouldVirtualizeSheets &&
+            Math.abs(pageIdx - viewState.current_page) >
+              VIRTUALIZATION_WINDOW_RADIUS
+          ) {
+            return (
+              <div
+                key={`spacer-${viewState.document_id}-${pageIdx}`}
+                ref={(node) => {
+                  pageSheetRefs.current[pageIdx] = node;
+                }}
+                data-page-index={pageIdx}
+                data-testid={`pdf-page-spacer-${pageIdx + 1}`}
+                className="pdf-page-sheet-spacer"
+                style={{
+                  width: `${sheetWidthPx}px`,
+                  height: `${estimatedSheetHeightPx}px`,
+                }}
+                aria-hidden="true"
+              />
+            );
+          }
+
+          const matchingCurrentRendered =
+            isCurrentPage &&
+            renderedPage &&
+            renderedPage.document_id === viewState.document_id
+              ? renderedPage
+              : null;
           const pageBitmap =
-            renderedPagesMap[pageIdx] ??
-            (isCurrentPage ? renderedPage : null);
+            renderedPagesMap[pageIdx] ?? matchingCurrentRendered;
           const pageSearchEntries = searchHits
             .map((hit, globalIdx) => ({ hit, globalIdx }))
             .filter((entry) => entry.hit.page_index === pageIdx);
+          const sheetAnnotations = annotations.filter(
+            (ann) => ann.page_index === pageIdx,
+          );
 
           return (
             <div
@@ -505,7 +612,12 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                   data-node-id={isCurrentPage ? "2:132" : undefined}
                 >
                   Page {pageIdx + 1} / {viewState.page_count} ·{" "}
-                  {Math.round(viewState.zoom * 100)}% · {rotationDeg}°
+                  {Math.round(
+                    (containerSize.width > 0 && viewState.fit_mode !== "manual"
+                      ? effectiveRenderScale
+                      : viewState.zoom) * 100,
+                  )}
+                  % · {rotationDeg}°
                 </span>
               </div>
 
@@ -534,6 +646,35 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                       }}
                       className="rendered-page-img"
                     />
+                    {sheetAnnotations.length > 0 && (
+                      <div
+                        className="pdf-annotation-markers-layer"
+                        aria-label={`Saved annotations on page ${pageIdx + 1}`}
+                        data-testid={`page-annotations-${pageIdx + 1}`}
+                      >
+                        {sheetAnnotations.map((ann) => (
+                          <span
+                            key={ann.id}
+                            className={`pdf-annotation-pill kind-${ann.kind}`}
+                            style={{
+                              borderLeftColor: ann.color_hex,
+                            }}
+                            title={ann.note_text || ann.quote_text}
+                          >
+                            <span className="pdf-annotation-pill-kind">
+                              {ann.kind === "comment"
+                                ? "Comment"
+                                : ann.kind === "underline"
+                                  ? "Underline"
+                                  : "Highlight"}
+                            </span>
+                            <span className="pdf-annotation-pill-text">
+                              {(ann.note_text || ann.quote_text).slice(0, 44)}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {pageSearchEntries.length > 0 && (
                       <div
                         className="pdf-search-highlight-layer"

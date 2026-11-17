@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   type FitMode,
   type LayoutMode,
@@ -9,6 +9,18 @@ import { type SidebarTab } from "./ReaderToolbar";
 
 export type AppMenuKey = "file" | "edit" | "view" | "window" | "help" | null;
 
+function formatLocalClock(date: Date): string {
+  try {
+    return date.toLocaleTimeString([], {
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return date.toTimeString().slice(0, 5);
+  }
+}
+
 interface ApplicationMenuBarProps {
   menuBarRef: React.RefObject<HTMLDivElement | null>;
   activeAppMenu: AppMenuKey;
@@ -18,6 +30,7 @@ interface ApplicationMenuBarProps {
   onToggleSidebar: (tab: Exclude<SidebarTab, null>) => void;
   onToggleRightPanel?: () => void;
   onCloseDocument: () => void;
+  onShowLibraryRecents?: () => void;
   onSetZoom?: (zoom: number) => void;
   onSetFitMode: (mode: FitMode) => void;
   onSetLayoutMode: (mode: LayoutMode) => void;
@@ -31,6 +44,7 @@ interface ApplicationMenuBarProps {
   onOpenShare?: () => void;
   onOpenShortcuts?: () => void;
   onCopyPageText?: () => void;
+  onFocusCommentComposer?: () => void;
   onOpenUpdateDialog?: () => void;
 }
 
@@ -43,6 +57,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
   onToggleSidebar,
   onToggleRightPanel,
   onCloseDocument,
+  onShowLibraryRecents,
   onSetZoom,
   onSetFitMode,
   onSetLayoutMode,
@@ -56,8 +71,22 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
   onOpenShare,
   onOpenShortcuts,
   onCopyPageText,
+  onFocusCommentComposer,
   onOpenUpdateDialog,
 }) => {
+  const [clockLabel, setClockLabel] = useState<string>(() =>
+    formatLocalClock(new Date()),
+  );
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setClockLabel(formatLocalClock(new Date()));
+    }, 30_000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   return (
     <div
       className="desktop-menu-bar"
@@ -71,6 +100,8 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
           <button
             type="button"
             role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeAppMenu === "file"}
             className={`desktop-menu-trigger ${
               activeAppMenu === "file" ? "active" : ""
             }`}
@@ -108,12 +139,16 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
                 role="menuitem"
                 className="doc-action-menu-item"
                 onClick={() => {
-                  onCloseDocument();
+                  if (onShowLibraryRecents) {
+                    onShowLibraryRecents();
+                  } else {
+                    onCloseDocument();
+                  }
                   setActiveAppMenu(null);
                 }}
               >
-                <span>Open Recent</span>
-                <span className="zoom-shortcut">›</span>
+                <span>Show Library &amp; Recents</span>
+                <span className="zoom-shortcut">⇧⌘L</span>
               </button>
               <div className="zoom-menu-divider" />
               <button
@@ -190,6 +225,8 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
           <button
             type="button"
             role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeAppMenu === "edit"}
             className={`desktop-menu-trigger ${
               activeAppMenu === "edit" ? "active" : ""
             }`}
@@ -244,7 +281,11 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
                 className="doc-action-menu-item"
                 disabled={!viewState}
                 onClick={() => {
-                  onToggleSidebar("bookmarks");
+                  if (onFocusCommentComposer) {
+                    onFocusCommentComposer();
+                  } else {
+                    onToggleSidebar("bookmarks");
+                  }
                   setActiveAppMenu(null);
                 }}
               >
@@ -259,6 +300,8 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
           <button
             type="button"
             role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeAppMenu === "view"}
             className={`desktop-menu-trigger ${
               activeAppMenu === "view" ? "active" : ""
             }`}
@@ -442,6 +485,8 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
           <button
             type="button"
             role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeAppMenu === "window"}
             className={`desktop-menu-trigger ${
               activeAppMenu === "window" ? "active" : ""
             }`}
@@ -467,7 +512,11 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
                 role="menuitem"
                 className="doc-action-menu-item"
                 onClick={() => {
-                  onCloseDocument();
+                  if (onShowLibraryRecents) {
+                    onShowLibraryRecents();
+                  } else {
+                    onCloseDocument();
+                  }
                   setActiveAppMenu(null);
                 }}
               >
@@ -506,6 +555,8 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
           <button
             type="button"
             role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeAppMenu === "help"}
             className={`desktop-menu-trigger ${
               activeAppMenu === "help" ? "active" : ""
             }`}
@@ -565,7 +616,9 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
         </div>
       </div>
 
-      <span className="desktop-menu-clock">Tue 9:41 AM</span>
+      <span className="desktop-menu-clock" aria-label="Local time">
+        {clockLabel}
+      </span>
     </div>
   );
 };

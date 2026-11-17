@@ -1,9 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatBytes } from "../features/bookmarks/BookmarksPanel";
+import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import {
   computeMatchBoundingBoxes,
   findMatchesInPageText,
   normalizePdfGlyphText,
+  parseGithubReleasePayload,
   readoraApi,
 } from "../lib/tauri/client";
 import { App } from "./App";
@@ -338,7 +341,13 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     expect(
       screen.getByRole("dialog", { name: "Share Document Dialog" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Export annotated PDF"));
+    expect(screen.getByTestId("share-uri-value")).toHaveTextContent(
+      "Field-Notes-On-Focus.pdf (Document ID:",
+    );
+    expect(
+      screen.getByTestId("share-uri-value").textContent,
+    ).not.toContain("readora://");
+    fireEvent.click(screen.getByText("Export notes (.md)"));
 
     await waitFor(() => {
       expect(
@@ -418,8 +427,9 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText(nextTitle)).toBeInTheDocument();
     });
     expect(
-      screen.getByText("42 MB · Downloaded and verified"),
+      screen.getByText("42 MB · Available to download · Verified SHA-256"),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Verified SHA-256")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Update available" }),
     ).toBeInTheDocument();
@@ -700,6 +710,406 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
     } finally {
       delete win.__TAURI_INTERNALS__;
       delete win.__READORA_NATIVE__;
+    }
+  });
+
+  it("makes zero startup network requests by default, validates SHA-256 digests strictly, and supports Escape modal dismissal", async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response("{}", {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Your library")).toBeInTheDocument();
+    });
+
+    // Startup makes ZERO external GitHub API requests when auto_check_updates defaults to false
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Non-hex or missing GitHub digests must NOT fabricate verified SHA-256
+    const unverifiedManifest = parseGithubReleasePayload(
+      JSON.stringify({
+        tag_name: "v9.9.0",
+        name: "Release without digest",
+        assets: [{ name: "Readora.dmg", size: 10 * 1024 * 1024 }],
+      }),
+    );
+    expect(unverifiedManifest.sha256).toBe("");
+    const stagedUnverified =
+      await readoraApi.stageUpdateManifest(unverifiedManifest);
+    expect(stagedUnverified.verified).toBe(false);
+
+    // Escape closes Import PDF Dialog and Preferences Dialog cleanly
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(
+      screen.getByRole("dialog", { name: "Import PDF Dialog" }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "Import PDF Dialog" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(
+      screen.getByRole("dialog", { name: "Reader Preferences" }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "Reader Preferences" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("creates real comments separately from bookmarks, truncates >2,000-char highlights to <=400 chars, renders on-stage annotation pills, and downloads real .md bundles", async () => {
+    const denseText = "Dense PDF specification paragraph. ".repeat(100);
+    expect(denseText.length).toBeGreaterThan(2500);
+
+    const extractSpy = vi
+      .spyOn(readoraApi, "extractPageText")
+      .mockResolvedValue(denseText);
+
+    let capturedBlobText = "";
+    let clickedDownloadName = "";
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    const createUrlMock = vi.fn((blob: Blob | MediaSource) => {
+      if (blob instanceof Blob) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            capturedBlobText = reader.result;
+          }
+        };
+        reader.readAsText(blob);
+      }
+      return "blob:readora-test-export";
+    });
+    const revokeUrlMock = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: createUrlMock,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: revokeUrlMock,
+    });
+    const anchorClickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clickedDownloadName = this.download;
+      });
+
+    try {
+      expect(formatBytes(0)).toBe("0 B");
+
+      render(<App />);
+      fireEvent.click(screen.getByText("Import your first PDF"));
+      fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+        target: { files: [createTestPdfFile("Dense-Spec.pdf")] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
+      });
+
+      // Save highlight on >2,500-char page without manual selection -> safely truncated <= 400 chars
+      fireEvent.keyDown(window, { key: "h" });
+      expect(
+        screen.getByRole("dialog", { name: "Highlight Options" }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText("Save page highlight"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Saved page highlight")).toBeInTheDocument();
+      });
+
+      // Visual annotation marker renders directly on rendered-page-stage even with show_extracted_text_layer=false
+      expect(screen.getByTestId("page-annotations-1")).toBeInTheDocument();
+
+      const savedListAfterHighlight =
+        await readoraApi.listAnnotations("doc-dense-spec-pdf");
+      expect(savedListAfterHighlight).toHaveLength(1);
+      expect(savedListAfterHighlight[0]!.quote_text.length).toBeLessThanOrEqual(
+        400,
+      );
+
+      // Open Notes panel via 'c' shortcut and add a real comment alongside a bookmark
+      fireEvent.keyDown(window, { key: "c" });
+      const commentInput = screen.getByLabelText("New comment");
+      fireEvent.change(commentInput, {
+        target: { value: "Review memory budget invariant" },
+      });
+      fireEvent.click(screen.getByText("Add Comment on Page 1"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Saved comment")).toBeInTheDocument();
+      });
+
+      const bmInput = screen.getByLabelText("New bookmark label");
+      fireEvent.change(bmInput, { target: { value: "Intro Bookmark" } });
+      fireEvent.click(screen.getByText("Save Bookmark on Page 1"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Intro Bookmark")).toBeInTheDocument();
+        expect(
+          screen.getAllByText("Review memory budget invariant").length,
+        ).toBeGreaterThanOrEqual(2);
+      });
+
+      // Verify both comment annotation AND bookmark exist independently without fake "MK You" or "Local Author"
+      expect(screen.getByText("Comment · Page 1")).toBeInTheDocument();
+      expect(screen.getByText("Bookmark · Page 1")).toBeInTheDocument();
+      expect(screen.queryByText(/MK/)).not.toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: "i", metaKey: true });
+      expect(screen.getByText("Unknown")).toBeInTheDocument();
+      expect(screen.queryByText("Local Author")).not.toBeInTheDocument();
+
+      // Export Markdown notes via Shift+Cmd+S and verify real Blob download
+      fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+      expect(
+        screen.getByRole("dialog", { name: "Share Document Dialog" }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Export notes (.md)"));
+
+      await waitFor(() => {
+        expect(createUrlMock).toHaveBeenCalledTimes(1);
+        expect(revokeUrlMock).toHaveBeenCalledWith("blob:readora-test-export");
+        expect(clickedDownloadName).toBe("Dense-Spec-annotations.md");
+        expect(capturedBlobText).toContain("Review memory budget invariant");
+        expect(capturedBlobText).toContain("Intro Bookmark");
+      });
+    } finally {
+      extractSpy.mockRestore();
+      anchorClickSpy.mockRestore();
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        writable: true,
+        value: origCreateObjectURL,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        writable: true,
+        value: origRevokeObjectURL,
+      });
+    }
+  });
+
+  it("supports full keyboard navigation, Print custom range validation, system dark mode, durable preferences, and recursive outlines", async () => {
+    // 1. Verify recursive outline tree rendering
+    const selectedPages: number[] = [];
+    const { unmount: unmountOutline } = render(
+      <OutlinePanel
+        currentPage={0}
+        onSelectPage={(p) => selectedPages.push(p)}
+        outline={[
+          {
+            title: "Part I: Foundations",
+            page_index: 0,
+            children: [
+              {
+                title: "Chapter 1.1: Domain Rules",
+                page_index: 2,
+                children: [],
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Chapter 1.1: Domain Rules")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Chapter 1.1: Domain Rules"));
+    expect(selectedPages).toEqual([2]);
+    unmountOutline();
+
+    // 2. Mock OS dark mode via matchMedia and verify theme="system" resolves to theme-dark
+    const origMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === "(prefers-color-scheme: dark)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    try {
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByTestId("app-shell")).toHaveClass("theme-dark");
+      });
+
+      // Library Cmd+F focuses "Search library" input
+      fireEvent.keyDown(window, { key: "f", metaKey: true });
+      const libSearch = screen.getByLabelText("Search library");
+      expect(libSearch).toHaveFocus();
+
+      // Import document and test arrow keys, zoom/fit/rotate shortcuts, sidebar toggles, and input guard
+      fireEvent.click(screen.getByRole("button", { name: /Import PDF/i }));
+      fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+        target: { files: [createTestPdfFile("Shortcuts-Guide.pdf")] },
+      });
+      await waitFor(() => {
+        expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
+      });
+
+      // ArrowRight -> Page 2; ArrowLeft -> Page 1
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      await waitFor(() => {
+        expect(screen.getByText("Page 2 of 5")).toBeInTheDocument();
+      });
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      await waitFor(() => {
+        expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
+      });
+
+      // Cmd+\ closes open thumbnails sidebar and reopens it
+      expect(screen.getByLabelText("Page Thumbnails")).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      expect(
+        screen.queryByLabelText("Page Thumbnails"),
+      ).not.toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      expect(screen.getByLabelText("Page Thumbnails")).toBeInTheDocument();
+
+      // Shift+Cmd+\ opens and closes Notes panel cleanly
+      fireEvent.keyDown(window, { key: "\\", metaKey: true, shiftKey: true });
+      expect(screen.getByLabelText("User Bookmarks")).toBeInTheDocument();
+
+      // Typing single-key shortcuts ('h' or ArrowRight) inside an input must NOT trigger page turn or popover
+      const commentField = screen.getByLabelText("New comment");
+      commentField.focus();
+      fireEvent.keyDown(commentField, { key: "h" });
+      fireEvent.keyDown(commentField, { key: "ArrowRight" });
+      expect(
+        screen.queryByRole("dialog", { name: "Highlight Options" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("Page 1 of 5")).toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: "\\", metaKey: true, shiftKey: true });
+      expect(
+        screen.queryByLabelText("User Bookmarks"),
+      ).not.toBeInTheDocument();
+
+      // Zoom & Rotate shortcuts: Cmd+1 (Fit Page -> 90%), Cmd+0 (Actual Size -> 100%), Cmd+] (90°)
+      fireEvent.keyDown(window, { key: "1", metaKey: true });
+      await waitFor(() => {
+        expect(screen.getByTestId("zoom-indicator")).toHaveTextContent("90%");
+      });
+      fireEvent.keyDown(window, { key: "0", metaKey: true });
+      await waitFor(() => {
+        expect(screen.getByTestId("zoom-indicator")).toHaveTextContent("100%");
+      });
+      fireEvent.keyDown(window, { key: "]", metaKey: true });
+      await waitFor(() => {
+        expect(screen.getAllByText(/90°/).length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Print dialog sibling custom range input + inline validation
+      fireEvent.keyDown(window, { key: "p", metaKey: true });
+      expect(
+        screen.getByRole("dialog", { name: "Print Document Dialog" }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("radio", { name: /Range/i }));
+      const rangeInput = screen.getByLabelText("Custom page range");
+      expect(rangeInput.closest('button[role="radio"]')).toBeNull();
+
+      fireEvent.change(rangeInput, { target: { value: "1-99" } });
+      fireEvent.click(screen.getByRole("button", { name: "Print" }));
+      expect(screen.getByRole("alert")).toHaveTextContent(/1–5/);
+
+      fireEvent.change(rangeInput, { target: { value: "1-3, 5" } });
+      fireEvent.click(screen.getByRole("button", { name: "Print" }));
+      await waitFor(() => {
+        expect(
+          screen.getByText(/pages 1-3, 5.*with annotations/i),
+        ).toBeInTheDocument();
+      });
+
+      // Durable General Preferences (confirm_before_delete) + Cmd+W close document
+      fireEvent.keyDown(window, { key: ",", metaKey: true });
+      fireEvent.click(screen.getByRole("button", { name: "General" }));
+      fireEvent.click(screen.getByLabelText("Confirm before deleting"));
+      fireEvent.click(screen.getByText("Save Preferences"));
+      await waitFor(() => {
+        expect(screen.getByText("Preferences saved")).toBeInTheDocument();
+      });
+      const persistedSettings = await readoraApi.getSettings();
+      expect(persistedSettings.confirm_before_delete).toBe(true);
+
+      fireEvent.keyDown(window, { key: "w", metaKey: true });
+      await waitFor(() => {
+        expect(screen.getByText("Your library")).toBeInTheDocument();
+      });
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: origMatchMedia,
+      });
+    }
+  });
+
+  it("virtualizes off-screen page sheets when page_count exceeds 30", async () => {
+    const openSpy = vi
+      .spyOn(readoraApi, "openDocumentFile")
+      .mockResolvedValue({
+        descriptor: {
+          id: "doc-large-50",
+          file_name: "Large-Manual.pdf",
+          file_size_bytes: 5 * 1024 * 1024,
+          page_count: 50,
+          metadata: {
+            title: "Large Manual",
+            author: null,
+            subject: null,
+            creator: null,
+            pdf_version: "1.7",
+            is_encrypted: false,
+          },
+        },
+        view_state: {
+          document_id: "doc-large-50",
+          current_page: 0,
+          page_count: 50,
+          zoom: 1.0,
+          fit_mode: "fit_width",
+          rotation: "deg0",
+          layout_mode: "continuous",
+          render_mode: "standard",
+        },
+        outline: [],
+        bookmarks: [],
+      });
+
+    try {
+      render(<App />);
+      fireEvent.click(screen.getByText("Import your first PDF"));
+      fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+        target: { files: [createTestPdfFile("Large-Manual.pdf")] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Page 1 of 50")).toBeInTheDocument();
+      });
+
+      // Pages within [0, 6] render full sheets; pages outside render lightweight spacers
+      expect(screen.getByTestId("pdf-page-sheet")).toBeInTheDocument();
+      expect(screen.getByTestId("pdf-page-sheet-7")).toBeInTheDocument();
+      expect(screen.queryByTestId("pdf-page-sheet-25")).not.toBeInTheDocument();
+      expect(screen.getByTestId("pdf-page-spacer-25")).toBeInTheDocument();
+    } finally {
+      openSpy.mockRestore();
     }
   });
 });

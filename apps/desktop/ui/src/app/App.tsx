@@ -3,6 +3,11 @@ import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
 import { OutlinePanel } from "../features/navigation/OutlinePanel";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
 import { AppNavigationRail } from "../features/reader/AppNavigationRail";
+import {
+  buildSafeQuoteExcerpt,
+  getWindowSelectedText,
+  MAX_HIGHLIGHT_EXCERPT_LEN,
+} from "../features/reader/FloatingAnnotationTools";
 import { ImportPdfDialog } from "../features/reader/ImportPdfDialog";
 import { OpenPasswordDialog } from "../features/reader/OpenPasswordDialog";
 import { PageViewport } from "../features/reader/PageViewport";
@@ -20,6 +25,7 @@ import {
   PreferencesDialog,
   type PreferencesSection,
 } from "../features/settings/PreferencesDialog";
+import { isJsdomEnvironment } from "../lib/pdf/indexedDbStore";
 import { readoraApi } from "../lib/tauri/client";
 import {
   EmptyWorkspace,
@@ -37,10 +43,19 @@ import {
   type NavigationActionDto,
   type RecentDocumentDto,
   type RenderedPageResultDto,
+  type RenderMode,
+  type Rotation,
   type SearchHitDto,
   type SettingsPatchDto,
   type ViewStateDto,
 } from "../types/ipc";
+
+interface RenderedPageState {
+  result: RenderedPageResultDto;
+  zoom: number;
+  rotation: Rotation;
+  renderMode: RenderMode;
+}
 
 function isCommandError(err: unknown): err is CommandErrorDto {
   return (
@@ -51,10 +66,44 @@ function isCommandError(err: unknown): err is CommandErrorDto {
   );
 }
 
+function triggerMarkdownDownload(
+  fileName: string,
+  markdownContent: string,
+): void {
+  if (
+    typeof document === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+  const sanitizedFileName =
+    fileName.replace(/[^a-zA-Z0-9._-]/g, "_") || "annotations.md";
+  const blob = new Blob([markdownContent], {
+    type: "text/markdown;charset=utf-8",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = sanitizedFileName;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  } finally {
+    if (typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+}
+
 export const App: React.FC = () => {
   const [session, setSession] = useState<DocumentSessionDto | null>(null);
-  const [renderedPage, setRenderedPage] =
-    useState<RenderedPageResultDto | null>(null);
+  const [renderedState, setRenderedState] = useState<RenderedPageState | null>(
+    null,
+  );
   const [pageText, setPageText] = useState<string>("");
   const [isRendering, setIsRendering] = useState<boolean>(false);
   const [recentDocs, setRecentDocs] = useState<RecentDocumentDto[]>([]);
@@ -65,16 +114,40 @@ export const App: React.FC = () => {
     default_zoom: 1.0,
     render_cache_budget_bytes: 64 * 1024 * 1024,
     prefetch_window: 1,
+    reopen_last_document: false,
+    remember_page_position: true,
+    confirm_before_delete: false,
     show_extracted_text_layer: false,
+    auto_check_updates: false,
+  });
+  const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
+      return false;
+    }
+    return Boolean(window.matchMedia("(prefers-color-scheme: dark)").matches);
   });
   const [programmaticScrollTrigger, setProgrammaticScrollTrigger] =
     useState<number>(0);
 
   const [activeSidebar, setActiveSidebar] = useState<SidebarTab>("thumbnails");
   const [showRightPanel, setShowRightPanel] = useState<boolean>(false);
+  const [requestedNotesTab, setRequestedNotesTab] = useState<
+    "notes" | "details"
+  >("notes");
+  const [requestedNotesTabTrigger, setRequestedNotesTabTrigger] =
+    useState<number>(0);
+  const [showHighlightPopover, setShowHighlightPopover] =
+    useState<boolean>(false);
+  const [printIncludeAnnotations, setPrintIncludeAnnotations] =
+    useState<boolean>(true);
   const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
   const [activeSearchHitIndex, setActiveSearchHitIndex] = useState<number>(0);
   const searchRequestGenRef = useRef<number>(0);
+  const renderSeqRef = useRef<number>(0);
+  const didInitialBootRef = useRef<boolean>(false);
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -98,31 +171,28 @@ export const App: React.FC = () => {
   const [libraryCollection, setLibraryCollection] =
     useState<LibraryCollectionView>("all");
 
-  const refreshRecentsAndSettings = useCallback(async () => {
-    try {
-      const [recents, loadedSettings] = await Promise.all([
-        readoraApi.listRecentDocuments(20),
-        readoraApi.getSettings(),
-      ]);
-      setRecentDocs(recents);
-      setSettings(loadedSettings);
-      if (loadedSettings.auto_check_updates !== false) {
-        const status = await readoraApi.checkForUpdates(false);
-        setUpdateStatus(status);
-      } else {
-        setUpdateStatus(null);
-      }
-    } catch {
-      // Ignore startup load errors when initializing empty state
-    }
-  }, []);
-
   useEffect(() => {
-    void refreshRecentsAndSettings();
-  }, [refreshRecentsAndSettings]);
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
+      return;
+    }
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    setOsPrefersDark(Boolean(mql.matches));
+    const handleMediaChange = (event: MediaQueryListEvent) => {
+      setOsPrefersDark(Boolean(event.matches));
+    };
+    if (typeof mql.addEventListener === "function") {
+      mql.addEventListener("change", handleMediaChange);
+      return () => mql.removeEventListener("change", handleMediaChange);
+    }
+    return undefined;
+  }, []);
 
   const loadVisiblePageAndPrefetch = useCallback(
     async (docId: string, viewState: ViewStateDto, prefetchWindow: number) => {
+      const seq = ++renderSeqRef.current;
       setIsRendering(true);
       try {
         const rotationDegrees = rotationToDegrees(viewState.rotation);
@@ -137,35 +207,53 @@ export const App: React.FC = () => {
           }),
           readoraApi.extractPageText(docId, viewState.current_page),
         ]);
-        setRenderedPage(renderResult);
+        if (seq !== renderSeqRef.current) {
+          return;
+        }
+        setRenderedState({
+          result: renderResult,
+          zoom: viewState.zoom,
+          rotation: viewState.rotation,
+          renderMode: viewState.render_mode,
+        });
         setPageText(extractedText);
 
-        // Trigger background prefetch for adjacent pages within configured window
-        for (let offset = 1; offset <= prefetchWindow; offset += 1) {
-          const nextIdx = viewState.current_page + offset;
-          if (nextIdx < viewState.page_count) {
-            void readoraApi.renderPage({
-              document_id: docId,
-              page_index: nextIdx,
-              scale: viewState.zoom,
-              rotation_degrees: rotationDegrees,
-              render_mode: viewState.render_mode,
-              generation: renderResult.generation,
-            });
-          }
-          const prevIdx = viewState.current_page - offset;
-          if (prevIdx >= 0) {
-            void readoraApi.renderPage({
-              document_id: docId,
-              page_index: prevIdx,
-              scale: viewState.zoom,
-              rotation_degrees: rotationDegrees,
-              render_mode: viewState.render_mode,
-              generation: renderResult.generation,
-            });
+        // In single-page mode, prefetch adjacent pages within configured window.
+        // In continuous mode, PageViewport renders neighbor sheets directly without duplicate loops.
+        if (viewState.layout_mode === "single_page") {
+          for (let offset = 1; offset <= prefetchWindow; offset += 1) {
+            const nextIdx = viewState.current_page + offset;
+            if (nextIdx < viewState.page_count) {
+              void readoraApi
+                .renderPage({
+                  document_id: docId,
+                  page_index: nextIdx,
+                  scale: viewState.zoom,
+                  rotation_degrees: rotationDegrees,
+                  render_mode: viewState.render_mode,
+                  generation: renderResult.generation,
+                })
+                .catch(() => {});
+            }
+            const prevIdx = viewState.current_page - offset;
+            if (prevIdx >= 0) {
+              void readoraApi
+                .renderPage({
+                  document_id: docId,
+                  page_index: prevIdx,
+                  scale: viewState.zoom,
+                  rotation_degrees: rotationDegrees,
+                  render_mode: viewState.render_mode,
+                  generation: renderResult.generation,
+                })
+                .catch(() => {});
+            }
           }
         }
       } catch (err) {
+        if (seq !== renderSeqRef.current) {
+          return;
+        }
         if (isCommandError(err) && err.code === "cancelled") {
           return;
         }
@@ -173,18 +261,25 @@ export const App: React.FC = () => {
           isCommandError(err) ? err.message : "Failed to render PDF page",
         );
       } finally {
-        setIsRendering(false);
+        if (seq === renderSeqRef.current) {
+          setIsRendering(false);
+        }
       }
     },
     [],
   );
 
   const handleOpenPath = useCallback(
-    async (path: string, password: string | null = null) => {
+    async (
+      path: string,
+      password: string | null = null,
+      prefetchOverride?: number,
+    ) => {
       setErrorBanner(null);
       try {
         const opened = await readoraApi.openDocument({ path, password });
         setSession(opened);
+        setRenderedState(null);
         setPendingPasswordPath(null);
         setPendingPasswordFile(null);
         setPasswordError(null);
@@ -192,7 +287,7 @@ export const App: React.FC = () => {
         await loadVisiblePageAndPrefetch(
           opened.descriptor.id,
           opened.view_state,
-          settings.prefetch_window,
+          prefetchOverride ?? settings.prefetch_window,
         );
         const [recents, loadedAnnotations] = await Promise.all([
           readoraApi.listRecentDocuments(20),
@@ -223,12 +318,58 @@ export const App: React.FC = () => {
     [loadVisiblePageAndPrefetch, settings.prefetch_window],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [recents, loadedSettings] = await Promise.all([
+          readoraApi.listRecentDocuments(20),
+          readoraApi.getSettings(),
+        ]);
+        if (cancelled) return;
+        setRecentDocs(recents);
+        setSettings(loadedSettings);
+
+        if (loadedSettings.auto_check_updates === true) {
+          const status = await readoraApi.checkForUpdates(false);
+          if (!cancelled) {
+            setUpdateStatus(status);
+          }
+        } else {
+          setUpdateStatus(null);
+        }
+
+        if (!didInitialBootRef.current) {
+          didInitialBootRef.current = true;
+          if (loadedSettings.reopen_last_document === true) {
+            const candidate = recents.find(
+              (item) => !item.is_archived && item.file_path.trim().length > 0,
+            );
+            if (candidate && !cancelled) {
+              await handleOpenPath(
+                candidate.file_path,
+                null,
+                loadedSettings.prefetch_window,
+              );
+            }
+          }
+        }
+      } catch {
+        // Ignore startup load errors when initializing empty state
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [handleOpenPath]);
+
   const handleOpenFile = useCallback(
     async (file: File, password: string | null = null) => {
       setErrorBanner(null);
       try {
         const opened = await readoraApi.openDocumentFile(file, password);
         setSession(opened);
+        setRenderedState(null);
         setPendingPasswordPath(null);
         setPendingPasswordFile(null);
         setPasswordError(null);
@@ -270,15 +411,25 @@ export const App: React.FC = () => {
 
   const handleCloseDocument = useCallback(async () => {
     if (!session) return;
+    renderSeqRef.current += 1;
+    setIsRendering(false);
     await readoraApi.closeDocument(session.descriptor.id);
     setSession(null);
-    setRenderedPage(null);
+    setRenderedState(null);
+    setShowHighlightPopover(false);
     setPageText("");
     setSearchHits([]);
     setAnnotations([]);
     const recents = await readoraApi.listRecentDocuments(20);
     setRecentDocs(recents);
   }, [session]);
+
+  const handleShowLibrary = useCallback(() => {
+    setLibraryCollection("all");
+    if (session) {
+      void handleCloseDocument();
+    }
+  }, [handleCloseDocument, session]);
 
   const dispatchNavigation = useCallback(
     async (action: NavigationActionDto) => {
@@ -344,6 +495,37 @@ export const App: React.FC = () => {
     setActiveSidebar((prev) => (prev === tab ? null : tab));
   };
 
+  const handleToggleNotesPanel = useCallback(() => {
+    const isCurrentlyVisible =
+      showRightPanel || activeSidebar === "bookmarks";
+    if (isCurrentlyVisible) {
+      setShowRightPanel(false);
+      setActiveSidebar((prev) => (prev === "bookmarks" ? null : prev));
+    } else {
+      setRequestedNotesTab("notes");
+      setRequestedNotesTabTrigger((c) => c + 1);
+      setShowRightPanel(true);
+    }
+  }, [activeSidebar, showRightPanel]);
+
+  const handleFocusCommentComposer = useCallback(() => {
+    setRequestedNotesTab("notes");
+    setRequestedNotesTabTrigger((c) => c + 1);
+    setShowRightPanel(true);
+    window.setTimeout(() => {
+      const commentInput = document.querySelector<HTMLInputElement>(
+        'input[aria-label="New comment"]',
+      );
+      commentInput?.focus();
+    }, 0);
+  }, []);
+
+  const handleOpenDocumentDetails = useCallback(() => {
+    setRequestedNotesTab("details");
+    setRequestedNotesTabTrigger((c) => c + 1);
+    setShowRightPanel(true);
+  }, []);
+
   const handleAddBookmark = async (label: string) => {
     if (!session) return;
     try {
@@ -391,23 +573,36 @@ export const App: React.FC = () => {
   ) => {
     if (!session) return;
     try {
+      const safeQuote = quoteText.trim().slice(0, MAX_HIGHLIGHT_EXCERPT_LEN);
+      const safeNote = noteText.trim().slice(0, 1000);
       const created = await readoraApi.upsertAnnotation({
         document_id: session.descriptor.id,
         page_index: session.view_state.current_page,
         kind,
         color_hex: colorHex,
-        quote_text: quoteText,
-        note_text: noteText,
+        quote_text: safeQuote,
+        note_text: safeNote,
       });
       setAnnotations((prev) =>
         [...prev, created].sort((a, b) => a.page_index - b.page_index),
       );
-      setStatusMessage("Saved page highlight");
+      setStatusMessage(
+        kind === "comment" ? "Saved comment" : "Saved page highlight",
+      );
     } catch (err) {
       setErrorBanner(
         isCommandError(err) ? err.message : "Failed to save annotation",
       );
     }
+  };
+
+  const handleAddComment = (noteText: string) => {
+    if (!session) return;
+    const excerpt = buildSafeQuoteExcerpt(
+      pageText,
+      session.view_state.current_page,
+    );
+    void handleCreateAnnotation("comment", "#9bc8e0", excerpt, noteText);
   };
 
   const handleDeleteAnnotation = async (annotationId: string) => {
@@ -500,11 +695,17 @@ export const App: React.FC = () => {
   };
 
   const handleCleanupAppData = async () => {
+    renderSeqRef.current += 1;
+    setIsRendering(false);
     const report = await readoraApi.cleanupApplicationData();
     const freshSettings = await readoraApi.getSettings();
-    const freshUpdateStatus = await readoraApi.checkForUpdates(false);
+    const freshUpdateStatus =
+      freshSettings.auto_check_updates === true
+        ? await readoraApi.checkForUpdates(false)
+        : null;
     setSession(null);
-    setRenderedPage(null);
+    setRenderedState(null);
+    setShowHighlightPopover(false);
     setPageText("");
     setSearchHits([]);
     setAnnotations([]);
@@ -517,21 +718,32 @@ export const App: React.FC = () => {
     );
   };
 
+  const resolvedTheme: "light" | "dark" =
+    settings.theme === "system"
+      ? osPrefersDark
+        ? "dark"
+        : "light"
+      : settings.theme;
+
   const handleToggleTheme = async () => {
-    const nextTheme = settings.theme === "dark" ? "light" : "dark";
+    const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
     const updated = await readoraApi.updateSettings({ theme: nextTheme });
     setSettings(updated);
   };
 
   const handleCopyText = async () => {
+    const selected = getWindowSelectedText();
+    const textToCopy = selected || pageText;
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       try {
-        await navigator.clipboard.writeText(pageText);
+        await navigator.clipboard.writeText(textToCopy);
       } catch {
         // Ignore clipboard permission restrictions in headless test environments
       }
     }
-    setStatusMessage("Copied current page text");
+    setStatusMessage(
+      selected ? "Copied selected text" : "Copied current page text",
+    );
   };
 
   const handleToggleFavorite = async (
@@ -552,9 +764,10 @@ export const App: React.FC = () => {
   ) => {
     await readoraApi.setDocumentArchived(documentId, isArchived);
     if (isArchived && session?.descriptor.id === documentId) {
+      renderSeqRef.current += 1;
       await readoraApi.closeDocument(documentId);
       setSession(null);
-      setRenderedPage(null);
+      setRenderedState(null);
       setPageText("");
     }
     const recents = await readoraApi.listRecentDocuments(20);
@@ -565,6 +778,17 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteRecentDocument = async (documentId: string) => {
+    if (settings.confirm_before_delete) {
+      const confirmed =
+        typeof window !== "undefined" && typeof window.confirm === "function"
+          ? window.confirm(
+              "Permanently remove this document from your library history?",
+            )
+          : true;
+      if (!confirmed) {
+        return;
+      }
+    }
     await readoraApi.deleteRecentDocument(documentId);
     const recents = await readoraApi.listRecentDocuments(20);
     setRecentDocs(recents);
@@ -579,6 +803,7 @@ export const App: React.FC = () => {
         includeAnnotations,
         null,
       );
+      triggerMarkdownDownload(bundle.file_name, bundle.markdown_content);
       setShowShareDialog(false);
       setStatusMessage(
         `Exported ${bundle.file_name} (${bundle.annotation_count} annotations)`,
@@ -590,15 +815,15 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleCopyShareLink = async (shareUri: string) => {
+  const handleCopyShareLink = async (citation: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       try {
-        await navigator.clipboard.writeText(shareUri);
+        await navigator.clipboard.writeText(citation);
       } catch {
         // Ignore clipboard permission errors in test environment
       }
     }
-    setStatusMessage(`Copied link ${shareUri}`);
+    setStatusMessage(`Copied citation: ${citation}`);
   };
 
   const currentDocIsFavorite = Boolean(
@@ -607,21 +832,61 @@ export const App: React.FC = () => {
         ?.is_favorite,
   );
 
+  const hasOpenModal = Boolean(
+    showPrintDialog ||
+      showImportDialog ||
+      showShareDialog ||
+      showUpdateDialog ||
+      showPreferences ||
+      pendingPasswordPath,
+  );
+
   useGlobalReaderShortcuts({
     session,
+    hasOpenModal,
     setActiveSidebar,
     setShowImportDialog,
     setShowPrintDialog,
-    setShowRightPanel,
+    setShowShareDialog,
+    onToggleNotesPanel: handleToggleNotesPanel,
+    onNextPage: () => void dispatchNavigation({ kind: "next_page" }),
+    onPrevPage: () => void dispatchNavigation({ kind: "previous_page" }),
+    onZoomIn: () => void dispatchNavigation({ kind: "step_zoom_in" }),
+    onZoomOut: () => void dispatchNavigation({ kind: "step_zoom_out" }),
+    onSetZoom: (z) => void dispatchNavigation({ kind: "set_zoom", value: z }),
+    onSetFitMode: (m) =>
+      void dispatchNavigation({ kind: "set_fit_mode", value: m }),
+    onRotateCw: () => void dispatchNavigation({ kind: "rotate_clockwise" }),
+    onRotateCcw: () =>
+      void dispatchNavigation({ kind: "rotate_counter_clockwise" }),
+    onCloseDocument: () => void handleCloseDocument(),
+    onShowLibrary: handleShowLibrary,
+    onOpenPreferences: () => {
+      setPreferencesSection("appearance");
+      setShowPreferences(true);
+    },
+    onOpenDocumentDetails: handleOpenDocumentDetails,
+    onToggleHighlightOptions: () => setShowHighlightPopover((prev) => !prev),
+    onFocusCommentComposer: handleFocusCommentComposer,
   });
 
-  const showBookmarksPanel =
-    activeSidebar === "bookmarks" || showRightPanel;
+  const showBookmarksPanel = activeSidebar === "bookmarks" || showRightPanel;
+
+  const activeRenderedPage: RenderedPageResultDto | null =
+    session &&
+    renderedState &&
+    renderedState.result.document_id === session.descriptor.id &&
+    Math.abs(renderedState.zoom - session.view_state.zoom) < 0.001 &&
+    renderedState.rotation === session.view_state.rotation &&
+    renderedState.renderMode === session.view_state.render_mode
+      ? renderedState.result
+      : null;
 
   return (
     <div
-      className={`app-shell theme-${settings.theme}`}
+      className={`app-shell theme-${resolvedTheme}`}
       data-testid="app-shell"
+      data-print-annotations={printIncludeAnnotations ? "true" : "false"}
     >
       <ReaderToolbar
         fileName={session?.descriptor.file_name ?? null}
@@ -630,8 +895,9 @@ export const App: React.FC = () => {
         activeSidebar={activeSidebar}
         showRightPanel={showBookmarksPanel}
         onToggleSidebar={handleToggleSidebar}
-        onToggleRightPanel={() => setShowRightPanel((prev) => !prev)}
+        onToggleRightPanel={handleToggleNotesPanel}
         onCloseDocument={() => void handleCloseDocument()}
+        onShowLibraryRecents={handleShowLibrary}
         onPrevPage={() => void dispatchNavigation({ kind: "previous_page" })}
         onNextPage={() => void dispatchNavigation({ kind: "next_page" })}
         onGoToPage={(p) =>
@@ -670,6 +936,9 @@ export const App: React.FC = () => {
         onOpenImportDialog={() => setShowImportDialog(true)}
         onOpenShare={session ? () => setShowShareDialog(true) : undefined}
         onCopyPageText={() => void handleCopyText()}
+        onFocusCommentComposer={
+          session ? handleFocusCommentComposer : undefined
+        }
         hasUpdateAvailable={Boolean(updateStatus?.update_available)}
         onOpenUpdateDialog={() => void handleCheckForUpdates()}
         onToggleTheme={() => void handleToggleTheme()}
@@ -689,14 +958,7 @@ export const App: React.FC = () => {
             : undefined
         }
         onOpenPrint={session ? () => setShowPrintDialog(true) : undefined}
-        onOpenDocumentDetails={
-          session
-            ? () => {
-                setShowRightPanel(true);
-                setActiveSidebar("bookmarks");
-              }
-            : undefined
-        }
+        onOpenDocumentDetails={session ? handleOpenDocumentDetails : undefined}
       />
 
       {errorBanner && (
@@ -721,7 +983,7 @@ export const App: React.FC = () => {
           recentDocs={recentDocs}
           onOpenRecentPath={(path) => void handleOpenPath(path)}
           onOpenImportDialog={() => setShowImportDialog(true)}
-          onToggleBookmarksSidebar={() => handleToggleSidebar("bookmarks")}
+          onToggleBookmarksSidebar={handleToggleNotesPanel}
           onSetLibraryCollection={setLibraryCollection}
           onCloseDocument={() => void handleCloseDocument()}
         />
@@ -774,7 +1036,7 @@ export const App: React.FC = () => {
 
               <PageViewport
                 viewState={session.view_state}
-                renderedPage={renderedPage}
+                renderedPage={activeRenderedPage}
                 pageText={pageText}
                 prefetchWindow={settings.prefetch_window}
                 programmaticScrollTrigger={programmaticScrollTrigger}
@@ -789,6 +1051,8 @@ export const App: React.FC = () => {
                 annotations={annotations}
                 searchHits={searchHits}
                 activeSearchHitIndex={activeSearchHitIndex}
+                showHighlightPopover={showHighlightPopover}
+                setShowHighlightPopover={setShowHighlightPopover}
                 onCopyText={() => void handleCopyText()}
                 onVisiblePageChange={(p) => void handleVisiblePageChange(p)}
                 onNextPage={() =>
@@ -803,7 +1067,7 @@ export const App: React.FC = () => {
                 onZoomOut={() =>
                   void dispatchNavigation({ kind: "step_zoom_out" })
                 }
-                onQuickAddNote={() => setActiveSidebar("bookmarks")}
+                onQuickAddNote={handleFocusCommentComposer}
                 onCreateAnnotation={(kind, color, quote, note) =>
                   void handleCreateAnnotation(kind, color, quote, note)
                 }
@@ -816,7 +1080,10 @@ export const App: React.FC = () => {
                 annotations={annotations}
                 currentPage={session.view_state.current_page}
                 descriptor={session.descriptor}
+                requestedTab={requestedNotesTab}
+                requestedTabTrigger={requestedNotesTabTrigger}
                 onAddBookmark={(label) => void handleAddBookmark(label)}
+                onAddComment={handleAddComment}
                 onDeleteBookmark={(id) => void handleDeleteBookmark(id)}
                 onDeleteAnnotation={(id) => void handleDeleteAnnotation(id)}
                 onSelectPage={(p) =>
@@ -859,11 +1126,21 @@ export const App: React.FC = () => {
         <PrintDialog
           descriptor={session.descriptor}
           viewState={session.view_state}
-          renderedPage={renderedPage}
+          renderedPage={activeRenderedPage}
           onClose={() => setShowPrintDialog(false)}
-          onConfirmPrint={(summary) => {
+          onConfirmPrint={(summary, includeAnn) => {
+            setPrintIncludeAnnotations(includeAnn);
             setShowPrintDialog(false);
             setStatusMessage(summary);
+            if (
+              typeof window !== "undefined" &&
+              typeof window.print === "function" &&
+              !isJsdomEnvironment()
+            ) {
+              window.setTimeout(() => {
+                window.print();
+              }, 0);
+            }
           }}
         />
       )}
@@ -882,7 +1159,7 @@ export const App: React.FC = () => {
         <ShareDialog
           descriptor={session.descriptor}
           onExportAnnotations={(inc) => void handleExportAnnotations(inc)}
-          onCopyShareLink={(uri) => void handleCopyShareLink(uri)}
+          onCopyShareLink={(citation) => void handleCopyShareLink(citation)}
           onClose={() => setShowShareDialog(false)}
         />
       )}
@@ -929,7 +1206,7 @@ export const App: React.FC = () => {
       <StatusBar
         descriptor={session?.descriptor ?? null}
         viewState={session?.view_state ?? null}
-        renderedPage={renderedPage}
+        renderedPage={activeRenderedPage}
         statusMessage={statusMessage}
       />
     </div>

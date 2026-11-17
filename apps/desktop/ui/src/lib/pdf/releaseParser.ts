@@ -4,6 +4,10 @@ import { type ReleaseManifestDto } from "../../types/ipc";
 export const DEFAULT_APP_VERSION: string =
   (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.0.6";
 
+export function isValidSha256Hex(value: string | null | undefined): boolean {
+  return /^[0-9a-f]{64}$/i.test((value ?? "").trim());
+}
+
 export function compareSemver(left: string, right: string): number {
   const parse = (raw: string): [number, number, number] => {
     const cleaned = raw.trim().replace(/^[vV]/, "");
@@ -91,7 +95,9 @@ export function parseGithubReleasePayload(
   const packageSizeBytes = selectedSize > 0 ? selectedSize : 42 * 1024 * 1024;
   const downloadUrl = selectedUrl ?? htmlUrl;
   const sha256 =
-    selectedSha256 || `github-tag-${version}-${(downloadUrl ?? "").length}`;
+    selectedSha256 && isValidSha256Hex(selectedSha256)
+      ? selectedSha256.toLowerCase()
+      : "";
 
   return {
     version,

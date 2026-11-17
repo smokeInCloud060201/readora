@@ -11,8 +11,8 @@
   --bg-button: #f7f7f3;
   --bg-button-active: #dce6cd;
   --text-primary: #292b25;
-  --text-secondary: #696b62;
-  --text-muted: #85877e;
+  --text-secondary: #484a43;
+  --text-muted: #595c54;
   --text-button-active: #405035;
   --border-color: #d8d9d2;
   --accent-sage: #566b42;
@@ -43,8 +43,8 @@
   --bg-button: #30332d;
   --bg-button-active: #3b4734;
   --text-primary: #e2e3dd;
-  --text-secondary: #92958c;
-  --text-muted: #7e8178;
+  --text-secondary: #c0c3ba;
+  --text-muted: #a8aba2;
   --text-button-active: #c4d5b0;
   --border-color: #3b3e37;
   --accent-sage: #60764b;
@@ -62,6 +62,25 @@ body {
   background: var(--bg-canvas);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[role="menuitem"]:focus-visible,
+[role="radio"]:focus-visible,
+[role="switch"]:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--accent-indicator);
+  outline-offset: 2px;
+}
+
+.library-search-box:focus-within,
+.shortcuts-search-box:focus-within {
+  outline: 2px solid var(--accent-indicator);
+  outline-offset: 1px;
 }
 
 .sr-only {
@@ -690,11 +709,16 @@ body {
 }
 
 /* Outline List (Figma Frame 23) */
-.focus-outline-list {
+.focus-outline-list,
+.focus-outline-sublist {
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.focus-outline-sublist {
+  margin-top: 4px;
 }
 
 .focus-outline-row {
@@ -3103,6 +3127,136 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pdf-page-sheet-spacer {
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: rgba(252, 251, 246, 0.35);
+}
+
+.focus-thumbnail-spacer {
+  list-style: none;
+  flex-shrink: 0;
+}
+
+.pdf-annotation-markers-layer {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.pdf-annotation-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 92%;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border-left: 3px solid var(--note-amber);
+  background: rgba(252, 251, 246, 0.92);
+  box-shadow: 0 2px 6px rgba(32, 35, 27, 0.14);
+  color: #292b25;
+  font-size: 10px;
+  line-height: 1.3;
+  overflow: hidden;
+}
+
+.pdf-annotation-pill.kind-underline .pdf-annotation-pill-text {
+  text-decoration: underline;
+}
+
+.pdf-annotation-pill-kind {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: #484a43;
+  flex-shrink: 0;
+}
+
+.pdf-annotation-pill-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.add-comment-submit-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.print-range-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.print-range-option .print-radio-row {
+  flex: 1;
+}
+
+.print-validation-error {
+  font-size: 11px;
+  color: #b91c1c;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.theme-dark .print-validation-error {
+  color: #fca5a5;
+}
+
+@media print {
+  body,
+  .app-shell,
+  .app-body-frame,
+  .reader-workspace,
+  .canvas-stage-wrapper,
+  .document-canvas-viewport {
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+  }
+
+  .focus-header-stack,
+  .app-rail,
+  .page-sidebar-panel,
+  .notes-details-panel,
+  .search-popover-panel,
+  .floating-annotation-tools,
+  .highlight-options-popover,
+  .status-bar,
+  .error-banner,
+  .modal-backdrop {
+    display: none !important;
+  }
+
+  .app-shell[data-print-annotations="false"] .pdf-annotation-markers-layer,
+  .app-shell[data-print-annotations="false"] .selectable-text-layer {
+    display: none !important;
+  }
+
+  .pdf-page-sheet {
+    box-shadow: none !important;
+    margin: 0 auto !important;
+    page-break-after: always;
+    break-after: page;
+  }
 }
 
 

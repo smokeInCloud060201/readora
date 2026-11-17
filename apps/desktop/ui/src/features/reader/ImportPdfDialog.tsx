@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { useModalDialog } from "../../shared/hooks/useModalDialog";
 
 interface ImportPdfDialogProps {
   onImportFile: (file: File) => void;
@@ -12,6 +13,9 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose, {
+    initialFocusSelector: ".import-choose-btn",
+  });
 
   const handleSelectedFile = (file: File) => {
     onImportFile(file);
@@ -33,8 +37,11 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Import PDF Dialog"
+      onMouseDown={handleBackdropMouseDown}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={`import-pdf-dialog-shell ${isDragging ? "dragging" : ""}`}
         data-node-id="5:260"
         onDragOver={(e) => {

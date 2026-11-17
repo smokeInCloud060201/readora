@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
+import { useModalDialog } from "../../shared/hooks/useModalDialog";
 import {
   type AppSettingsDto,
   type FitMode,
@@ -26,14 +27,23 @@ interface PreferencesDialogProps {
 }
 
 const SHORTCUT_ITEMS: readonly { label: string; keys: string }[] = [
-  { label: "Open document", keys: "⌘ / Win / Super + O" },
-  { label: "Search document", keys: "⌘ / Win / Super / Ctrl + F" },
-  { label: "Toggle page sidebar", keys: "⌘  \\" },
-  { label: "Toggle notes panel", keys: "⇧  ⌘  \\" },
-  { label: "Zoom in / out", keys: "⌘  + / −" },
-  { label: "Add comment", keys: "⌥  ⌘  M" },
-  { label: "Fit Page / Fit Width", keys: "⌘  1 / ⌘  2" },
-  { label: "Print document", keys: "⌘  P" },
+  { label: "Open document", keys: "⌘ / Ctrl + O" },
+  { label: "Close document", keys: "⌘ / Ctrl + W" },
+  { label: "Show library", keys: "⇧ ⌘ / Ctrl + L" },
+  { label: "Search document or library", keys: "⌘ / Ctrl + F" },
+  { label: "Next / Previous page", keys: "→ / ← or ↓ / ↑" },
+  { label: "Toggle page sidebar", keys: "⌘ / Ctrl + \\" },
+  { label: "Toggle notes panel", keys: "⇧ ⌘ / Ctrl + \\" },
+  { label: "Document properties", keys: "⌘ / Ctrl + I" },
+  { label: "Highlight options", keys: "H" },
+  { label: "Add comment", keys: "C or ⌥ ⌘ M" },
+  { label: "Zoom in / out", keys: "⌘ / Ctrl + + / −" },
+  { label: "Actual size (100%)", keys: "⌘ / Ctrl + 0" },
+  { label: "Fit Page / Fit Width", keys: "⌘ 1 / ⌘ 2" },
+  { label: "Rotate clockwise / counterclockwise", keys: "⌘ ] / ⌘ [" },
+  { label: "Export annotations", keys: "⇧ ⌘ / Ctrl + S" },
+  { label: "Print document", keys: "⌘ / Ctrl + P" },
+  { label: "Preferences", keys: "⌘ / Ctrl + ," },
 ];
 
 export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
@@ -43,6 +53,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   onCleanupAppData,
   onClose,
 }) => {
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
   const [activeSection, setActiveSection] =
     useState<PreferencesSection>(initialSection);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnosticsDto | null>(
@@ -55,6 +66,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [defaultFitMode, setDefaultFitMode] = useState<FitMode>(
     settings.default_fit_mode,
   );
+  const [defaultZoomFactor, setDefaultZoomFactor] = useState<number>(
+    settings.default_zoom || 1.0,
+  );
   const [cacheMiB, setCacheMiB] = useState<number>(
     Math.round(settings.render_cache_budget_bytes / (1024 * 1024)),
   );
@@ -65,20 +79,23 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     Boolean(settings.show_extracted_text_layer),
   );
 
-  // Figma Frame 18: General Preferences local toggles
-  const [reopenOnLaunch, setReopenOnLaunch] = useState(true);
-  const [rememberPagePosition, setRememberPagePosition] = useState(true);
-  const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState(false);
+  // Durable General Preferences toggles wired to AppSettingsDto / SettingsPatchDto
+  const [reopenOnLaunch, setReopenOnLaunch] = useState<boolean>(
+    settings.reopen_last_document ?? false,
+  );
+  const [rememberPagePosition, setRememberPagePosition] = useState<boolean>(
+    settings.remember_page_position ?? true,
+  );
+  const [confirmBeforeDeleting, setConfirmBeforeDeleting] = useState<boolean>(
+    settings.confirm_before_delete ?? false,
+  );
   const [autoCheckUpdates, setAutoCheckUpdates] = useState<boolean>(
-    settings.auto_check_updates ?? true,
+    settings.auto_check_updates ?? false,
   );
   const [githubReleaseRepo, setGithubReleaseRepo] = useState<string>(
     settings.github_release_repo ?? "smokeInCloud060201/readora",
   );
   const [shortcutFilter, setShortcutFilter] = useState("");
-  const [platformPreview, setPlatformPreview] = useState<
-    "macos" | "windows" | "linux"
-  >("macos");
 
   useEffect(() => {
     void readoraApi.getSystemDiagnostics().then(setDiagnostics);
@@ -90,12 +107,18 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       theme,
       default_layout: defaultLayout,
       default_fit_mode: defaultFitMode,
+      default_zoom_factor:
+        defaultFitMode === "manual" ? 1.0 : defaultZoomFactor,
       render_cache_budget_bytes:
         Math.min(512, Math.max(8, cacheMiB)) * 1024 * 1024,
       prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
+      reopen_last_document: reopenOnLaunch,
+      remember_page_position: rememberPagePosition,
+      confirm_before_delete: confirmBeforeDeleting,
       show_extracted_text_layer: showExtractedTextLayer,
       auto_check_updates: autoCheckUpdates,
-      github_release_repo: githubReleaseRepo.trim() || "smokeInCloud060201/readora",
+      github_release_repo:
+        githubReleaseRepo.trim() || "smokeInCloud060201/readora",
     });
   };
 
@@ -112,8 +135,13 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Reader Preferences"
+      onMouseDown={handleBackdropMouseDown}
     >
-      <div className="preferences-dialog-shell">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="preferences-dialog-shell"
+      >
         {/* Left 190px Settings Navigation (Figma Frame 04 / 18 / 19) */}
         <nav className="preferences-nav" aria-label="Preferences Sections">
           <div className="preferences-brand">
@@ -158,7 +186,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
               }`}
               onClick={() => setActiveSection("about")}
             >
-              About & Licenses
+              About &amp; Licenses
             </button>
           </div>
 
@@ -177,7 +205,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 {activeSection === "general"
                   ? "General"
                   : activeSection === "appearance"
-                    ? "Platform & Appearance"
+                    ? "Appearance"
                     : activeSection === "shortcuts"
                       ? "Keyboard shortcuts"
                       : "About, Diagnostics & Licenses"}
@@ -237,7 +265,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     Confirm before deleting
                   </span>
                   <span className="preferences-toggle-sub">
-                    Ask before moving files to the archive.
+                    Ask before permanently removing library entries.
                   </span>
                 </div>
                 <input
@@ -254,8 +282,8 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                     Automatically check for updates
                   </span>
                   <span className="preferences-toggle-sub">
-                    Query GitHub Releases ({githubReleaseRepo}) for new
-                    versions.
+                    Opt in to query GitHub Releases ({githubReleaseRepo}) on
+                    launch.
                   </span>
                 </div>
                 <input
@@ -278,30 +306,18 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 />
               </label>
 
-              <label className="preferences-toggle-item">
-                <div>
-                  <span className="preferences-toggle-title">
-                    Show extracted text below page
-                  </span>
-                  <span className="preferences-toggle-sub">
-                    Display the embedded digital text stream beneath the
-                    rendered PDF page.
-                  </span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={showExtractedTextLayer}
-                  onChange={(e) => setShowExtractedTextLayer(e.target.checked)}
-                  aria-label="Show extracted text below page"
-                />
-              </label>
-
               <label className="form-field-row">
                 <span>Default zoom</span>
                 <select
                   aria-label="General Default Zoom"
                   value={defaultFitMode}
-                  onChange={(e) => setDefaultFitMode(e.target.value as FitMode)}
+                  onChange={(e) => {
+                    const mode = e.target.value as FitMode;
+                    setDefaultFitMode(mode);
+                    if (mode === "manual") {
+                      setDefaultZoomFactor(1.0);
+                    }
+                  }}
                   className="focus-select"
                 >
                   <option value="fit_page">Fit page</option>
@@ -390,7 +406,9 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 </div>
               </dl>
 
-              <p className="eyebrow-label">THIRD-PARTY OPEN-SOURCE NOTICES (SBOM)</p>
+              <p className="eyebrow-label">
+                THIRD-PARTY OPEN-SOURCE NOTICES (SBOM)
+              </p>
               <div className="shortcuts-list">
                 {(diagnostics?.third_party_notices ?? []).map((notice) => (
                   <div key={notice.name} className="shortcut-row">
@@ -438,41 +456,6 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 </button>
               </div>
 
-              <p className="eyebrow-label" data-node-id="3:207">
-                PLATFORM PREVIEW
-              </p>
-              <div
-                className="platform-preview-tabs"
-                role="radiogroup"
-                aria-label="Platform preview"
-                data-node-id="3:208"
-              >
-                {(
-                  [
-                    { id: "macos", label: "macOS" },
-                    { id: "windows", label: "Windows" },
-                    { id: "linux", label: "Linux" },
-                  ] as const
-                ).map((plat) => (
-                  <button
-                    key={plat.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={platformPreview === plat.id}
-                    className={`platform-tab-btn ${
-                      platformPreview === plat.id ? "active" : ""
-                    }`}
-                    onClick={() => setPlatformPreview(plat.id)}
-                  >
-                    {plat.label}
-                  </button>
-                ))}
-              </div>
-              <p className="platform-preview-note" data-node-id="3:217">
-                Window controls and keyboard shortcuts adapt automatically to
-                your operating system.
-              </p>
-
               <label className="form-field-row">
                 <span>Theme</span>
                 <select
@@ -507,12 +490,18 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 <select
                   aria-label="Preference Default Fit Mode"
                   value={defaultFitMode}
-                  onChange={(e) => setDefaultFitMode(e.target.value as FitMode)}
+                  onChange={(e) => {
+                    const mode = e.target.value as FitMode;
+                    setDefaultFitMode(mode);
+                    if (mode === "manual") {
+                      setDefaultZoomFactor(1.0);
+                    }
+                  }}
                   className="focus-select"
                 >
                   <option value="fit_width">Fit Width</option>
                   <option value="fit_page">Fit Page</option>
-                  <option value="manual">Manual Zoom</option>
+                  <option value="manual">Manual Zoom (100%)</option>
                 </select>
               </label>
 

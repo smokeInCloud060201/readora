@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
 
 interface ThumbnailsPanelProps {
@@ -10,6 +10,9 @@ interface ThumbnailsPanelProps {
   onSwitchToOutline?: () => void;
 }
 
+const ESTIMATED_THUMB_ROW_HEIGHT = 136;
+const MAX_CACHED_THUMBNAILS = 64;
+
 export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   documentId,
   documentTitle,
@@ -19,19 +22,51 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   onSwitchToOutline,
 }) => {
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
+  const [scrollCenterPage, setScrollCenterPage] = useState<number>(currentPage);
+  const thumbnailsRef = useRef<Record<number, string>>({});
+  const panelRef = useRef<HTMLElement | null>(null);
   const pages = Array.from({ length: pageCount }, (_, i) => i);
 
   useEffect(() => {
-    if (!documentId) {
+    thumbnailsRef.current = {};
+    setThumbnails({});
+    setScrollCenterPage(currentPage);
+  }, [documentId]);
+
+  useEffect(() => {
+    setScrollCenterPage(currentPage);
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (!documentId || pageCount <= 0) {
+      thumbnailsRef.current = {};
       setThumbnails({});
       return;
     }
+
     let cancelled = false;
-    const maxPreviewPages = Math.min(pageCount, 24);
+    const candidateIndices = new Set<number>();
+    const currentStart = Math.max(0, currentPage - 8);
+    const currentEnd = Math.min(pageCount - 1, currentPage + 12);
+    for (let i = currentStart; i <= currentEnd; i += 1) {
+      candidateIndices.add(i);
+    }
+
+    const scrollStart = Math.max(0, scrollCenterPage - 8);
+    const scrollEnd = Math.min(pageCount - 1, scrollCenterPage + 12);
+    for (let i = scrollStart; i <= scrollEnd; i += 1) {
+      candidateIndices.add(i);
+    }
+
+    const ordered = Array.from(candidateIndices).sort(
+      (a, b) =>
+        Math.abs(a - scrollCenterPage) - Math.abs(b - scrollCenterPage),
+    );
 
     void (async () => {
-      for (let idx = 0; idx < maxPreviewPages; idx += 1) {
+      for (const idx of ordered) {
         if (cancelled) break;
+        if (thumbnailsRef.current[idx] !== undefined) continue;
         try {
           const rendered = await readoraApi.renderPage({
             document_id: documentId,
@@ -41,12 +76,29 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
             render_mode: "standard",
             generation: null,
           });
-          if (!cancelled) {
-            setThumbnails((prev) => ({
+          if (cancelled) break;
+          setThumbnails((prev) => {
+            const next: Record<number, string> = {
               ...prev,
               [idx]: rendered.data_url,
-            }));
-          }
+            };
+            const keys = Object.keys(next).map(Number);
+            if (keys.length > MAX_CACHED_THUMBNAILS) {
+              keys.sort(
+                (a, b) =>
+                  Math.abs(b - scrollCenterPage) -
+                  Math.abs(a - scrollCenterPage),
+              );
+              for (const evictIdx of keys.slice(
+                0,
+                keys.length - MAX_CACHED_THUMBNAILS,
+              )) {
+                delete next[evictIdx];
+              }
+            }
+            thumbnailsRef.current = next;
+            return next;
+          });
         } catch {
           // Ignore individual thumbnail render errors
         }
@@ -56,15 +108,41 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [documentId, pageCount]);
+  }, [currentPage, documentId, pageCount, scrollCenterPage]);
+
+  const handlePanelScroll = () => {
+    const el = panelRef.current;
+    if (!el || pageCount <= 0) return;
+    const approxIdx = Math.min(
+      pageCount - 1,
+      Math.max(
+        0,
+        Math.floor(
+          (el.scrollTop + el.clientHeight * 0.4) / ESTIMATED_THUMB_ROW_HEIGHT,
+        ),
+      ),
+    );
+    if (Math.abs(approxIdx - scrollCenterPage) >= 3) {
+      setScrollCenterPage(approxIdx);
+    }
+  };
 
   const cleanCoverTitle = (documentTitle || "PDF")
     .replace(/\.pdf$/i, "")
     .slice(0, 22)
     .toUpperCase();
 
+  const shouldVirtualizeDom = pageCount > 60;
+  const minDomIdx = Math.min(currentPage, scrollCenterPage) - 20;
+  const maxDomIdx = Math.max(currentPage, scrollCenterPage) + 25;
+
   return (
-    <aside className="page-sidebar-panel" aria-label="Page Thumbnails">
+    <aside
+      ref={panelRef}
+      className="page-sidebar-panel"
+      aria-label="Page Thumbnails"
+      onScroll={handlePanelScroll}
+    >
       <div className="sidebar-tabs-header">
         <button
           type="button"
@@ -86,6 +164,17 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
 
       <ul className="focus-thumbnail-list">
         {pages.map((idx) => {
+          if (shouldVirtualizeDom && (idx < minDomIdx || idx > maxDomIdx)) {
+            return (
+              <li
+                key={idx}
+                className="focus-thumbnail-spacer"
+                style={{ height: "126px" }}
+                aria-hidden="true"
+              />
+            );
+          }
+
           const isCurrent = idx === currentPage;
           const thumbUrl = thumbnails[idx];
           return (
