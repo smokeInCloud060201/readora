@@ -141,28 +141,28 @@ mod tests {
 
         let staged = handler
             .app_stage_update_manifest(ReleaseManifestDto {
-                version: "1.1.0".to_owned(),
-                title: "Focus Reader 1.1 is ready".to_owned(),
+                version: "1.2.0".to_owned(),
+                title: "Focus Reader 1.2 is ready".to_owned(),
                 notes: "A faster reader, improved annotations, and accessibility updates are ready to install.".to_owned(),
                 package_size_bytes: 44_040_192,
                 sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
                 published_at: "2026-11-10T00:00:00Z".to_owned(),
-                download_url: Some("https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.0".to_owned()),
+                download_url: Some("https://github.com/smokeInCloud060201/readora/releases/tag/v1.2.0".to_owned()),
             })
             .unwrap();
         assert!(staged.update_available);
-        assert_eq!(staged.latest_version.as_deref(), Some("1.1.0"));
+        assert_eq!(staged.latest_version.as_deref(), Some("1.2.0"));
 
-        let dismissed = handler.app_dismiss_update("1.1.0").unwrap();
+        let dismissed = handler.app_dismiss_update("1.2.0").unwrap();
         assert!(!dismissed.update_available);
         let manual_check = handler.app_check_for_updates(true).unwrap();
         assert!(manual_check.update_available);
 
-        let installed = handler.app_install_update("1.1.0").unwrap();
+        let installed = handler.app_install_update("1.2.0").unwrap();
         assert!(!installed.update_available);
         assert!(installed.staged_for_restart);
-        assert_eq!(installed.current_version, "1.1.0");
-        assert_eq!(handler.system_diagnostics().unwrap().app_version, "1.1.0");
+        assert_eq!(installed.current_version, "1.2.0");
+        assert_eq!(handler.system_diagnostics().unwrap().app_version, "1.2.0");
 
         handler.document_close(&doc_id).unwrap();
     }

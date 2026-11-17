@@ -955,7 +955,7 @@ export class BrowserFallbackBridge {
   getSystemDiagnostics(): SystemDiagnosticsDto {
     return {
       app_version:
-        this.settings.installed_version || DEFAULT_APP_VERSION || "1.0.6",
+        this.settings.installed_version || DEFAULT_APP_VERSION || "1.1.0",
       target_os: "macos",
       target_arch: "aarch64",
       pdf_engine_kind: "pure_rust_fallback",

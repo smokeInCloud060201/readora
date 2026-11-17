@@ -31,7 +31,7 @@ const PREFERENCE_ZOOM_PRESETS: readonly number[] = [
   0.5, 0.75, 1.0, 1.25, 1.5, 2.0,
 ];
 
-const FALLBACK_APP_VERSION = "1.0.6";
+const FALLBACK_APP_VERSION = "1.1.0";
 const FALLBACK_SQLITE_SCHEMA_VERSION = 4;
 
 const FALLBACK_THIRD_PARTY_NOTICES: readonly ThirdPartyNoticeDto[] = [
