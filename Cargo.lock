@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "app-application"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-domain",
  "pdf-engine",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "app-core"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-application",
  "app-domain",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "app-domain"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "app-infrastructure"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-application",
  "app-domain",
@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-engine"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-domain",
  "serde",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "pdfium-adapter"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-domain",
  "bytes",
@@ -2019,7 +2019,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-application",
  "app-domain",
@@ -2232,7 +2232,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "readora-desktop"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-application",
  "app-core",
@@ -2510,7 +2510,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "storage"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "app-application",
  "app-domain",

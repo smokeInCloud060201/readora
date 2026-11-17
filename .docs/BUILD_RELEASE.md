@@ -48,7 +48,7 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 
 1. **`.github/workflows/ci.yml`**: Runs `cargo fmt`, `cargo clippy --locked -- -D warnings`, `cargo test --workspace --locked`, and `pnpm lint` / `typecheck` / `test` / `build` across `ubuntu-latest`, `macos-latest`, and `windows-latest`.
 2. **`.github/workflows/release.yml`**:
-   - Triggered on `v*.*.*` tags or manual `workflow_dispatch` (defaulting `VITE_APP_VERSION` and `CLEAN_VERSION` to `1.1.1`).
+   - Triggered on `v*.*.*` tags or manual `workflow_dispatch` (defaulting `VITE_APP_VERSION` and `CLEAN_VERSION` to `1.1.2`).
    - Fetches PDFium pinned deterministically to `PDFIUM_TAG="chromium%2F8165"` from `bblanchon/pdfium-binaries` and fails closed if `curl`, `tar`, or library extraction fails.
    - Places macOS `libpdfium.dylib` inside `Contents/Frameworks/libpdfium.dylib`, signs it **first without entitlements**, then signs `Readora.app` with `--options runtime --entitlements apps/desktop/src-tauri/Entitlements.plist` **without `--deep`**, followed by `codesign --verify --deep --strict`, notarizes and staples `Readora.app` **before** archiving `Readora_<ver>_macos-aarch64.app.tar.gz` and building/notarizing/stapling the `.dmg`.
    - Generates `release-manifest-<label>.json` (recording exact `"asset"` and `"sha256"`), `.sha256` checksum lists, and GitHub Sigstore SLSA build provenance attestations.
@@ -72,7 +72,7 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 
 ## Release checklist
 
-- [x] Workspace version (`1.1.1`), [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`sbom.cdx.json`](../sbom.cdx.json) synced with `Cargo.lock` and `pnpm-lock.yaml`.
+- [x] Workspace version (`1.1.2`), [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`sbom.cdx.json`](../sbom.cdx.json) synced with `Cargo.lock` and `pnpm-lock.yaml`.
 - [x] Unit, adapter-contract, and integration tests pass on macOS, Linux, and Windows (`.github/workflows/ci.yml`).
 - [x] PDFium pinned to `chromium/8165` with fail-closed archive verification.
 - [x] macOS dylib signed separately without entitlements before signing `Readora.app`.

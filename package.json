@@ -1,7 +1,7 @@
 {
   "name": "readora",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "packageManager": "pnpm@12.5.1",
   "scripts": {
     "dev": "pnpm --dir apps/desktop/ui dev",
