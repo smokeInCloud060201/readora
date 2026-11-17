@@ -1,5 +1,7 @@
 //! Platform and filesystem abstraction port.
 
+use std::path::Path;
+
 use app_domain::DocumentId;
 
 use crate::error::ApplicationError;
@@ -32,4 +34,23 @@ pub trait PlatformPort: Send + Sync {
 
     /// Atomically writes `bytes` to `target_path` using a temporary sibling file and rename.
     fn atomic_write_file(&self, target_path: &str, bytes: &[u8]) -> Result<(), ApplicationError>;
+
+    /// Removes a regular file at `path` if it exists, returning `Ok(true)` if removed or
+    /// `Ok(false)` if not found.
+    fn remove_file_if_exists(&self, path: &str) -> Result<bool, ApplicationError>;
+
+    /// Reads up to `max_size_bytes` from a local file at `path`.
+    fn read_file_bytes(&self, path: &str, max_size_bytes: u64)
+    -> Result<Vec<u8>, ApplicationError>;
+
+    /// Removes an empty directory at `path` if it exists and is empty (non-recursive).
+    fn remove_empty_dir_if_exists(&self, _path: &str) -> Result<bool, ApplicationError> {
+        Ok(false)
+    }
+
+    /// Returns `true` if `candidate_path` resolves strictly inside `parent_dir`.
+    fn is_path_within_dir(&self, candidate_path: &str, parent_dir: &Path) -> bool {
+        let candidate = Path::new(candidate_path);
+        candidate != parent_dir && candidate.starts_with(parent_dir)
+    }
 }

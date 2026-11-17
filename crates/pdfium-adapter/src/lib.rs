@@ -117,6 +117,21 @@ impl PdfEngine for PdfiumEngineAdapter {
     }
 }
 
+fn escape_pdf_literal(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Generates a minimal, structurally valid synthetic PDF byte buffer for testing and demos
 /// without committing binary `.pdf` files to source control.
 #[must_use]
@@ -126,22 +141,25 @@ pub fn build_synthetic_pdf_bytes(
     user_password: Option<&str>,
 ) -> Vec<u8> {
     let page_count = page_texts.len().max(1);
+    let escaped_title = escape_pdf_literal(title);
     let mut out = String::from("%PDF-1.7\n");
     out.push_str(&format!(
-        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Title ({title}) /Author (Readora) >>\nendobj\n"
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Title ({escaped_title}) /Author (Readora) >>\nendobj\n"
     ));
     out.push_str(&format!(
         "2 0 obj\n<< /Type /Pages /Count {page_count} /MediaBox [0 0 612 792] >>\nendobj\n"
     ));
     if let Some(pw) = user_password {
+        let escaped_pw = escape_pdf_literal(pw);
         out.push_str(&format!(
-            "3 0 obj\n<< /Filter /Standard /Encrypt true /UserPassword ({pw}) >>\nendobj\n"
+            "3 0 obj\n<< /Filter /Standard /Encrypt true /UserPassword ({escaped_pw}) >>\nendobj\n"
         ));
     }
     for (idx, text) in page_texts.iter().enumerate() {
         let obj_id = 10 + idx;
+        let escaped_text = escape_pdf_literal(text);
         out.push_str(&format!(
-            "{obj_id} 0 obj\n<< /Type /Page /OutlineTitle (Section {}) >>\nstream\nBT ({text}) Tj ET\nendstream\nendobj\n",
+            "{obj_id} 0 obj\n<< /Type /Page /OutlineTitle (Section {}) >>\nstream\nBT ({escaped_text}) Tj ET\nendstream\nendobj\n",
             idx + 1
         ));
     }
@@ -297,6 +315,67 @@ mod tests {
         assert_eq!(
             xfa_doc.info().metadata.form_support,
             FormSupportStatus::UnsupportedXfa
+        );
+    }
+
+    #[test]
+    fn fallback_handles_unicode_search_bt_tokens_escaped_parens_and_encrypt_boundaries() {
+        // 1. Page text mentioning /Encrypt, SUBTITLE, TARGET, balanced/escaped parens, and Unicode ('İ', 'ẞ', '—')
+        let tricky_bytes = build_synthetic_pdf_bytes(
+            "Spec (v2.0) — Notes on /Encrypt",
+            &[
+                "SUBTITLE — TARGET (escaped \\ path) and İstanbul GROẞE architecture — end",
+                "Page 2 discusses the /Encrypt dictionary in PDF 1.7 without encrypting the file.",
+            ],
+            None,
+        );
+        let doc = FallbackPdfDocument::from_bytes(&tricky_bytes, &OpenDocumentOptions::default())
+            .unwrap();
+        assert!(!doc.info().metadata.is_encrypted);
+        assert_eq!(
+            doc.info().metadata.title.as_deref(),
+            Some("Spec (v2.0) — Notes on /Encrypt")
+        );
+
+        let p0 = doc.extract_page_text(PageIndex::FIRST).unwrap();
+        assert!(p0.contains("SUBTITLE — TARGET (escaped \\ path)"));
+
+        // Case-insensitive search after 'İ' and 'ẞ' aligns UTF-8 byte offsets without panic or whole-page fallback
+        let hits = doc.search_text("architecture", false, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("architecture"));
+        assert!(hits[0].snippet.len() < p0.len() + 1);
+
+        // 2. Real standard /Encrypt without synthetic /UserPassword never unlocks via hardcoded password
+        let real_encrypt = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n9 0 obj\n<< /Filter /Standard /V 5 /R 6 >>\nendobj\ntrailer\n<< /Root 1 0 R /Encrypt 9 0 R >>\n%%EOF\n";
+        for pw in [
+            None,
+            Some("readora-open".to_owned()),
+            Some("password".to_owned()),
+        ] {
+            let res = FallbackPdfDocument::from_bytes(
+                real_encrypt,
+                &OpenDocumentOptions {
+                    password: pw,
+                    max_file_size_bytes: 0,
+                },
+            );
+            assert!(matches!(res, Err(PdfEngineError::EngineUnavailable(_))));
+        }
+
+        // 3. Large binary image stream is skipped without expanding binary data
+        let mut with_image = Vec::from(
+            &b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n3 0 obj\n<< /Type /XObject /Subtype /Image /Filter /DCTDecode /Length 1048576 >>\nstream\n"[..],
+        );
+        with_image.extend(std::iter::repeat_n(0xFF_u8, 1024 * 1024));
+        with_image.extend_from_slice(
+            b"\nendstream\nendobj\n10 0 obj\n<< /Type /Page >>\nstream\nBT (Fast Bounded Stream) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        );
+        let img_doc =
+            FallbackPdfDocument::from_bytes(&with_image, &OpenDocumentOptions::default()).unwrap();
+        assert_eq!(
+            img_doc.extract_page_text(PageIndex::FIRST).unwrap(),
+            "Fast Bounded Stream"
         );
     }
 }

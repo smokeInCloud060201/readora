@@ -106,8 +106,9 @@ fn map_bookmark_row(row: &rusqlite::Row<'_>) -> Result<Bookmark, ApplicationErro
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
 
     let doc_id = DocumentId::new(raw_doc_id)?;
+    let bm_id = BookmarkId::try_new(raw_id)?;
     Ok(Bookmark::new(
-        BookmarkId::new(raw_id),
+        bm_id,
         doc_id,
         PageIndex::new(page_u32),
         label,

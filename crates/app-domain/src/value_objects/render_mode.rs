@@ -23,11 +23,26 @@ pub enum RenderMode {
     DarkInversion,
 }
 
+#[derive(Deserialize)]
+struct RawPageDimensions {
+    width_pt: f32,
+    height_pt: f32,
+}
+
 /// Physical dimensions of a PDF page in typographic points (1/72 inch).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawPageDimensions")]
 pub struct PageDimensions {
     width_pt: f32,
     height_pt: f32,
+}
+
+impl TryFrom<RawPageDimensions> for PageDimensions {
+    type Error = DomainError;
+
+    fn try_from(raw: RawPageDimensions) -> Result<Self, Self::Error> {
+        Self::new(raw.width_pt, raw.height_pt)
+    }
 }
 
 impl PageDimensions {

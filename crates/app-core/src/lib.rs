@@ -9,6 +9,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use app_application::{
@@ -17,16 +18,16 @@ use app_application::{
     OpenDocumentRequest, PlatformPort, RecentDocumentRepository, ReleaseManifestDto,
     RenderCachePort, RenderCancellationPort, RenderPageCommand, RenderedPageResultDto,
     SearchRequestDto, SettingsPatchDto, SettingsRepository, SystemDiagnosticsDto,
-    ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand, execute_delete_annotation,
-    execute_delete_bookmark, execute_export_annotations_bundle, execute_get_settings,
-    execute_list_annotations, execute_list_bookmarks, execute_navigation_action,
-    execute_open_document, execute_render_page, execute_search_document, execute_update_settings,
+    ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand, apply_navigation_action,
+    execute_delete_annotation, execute_delete_bookmark, execute_export_annotations_bundle,
+    execute_get_settings, execute_list_annotations, execute_list_bookmarks, execute_open_document,
+    execute_render_page, execute_search_document, execute_update_settings,
     execute_upsert_annotation, execute_upsert_bookmark,
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
     OutlineNode, PageIndex, RecentDocument, SearchHit, ViewState, compare_semver,
-    sanitize_display_name,
+    sanitize_export_stem,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
 use pdf_engine::{OpenDocumentOptions, PdfDocument, PdfEngine, PdfEngineKind};
@@ -34,6 +35,8 @@ use pdfium_adapter::{PdfiumEngineAdapter, build_synthetic_pdf_bytes};
 use platform::NativePlatformAdapter;
 use sha2::{Digest, Sha256};
 use storage::SqliteStorage;
+
+static EPHEMERAL_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct ActiveDocumentEntry {
     canonical_path: String,
@@ -51,36 +54,73 @@ pub struct AppCore {
     render_cache: Arc<MemoryRenderCache>,
     cancellation: Arc<GenerationCancellationRegistry>,
     sessions: RwLock<HashMap<DocumentId, Arc<ActiveDocumentEntry>>>,
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
     library_pdfs_dir: PathBuf,
+    is_ephemeral: bool,
+}
+
+impl Drop for AppCore {
+    fn drop(&mut self) {
+        if self.is_ephemeral {
+            let _ = NativePlatformAdapter::cleanup_live_app_artifacts(
+                &self.data_dir,
+                &self.cache_dir,
+                false,
+            );
+            if let Some(ephemeral_root) = self.data_dir.parent() {
+                let _ = self
+                    .platform
+                    .remove_empty_dir_if_exists(&ephemeral_root.to_string_lossy());
+            }
+        }
+    }
 }
 
 impl AppCore {
-    /// Initializes `AppCore` using the OS application data directory for SQLite persistence.
+    /// Initializes `AppCore` using the OS application data and cache directories for SQLite persistence.
     pub fn new_default() -> Result<Self, ApplicationError> {
         let data_dir = NativePlatformAdapter::resolve_app_data_dir();
+        let cache_dir = NativePlatformAdapter::resolve_app_cache_dir();
         let db_path = data_dir.join("readora.sqlite");
         let storage = Arc::new(SqliteStorage::open(&db_path)?);
-        let library_pdfs_dir = data_dir.join("library").join("pdfs");
-        Self::with_storage_and_library_dir(storage, library_pdfs_dir)
+        Self::with_storage_and_dirs(storage, data_dir, cache_dir, false)
     }
 
-    /// Initializes `AppCore` with an in-memory SQLite database for isolated tests.
+    /// Initializes `AppCore` with an in-memory SQLite database and an isolated unique temporary
+    /// directory tree so tests never touch the user's real OS application data directory.
     pub fn new_in_memory() -> Result<Self, ApplicationError> {
         let storage = Arc::new(SqliteStorage::open_in_memory()?);
-        let library_pdfs_dir = std::env::temp_dir()
-            .join("readora-samples")
-            .join("imported");
-        Self::with_storage_and_library_dir(storage, library_pdfs_dir)
+        let adapter = NativePlatformAdapter::new();
+        let seq = EPHEMERAL_INSTANCE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let mut hasher = Sha256::new();
+        hasher.update(std::process::id().to_le_bytes());
+        hasher.update(adapter.current_unix_ms().to_le_bytes());
+        hasher.update(seq.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut suffix = String::with_capacity(16);
+        for byte in &digest[..8] {
+            use std::fmt::Write as _;
+            let _ = write!(&mut suffix, "{byte:02x}");
+        }
+
+        let ephemeral_root = std::env::temp_dir().join(format!("readora-mem-{suffix}"));
+        let data_dir = ephemeral_root.join("readora-data");
+        let cache_dir = ephemeral_root.join("readora-cache");
+        Self::with_storage_and_dirs(storage, data_dir, cache_dir, true)
     }
 
-    fn with_storage_and_library_dir(
+    fn with_storage_and_dirs(
         storage: Arc<SqliteStorage>,
-        library_pdfs_dir: PathBuf,
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+        is_ephemeral: bool,
     ) -> Result<Self, ApplicationError> {
         let initial_budget = storage
             .load()
             .map(|s| s.render_cache_budget_bytes)
             .unwrap_or(DEFAULT_CACHE_BUDGET_BYTES);
+        let library_pdfs_dir = data_dir.join("library").join("pdfs");
 
         Ok(Self {
             pdf_engine: Arc::new(PdfiumEngineAdapter::new_with_fallback(None)),
@@ -89,8 +129,25 @@ impl AppCore {
             render_cache: Arc::new(MemoryRenderCache::new(initial_budget)),
             cancellation: Arc::new(GenerationCancellationRegistry::new()),
             sessions: RwLock::new(HashMap::new()),
+            data_dir,
+            cache_dir,
             library_pdfs_dir,
+            is_ephemeral,
         })
+    }
+
+    fn effective_version(settings: &AppSettings) -> String {
+        let pkg_version = env!("CARGO_PKG_VERSION");
+        if let Some(installed) = settings
+            .installed_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            && compare_semver(installed, pkg_version) == Ordering::Greater
+        {
+            return installed.to_owned();
+        }
+        pkg_version.to_owned()
     }
 
     /// Returns which PDF engine runtime is currently active (`pdfium_dynamic` or `pure_rust_fallback`).
@@ -134,7 +191,7 @@ impl AppCore {
         self.platform.atomic_write_file(&target_str, bytes)?;
 
         match self.open_document(OpenDocumentRequest {
-            path: target_str,
+            path: target_str.clone(),
             password,
         }) {
             Ok(session) => Ok(session),
@@ -143,8 +200,10 @@ impl AppCore {
                     err,
                     ApplicationError::PdfEngine(pdf_engine::PdfEngineError::InvalidPdfFormat(_))
                 ) {
-                    let _ = std::fs::remove_file(&target_path);
-                    let _ = std::fs::remove_dir(&target_dir);
+                    let _ = self.platform.remove_file_if_exists(&target_str);
+                    let _ = self
+                        .platform
+                        .remove_empty_dir_if_exists(&target_dir.to_string_lossy());
                 }
                 Err(err)
             }
@@ -166,20 +225,19 @@ impl AppCore {
         let resolved = self
             .platform
             .resolve_and_validate_pdf_path(&raw_path, max_size)?;
-        std::fs::read(&resolved.canonical_path).map_err(|_| {
-            ApplicationError::Platform("failed to read registered PDF document bytes".to_owned())
-        })
+        self.platform
+            .read_file_bytes(&resolved.canonical_path, max_size)
     }
 
     /// Reads the currently staged release manifest on disk, if present.
     pub fn read_staged_update_manifest(
         &self,
     ) -> Result<Option<ReleaseManifestDto>, ApplicationError> {
-        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
-        NativePlatformAdapter::read_release_manifest_in(&data_dir)
+        NativePlatformAdapter::read_release_manifest_in(&self.data_dir)
     }
 
-    /// Opens a local PDF document, restores its last reading state, and registers an active session.
+    /// Opens a local PDF document, invalidates any stale cached bitmaps from prior edits,
+    /// restores its last reading state, and registers an active session.
     pub fn open_document(
         &self,
         request: OpenDocumentRequest,
@@ -194,6 +252,9 @@ impl AppCore {
         )?;
 
         let doc_id = opened.session.descriptor.id.clone();
+        self.render_cache.invalidate_document(&doc_id);
+        let _ = self.cancellation.next_generation(&doc_id);
+
         let entry = Arc::new(ActiveDocumentEntry {
             canonical_path: opened.file_info.canonical_path,
             descriptor: opened.session.descriptor.clone(),
@@ -249,7 +310,7 @@ impl AppCore {
     }
 
     /// Applies a navigation or viewport mutation to an open document, cancels obsolete renders,
-    /// and updates the persisted recent document position.
+    /// and updates the persisted recent document position without holding the session mutex across disk I/O.
     pub fn navigate(
         &self,
         document_id: &str,
@@ -258,29 +319,33 @@ impl AppCore {
         let doc_id = DocumentId::new(document_id)?;
         let entry = self.lookup_session(&doc_id)?;
 
-        let mut view_state = entry
-            .view_state
-            .lock()
-            .map_err(|_| ApplicationError::Platform("view state lock poisoned".to_owned()))?
-            .clone();
-
-        let (updated_state, _gen) = execute_navigation_action(
-            &mut view_state,
-            &entry.canonical_path,
-            &entry.descriptor.file_name,
-            action,
-            self.cancellation.as_ref(),
-            self.storage.as_ref(),
-            self.platform.as_ref(),
-        )?;
-
-        {
+        let (updated_state, recent_snapshot) = {
             let mut state_guard = entry
                 .view_state
                 .lock()
                 .map_err(|_| ApplicationError::Platform("view state lock poisoned".to_owned()))?;
-            *state_guard = updated_state.clone();
+
+            let (updated, _gen, changed) =
+                apply_navigation_action(&mut state_guard, action, self.cancellation.as_ref())?;
+            if !changed {
+                return Ok(updated);
+            }
+
+            let recent = RecentDocument::from_view_state(
+                &entry.canonical_path,
+                &entry.descriptor.file_name,
+                &updated,
+                self.platform.current_unix_ms(),
+            );
+            (updated, recent)
+        };
+
+        let mut recent = recent_snapshot;
+        if let Some(prev) = self.storage.get(&doc_id)? {
+            recent.is_favorite = prev.is_favorite;
+            recent.is_archived = prev.is_archived;
         }
+        RecentDocumentRepository::upsert(self.storage.as_ref(), &recent)?;
 
         Ok(updated_state)
     }
@@ -359,10 +424,33 @@ impl AppCore {
         self.storage.set_archived(&doc_id, is_archived)
     }
 
-    /// Permanently removes a document entry from recent/archived library records.
+    /// Permanently removes a document entry from recent/archived library records, closes any
+    /// active session, cascades bookmarks/annotations via SQLite triggers, and deletes internal
+    /// staged copies inside `library/pdfs` while never touching external user files.
     pub fn delete_recent_document(&self, document_id: &str) -> Result<(), ApplicationError> {
         let doc_id = DocumentId::new(document_id)?;
-        self.storage.remove(&doc_id)
+        let existing = self.storage.get(&doc_id)?;
+        self.close_document(doc_id.as_str())?;
+        self.storage.remove(&doc_id)?;
+
+        if let Some(recent) = existing
+            && self
+                .platform
+                .is_path_within_dir(&recent.file_path, &self.library_pdfs_dir)
+        {
+            let _ = self.platform.remove_file_if_exists(&recent.file_path);
+            if let Some(parent) = Path::new(&recent.file_path).parent() {
+                let parent_str = parent.to_string_lossy();
+                if self
+                    .platform
+                    .is_path_within_dir(&parent_str, &self.library_pdfs_dir)
+                {
+                    let _ = self.platform.remove_empty_dir_if_exists(&parent_str);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Creates or updates a user bookmark on a page.
@@ -475,10 +563,7 @@ impl AppCore {
     pub fn system_diagnostics(&self) -> Result<SystemDiagnosticsDto, ApplicationError> {
         let sqlite_schema_version = self.storage.schema_version()?;
         let settings = self.get_settings()?;
-        let app_version = settings
-            .installed_version
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        let app_version = Self::effective_version(&settings);
         let pdf_engine_kind = match self.pdf_engine.kind() {
             PdfEngineKind::PdfiumDynamic => "pdfium_dynamic".to_owned(),
             PdfEngineKind::PureRustFallback => "pure_rust_fallback".to_owned(),
@@ -513,14 +598,14 @@ impl AppCore {
                 },
                 ThirdPartyNoticeDto {
                     name: "pdfjs-dist".to_owned(),
-                    version: "5.x".to_owned(),
+                    version: "6.5".to_owned(),
                     license: "Apache-2.0".to_owned(),
                     role: "Fallback WebView PDF canvas renderer when native PDFium is absent"
                         .to_owned(),
                 },
                 ThirdPartyNoticeDto {
                     name: "React + TypeScript".to_owned(),
-                    version: "19.x / 5.7".to_owned(),
+                    version: "19.x / 5.9".to_owned(),
                     license: "MIT AND Apache-2.0".to_owned(),
                     role: "Presentation UI layer".to_owned(),
                 },
@@ -529,7 +614,7 @@ impl AppCore {
     }
 
     /// Cleans up all Readora-created application data (SQLite database tables/files, render cache,
-    /// and temporary sample files) for uninstall preparation or complete local state reset.
+    /// staged updates, and internal library copies) for uninstall preparation or complete local reset.
     ///
     /// Never modifies or deletes user PDF documents or unrelated files on disk.
     pub fn cleanup_application_data(&self) -> Result<AppCleanupReportDto, ApplicationError> {
@@ -553,7 +638,11 @@ impl AppCore {
         }
 
         self.storage.reset_all_application_tables()?;
-        NativePlatformAdapter::cleanup_default_app_artifacts()
+        NativePlatformAdapter::cleanup_live_app_artifacts(
+            &self.data_dir,
+            &self.cache_dir,
+            !self.is_ephemeral,
+        )
     }
 
     /// Performs OS-level uninstall cleanup of Readora's default data and cache directories
@@ -570,13 +659,8 @@ impl AppCore {
     ) -> Result<AppUpdateStatusDto, ApplicationError> {
         let settings = self.get_settings()?;
         let github_repo = settings.github_release_repo.clone();
-        let current_version = settings
-            .installed_version
-            .clone()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
-        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
-        let maybe_manifest = NativePlatformAdapter::read_release_manifest_in(&data_dir)?;
+        let current_version = Self::effective_version(&settings);
+        let maybe_manifest = NativePlatformAdapter::read_release_manifest_in(&self.data_dir)?;
         let checked_at_unix_ms = self.platform.current_unix_ms();
 
         if let Some(manifest) = maybe_manifest {
@@ -586,7 +670,8 @@ impl AppCore {
                     .dismissed_update_version
                     .as_deref()
                     .is_some_and(|dismissed| dismissed == manifest.version.trim());
-            let verified = !manifest.sha256.trim().is_empty() && manifest.package_size_bytes > 0;
+            let verified = NativePlatformAdapter::is_hex_sha256(&manifest.sha256)
+                && manifest.package_size_bytes > 0;
 
             if is_newer {
                 return Ok(AppUpdateStatusDto {
@@ -595,8 +680,16 @@ impl AppCore {
                     latest_version: Some(manifest.version),
                     release_title: Some(manifest.title),
                     release_notes: Some(manifest.notes),
-                    package_size_bytes: Some(manifest.package_size_bytes),
-                    sha256_checksum: Some(manifest.sha256),
+                    package_size_bytes: if manifest.package_size_bytes > 0 {
+                        Some(manifest.package_size_bytes)
+                    } else {
+                        None
+                    },
+                    sha256_checksum: if manifest.sha256.trim().is_empty() {
+                        None
+                    } else {
+                        Some(manifest.sha256)
+                    },
                     download_url: manifest.download_url,
                     github_repo,
                     verified,
@@ -623,7 +716,7 @@ impl AppCore {
     }
 
     /// Parses a GitHub `/repos/{owner}/{repo}/releases/latest` JSON payload, stages the manifest
-    /// if it is newer than the installed version, and returns the updated `AppUpdateStatusDto`.
+    /// if valid, and returns the updated `AppUpdateStatusDto`.
     pub fn stage_github_release_json(
         &self,
         raw_json: &str,
@@ -633,14 +726,13 @@ impl AppCore {
         self.stage_update_manifest(manifest)
     }
 
-    /// Stages a verified release manifest into the Readora updates directory and evaluates update status.
+    /// Stages a release manifest into the Readora updates directory and evaluates update status.
     pub fn stage_update_manifest(
         &self,
         manifest: ReleaseManifestDto,
     ) -> Result<AppUpdateStatusDto, ApplicationError> {
-        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
         let adapter = NativePlatformAdapter::new();
-        adapter.stage_release_manifest_in(&data_dir, &manifest)?;
+        adapter.stage_release_manifest_in(&self.data_dir, &manifest)?;
 
         let mut settings = self.get_settings()?;
         if settings.dismissed_update_version.as_deref() == Some(manifest.version.trim()) {
@@ -651,13 +743,14 @@ impl AppCore {
         self.check_for_updates(true)
     }
 
-    /// Applies a verified staged update by recording the new installed version in SQLite settings
-    /// and cleaning up the staged manifest.
+    /// Applies a verified staged update by verifying that `release-manifest.json` matches
+    /// `target_version` with a valid SHA-256 hex digest, recording the new installed version in
+    /// SQLite settings, and cleaning up the staged manifest.
     pub fn install_update(
         &self,
         target_version: &str,
     ) -> Result<AppUpdateStatusDto, ApplicationError> {
-        let trimmed = target_version.trim();
+        let trimmed = target_version.trim().trim_start_matches(['v', 'V']).trim();
         if trimmed.is_empty() {
             return Err(ApplicationError::Platform(
                 "target update version must not be empty".to_owned(),
@@ -666,11 +759,7 @@ impl AppCore {
 
         let mut settings = self.get_settings()?;
         let github_repo = settings.github_release_repo.clone();
-        let current_version = settings
-            .installed_version
-            .clone()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        let current_version = Self::effective_version(&settings);
 
         if compare_semver(trimmed, &current_version) != Ordering::Greater {
             return Err(ApplicationError::Platform(format!(
@@ -678,12 +767,36 @@ impl AppCore {
             )));
         }
 
+        let staged_manifest = NativePlatformAdapter::read_release_manifest_in(&self.data_dir)?
+            .ok_or_else(|| {
+                ApplicationError::Platform(
+                    "cannot install update: no staged release manifest found".to_owned(),
+                )
+            })?;
+
+        let staged_version = staged_manifest
+            .version
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .trim();
+        if staged_version != trimmed {
+            return Err(ApplicationError::Platform(format!(
+                "staged manifest version '{staged_version}' does not match requested version '{trimmed}'"
+            )));
+        }
+
+        if !NativePlatformAdapter::is_hex_sha256(&staged_manifest.sha256) {
+            return Err(ApplicationError::Platform(
+                "cannot install update: staged release manifest lacks a valid SHA-256 digest"
+                    .to_owned(),
+            ));
+        }
+
         settings.installed_version = Some(trimmed.to_owned());
         settings.dismissed_update_version = None;
         SettingsRepository::save(self.storage.as_ref(), &settings)?;
 
-        let data_dir = NativePlatformAdapter::resolve_app_data_dir();
-        let _ = NativePlatformAdapter::clear_staged_release_manifest_in(&data_dir);
+        let _ = NativePlatformAdapter::clear_staged_release_manifest_in(&self.data_dir);
 
         Ok(AppUpdateStatusDto {
             current_version: trimmed.to_owned(),
@@ -756,23 +869,38 @@ fn sanitize_pdf_filename(raw: &str) -> String {
         .next()
         .unwrap_or("Document.pdf")
         .trim();
-    let cleaned: String = sanitize_display_name(base)
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.');
-    if trimmed.is_empty() {
-        return "Document.pdf".to_owned();
-    }
-    if trimmed.to_ascii_lowercase().ends_with(".pdf") {
-        trimmed.to_owned()
+    let without_ext = if base.len() >= 4
+        && base.is_char_boundary(base.len() - 4)
+        && base[base.len() - 4..].eq_ignore_ascii_case(".pdf")
+    {
+        &base[..base.len() - 4]
     } else {
-        format!("{trimmed}.pdf")
+        base
+    };
+    let stem = sanitize_export_stem(without_ext);
+    format!("{stem}.pdf")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_pdf_filename_preserves_unicode_and_guards_windows_reserved_names() {
+        assert_eq!(
+            sanitize_pdf_filename("Imported Study.pdf"),
+            "Imported Study.pdf"
+        );
+        assert_eq!(sanitize_pdf_filename("CON.pdf"), "doc_CON.pdf");
+        assert_eq!(sanitize_pdf_filename("nul"), "doc_nul.pdf");
+        assert_eq!(
+            sanitize_pdf_filename("日本語の設計書.PDF"),
+            "日本語の設計書.pdf"
+        );
+
+        let huge = format!("{}.pdf", "あ".repeat(100));
+        let sanitized = sanitize_pdf_filename(&huge);
+        assert!(sanitized.len() <= 128);
+        assert!(sanitized.ends_with(".pdf"));
     }
 }

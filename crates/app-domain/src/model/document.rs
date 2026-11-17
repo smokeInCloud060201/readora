@@ -168,3 +168,84 @@ pub fn sanitize_display_name(raw: &str) -> String {
         filtered
     }
 }
+
+fn is_windows_reserved_device_name(stem: &str) -> bool {
+    let head = stem.split('.').next().unwrap_or(stem).trim();
+    let upper = head.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+/// Sanitizes an arbitrary title or filename stem for cross-platform filesystem export:
+/// strips control characters and path/OS-reserved characters (`/`, `\`, `:`, `*`, `?`,
+/// `"`, `<`, `>`, `|`), trims leading/trailing `.` and whitespace, prefixes `doc_` onto
+/// Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`..`COM9`, `LPT1`..`LPT9`),
+/// preserves Unicode alphanumeric characters, and truncates cleanly at a UTF-8 char boundary
+/// (`<= 120` bytes).
+#[must_use]
+pub fn sanitize_export_stem(raw: &str) -> String {
+    const MAX_STEM_BYTES: usize = 120;
+
+    let filtered: String = raw
+        .chars()
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+
+    let trimmed = filtered.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    if trimmed.is_empty() {
+        return "Document".to_owned();
+    }
+
+    let guarded = if is_windows_reserved_device_name(trimmed) {
+        format!("doc_{trimmed}")
+    } else {
+        trimmed.to_owned()
+    };
+
+    let mut end = guarded.len().min(MAX_STEM_BYTES);
+    while end > 0 && !guarded.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let truncated = guarded[..end].trim_matches(|c: char| c == '.' || c.is_whitespace());
+    if truncated.is_empty() {
+        "Document".to_owned()
+    } else if is_windows_reserved_device_name(truncated) {
+        let re_guarded = format!("doc_{truncated}");
+        let mut re_end = re_guarded.len().min(MAX_STEM_BYTES);
+        while re_end > 0 && !re_guarded.is_char_boundary(re_end) {
+            re_end -= 1;
+        }
+        re_guarded[..re_end]
+            .trim_matches(|c: char| c == '.' || c.is_whitespace())
+            .to_owned()
+    } else {
+        truncated.to_owned()
+    }
+}

@@ -14,12 +14,12 @@ pub use model::annotation::{Annotation, AnnotationId, AnnotationKind, MAX_ANNOTA
 pub use model::bookmark::{Bookmark, BookmarkId, MAX_BOOKMARK_LABEL_LEN};
 pub use model::document::{
     DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchHit,
-    SignaturePresenceStatus, sanitize_display_name,
+    SignaturePresenceStatus, sanitize_display_name, sanitize_export_stem,
 };
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{
     AppSettings, DEFAULT_CACHE_BUDGET_BYTES, MAX_CACHE_BUDGET_BYTES, MAX_PREFETCH_WINDOW,
-    MIN_CACHE_BUDGET_BYTES, compare_semver,
+    MIN_CACHE_BUDGET_BYTES, compare_semver, is_valid_github_repo_slug,
 };
 pub use model::view_state::ViewState;
 pub use value_objects::document_id::DocumentId;
@@ -135,8 +135,83 @@ mod tests {
         assert_eq!(bm.label, "Chapter 1");
 
         let mut settings = AppSettings::default();
+        assert!(!settings.auto_check_updates);
+        assert!(settings.reopen_last_document);
+        assert!(settings.remember_page_position);
+        assert!(!settings.confirm_before_delete);
         assert!(settings.validate().is_ok());
         settings.render_cache_budget_bytes = 1024;
         assert!(settings.validate().is_err());
+
+        let bad_slug = AppSettings {
+            github_release_repo: "../../evil/repo".to_owned(),
+            ..AppSettings::default()
+        };
+        assert!(bad_slug.validate().is_err());
+    }
+
+    #[test]
+    fn compare_semver_orders_prereleases_per_semver_spec() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_semver("1.0.7", "1.0.7-alpha.1"), Ordering::Greater);
+        assert_eq!(compare_semver("1.0.6-rc.1", "1.0.6"), Ordering::Less);
+        assert_eq!(
+            compare_semver("1.0.7-alpha.1", "1.0.7-beta.1"),
+            Ordering::Less
+        );
+        assert_eq!(compare_semver("v1.0.7+build.42", "1.0.7"), Ordering::Equal);
+        assert_eq!(compare_semver("1.1.0-alpha.1", "1.0.9"), Ordering::Greater);
+    }
+
+    #[test]
+    fn github_repo_slug_and_export_stem_sanitization_guard_reserved_inputs() {
+        assert!(is_valid_github_repo_slug("smokeInCloud060201/readora"));
+        assert!(!is_valid_github_repo_slug("only-one-segment"));
+        assert!(!is_valid_github_repo_slug("a/b/c"));
+        assert!(!is_valid_github_repo_slug("../readora"));
+        assert!(!is_valid_github_repo_slug("owner/repo?foo=bar"));
+
+        assert_eq!(sanitize_export_stem("CON"), "doc_CON");
+        assert_eq!(sanitize_export_stem("nul.txt"), "doc_nul.txt");
+        assert_eq!(sanitize_export_stem("lpt9"), "doc_lpt9");
+        assert_eq!(sanitize_export_stem("../../.zshrc"), "zshrc");
+        assert_eq!(
+            sanitize_export_stem("日本語の論文:2026*"),
+            "日本語の論文2026"
+        );
+
+        let long_unicode = "あ".repeat(100); // 300 bytes
+        let truncated = sanitize_export_stem(&long_unicode);
+        assert!(truncated.len() <= 120);
+        assert_eq!(truncated.len(), 120);
+    }
+
+    #[test]
+    fn value_objects_enforce_invariants_during_deserialization() {
+        assert!(serde_json::from_str::<ZoomLevel>("0.05").is_err());
+        assert!(serde_json::from_str::<ZoomLevel>("99.0").is_err());
+        assert_eq!(
+            serde_json::from_str::<ZoomLevel>("1.25").unwrap(),
+            ZoomLevel::new(1.25).unwrap()
+        );
+
+        assert!(serde_json::from_str::<DocumentId>("\"   \"").is_err());
+        assert_eq!(
+            serde_json::from_str::<DocumentId>("\" doc-abc \"")
+                .unwrap()
+                .as_str(),
+            "doc-abc"
+        );
+
+        assert!(serde_json::from_str::<BookmarkId>("\"\"").is_err());
+        assert!(serde_json::from_str::<AnnotationId>("\"   \"").is_err());
+        assert!(
+            serde_json::from_str::<PageDimensions>(r#"{"width_pt":-10.0,"height_pt":792.0}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PageDimensions>(r#"{"width_pt":612.0,"height_pt":792.0}"#)
+                .is_ok()
+        );
     }
 }

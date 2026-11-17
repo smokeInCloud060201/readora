@@ -3,11 +3,11 @@
 //! close -> reopen recent document and verify restored reading position.
 
 use app_application::{
-    NavigationAction, OpenDocumentRequest, RenderPageCommand, SearchRequestDto, SettingsPatchDto,
-    UpsertBookmarkCommand,
+    NavigationAction, OpenDocumentRequest, ReleaseManifestDto, RenderPageCommand, SearchRequestDto,
+    SettingsPatchDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 use app_core::AppCore;
-use app_domain::{RenderMode, ThemePreference};
+use app_domain::{AnnotationKind, RenderMode, ThemePreference};
 use pdfium_adapter::build_synthetic_pdf_bytes;
 
 #[test]
@@ -147,4 +147,102 @@ fn password_protected_pdf_workflow_in_app_core() {
         .unwrap();
     assert!(opened.descriptor.metadata.is_encrypted);
     assert_eq!(opened.descriptor.page_count, 1);
+}
+
+#[test]
+fn in_memory_isolation_delete_cascade_and_verified_update_workflow() {
+    let core = AppCore::new_in_memory().unwrap();
+
+    // 1. Import PDF bytes with Unicode filename, add bookmark & annotation, then delete recent document
+    let pdf_bytes = build_synthetic_pdf_bytes(
+        "Research Paper",
+        &["Section 1: Isolated ephemeral library test"],
+        None,
+    );
+    let imported = core
+        .import_document_bytes("日本語ノート.pdf", &pdf_bytes, None)
+        .unwrap();
+    assert_eq!(imported.descriptor.file_name, "日本語ノート.pdf");
+    let doc_id = imported.descriptor.id.as_str().to_owned();
+
+    let recents = core.list_recent_documents(10).unwrap();
+    assert_eq!(recents.len(), 1);
+    let staged_file_path = recents[0].file_path.clone();
+    assert!(std::path::Path::new(&staged_file_path).is_file());
+
+    core.upsert_bookmark(UpsertBookmarkCommand {
+        document_id: doc_id.clone(),
+        page_index: 0,
+        label: "Bookmark to cascade".to_owned(),
+    })
+    .unwrap();
+    core.upsert_annotation(UpsertAnnotationCommand {
+        id: None,
+        document_id: doc_id.clone(),
+        page_index: 0,
+        kind: AnnotationKind::Highlight,
+        color_hex: "#f3d96b".to_owned(),
+        quote_text: "Isolated ephemeral".to_owned(),
+        note_text: "Note to cascade".to_owned(),
+    })
+    .unwrap();
+
+    core.delete_recent_document(&doc_id).unwrap();
+    assert!(core.list_recent_documents(10).unwrap().is_empty());
+    assert!(core.list_bookmarks(&doc_id).unwrap().is_empty());
+    assert!(core.list_annotations(&doc_id).unwrap().is_empty());
+    assert!(!std::path::Path::new(&staged_file_path).exists());
+
+    // 2. install_update rejects unverified or unstaged versions, and succeeds only with verified hex SHA-256
+    assert!(core.install_update("9.9.9").is_err());
+
+    let unverified_status = core
+        .stage_update_manifest(ReleaseManifestDto {
+            version: "9.9.9".to_owned(),
+            title: "Unverified".to_owned(),
+            notes: "Missing valid hex sha256".to_owned(),
+            package_size_bytes: 1024,
+            sha256: String::new(),
+            published_at: "2026-11-17T00:00:00Z".to_owned(),
+            download_url: None,
+        })
+        .unwrap();
+    assert!(!unverified_status.verified);
+    assert!(!unverified_status.update_available);
+    assert!(core.install_update("9.9.9").is_err());
+
+    let verified_status = core
+        .stage_update_manifest(ReleaseManifestDto {
+            version: "9.9.9".to_owned(),
+            title: "Verified".to_owned(),
+            notes: "Valid SHA-256".to_owned(),
+            package_size_bytes: 4096,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
+            published_at: "2026-11-17T00:00:00Z".to_owned(),
+            download_url: None,
+        })
+        .unwrap();
+    assert!(verified_status.verified);
+    assert!(verified_status.update_available);
+
+    let installed = core.install_update("9.9.9").unwrap();
+    assert_eq!(installed.current_version, "9.9.9");
+
+    let diag = core.system_diagnostics().unwrap();
+    assert_eq!(diag.sqlite_schema_version, 4);
+    assert_eq!(diag.app_version, "9.9.9");
+    assert!(
+        diag.third_party_notices
+            .iter()
+            .any(|n| n.name == "pdfjs-dist" && n.version == "6.5")
+    );
+    assert!(
+        diag.third_party_notices
+            .iter()
+            .any(|n| n.name == "React + TypeScript" && n.version == "19.x / 5.9")
+    );
+
+    // 3. cleanup_application_data only cleans the isolated ephemeral dirs
+    let cleanup = core.cleanup_application_data().unwrap();
+    assert!(!cleanup.redacted_data_dir.is_empty());
 }

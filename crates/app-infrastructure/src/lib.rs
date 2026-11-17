@@ -138,10 +138,40 @@ impl RenderCachePort for MemoryRenderCache {
     }
 }
 
+/// Maximum number of distinct document IDs retained in [`GenerationCancellationRegistry`].
+pub const MAX_TRACKED_GENERATION_DOCUMENTS: usize = 4_096;
+
+#[derive(Default)]
+struct GenerationRegistryInner {
+    generations: HashMap<DocumentId, u64>,
+    order: VecDeque<DocumentId>,
+}
+
+impl GenerationRegistryInner {
+    fn advance(&mut self, document_id: &DocumentId) -> u64 {
+        if let Some(counter) = self.generations.get_mut(document_id) {
+            *counter = counter.saturating_add(1);
+            return *counter;
+        }
+
+        while self.generations.len() >= MAX_TRACKED_GENERATION_DOCUMENTS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.generations.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+
+        self.order.push_back(document_id.clone());
+        self.generations.insert(document_id.clone(), 1);
+        1
+    }
+}
+
 /// Thread-safe generation registry used to cancel obsolete page render requests.
 #[derive(Default)]
 pub struct GenerationCancellationRegistry {
-    generations: Mutex<HashMap<DocumentId, u64>>,
+    inner: Mutex<GenerationRegistryInner>,
 }
 
 impl GenerationCancellationRegistry {
@@ -154,19 +184,17 @@ impl GenerationCancellationRegistry {
 
 impl RenderCancellationPort for GenerationCancellationRegistry {
     fn next_generation(&self, document_id: &DocumentId) -> u64 {
-        let Ok(mut guard) = self.generations.lock() else {
+        let Ok(mut guard) = self.inner.lock() else {
             return 0;
         };
-        let counter = guard.entry(document_id.clone()).or_insert(0);
-        *counter = counter.saturating_add(1);
-        *counter
+        guard.advance(document_id)
     }
 
     fn current_generation(&self, document_id: &DocumentId) -> u64 {
-        let Ok(guard) = self.generations.lock() else {
+        let Ok(guard) = self.inner.lock() else {
             return 0;
         };
-        *guard.get(document_id).unwrap_or(&0)
+        *guard.generations.get(document_id).unwrap_or(&0)
     }
 
     fn is_current(&self, document_id: &DocumentId, generation: u64) -> bool {
@@ -174,8 +202,10 @@ impl RenderCancellationPort for GenerationCancellationRegistry {
     }
 
     fn clear_document(&self, document_id: &DocumentId) {
-        if let Ok(mut guard) = self.generations.lock() {
-            guard.remove(document_id);
+        // Advance rather than removing `document_id` (`MED-04`) so any in-flight `gen=0`
+        // render started before close sees a newer generation and cannot poison the cache.
+        if let Ok(mut guard) = self.inner.lock() {
+            let _ = guard.advance(document_id);
         }
     }
 }
@@ -250,5 +280,26 @@ mod tests {
 
         cache.invalidate_document(&DocumentId::new("doc-1").unwrap());
         assert_eq!(cache.current_usage_bytes(), 0);
+    }
+
+    #[test]
+    fn cancellation_registry_advances_on_clear_and_bounds_entries() {
+        let registry = GenerationCancellationRegistry::new();
+        let doc = DocumentId::new("doc-close-race").unwrap();
+
+        assert_eq!(registry.current_generation(&doc), 0);
+        assert!(registry.is_current(&doc, 0));
+
+        // Closing a document at gen=0 advances generation so stale gen=0 renders are rejected
+        registry.clear_document(&doc);
+        assert!(!registry.is_current(&doc, 0));
+        assert_eq!(registry.current_generation(&doc), 1);
+
+        for idx in 0..(MAX_TRACKED_GENERATION_DOCUMENTS + 64) {
+            let d = DocumentId::new(format!("doc-cap-{idx}")).unwrap();
+            let _ = registry.next_generation(&d);
+        }
+        let guard = registry.inner.lock().unwrap();
+        assert_eq!(guard.generations.len(), MAX_TRACKED_GENERATION_DOCUMENTS);
     }
 }

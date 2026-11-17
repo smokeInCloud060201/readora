@@ -6,7 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -178,23 +178,32 @@ impl NativePlatformAdapter {
     }
 
     /// Verifies that a target directory path is a dedicated Readora application folder
-    /// (and never a root, home, Desktop, or Documents directory) before any cleanup.
+    /// (and never a source repository, root, home, Desktop, or Documents directory) before any cleanup.
     #[must_use]
     pub fn is_safe_readora_directory(path: &Path) -> bool {
+        let has_repo_markers = |dir: &Path| {
+            dir.join("Cargo.toml").exists()
+                || dir.join("package.json").exists()
+                || dir.join(".git").exists()
+        };
+
+        if has_repo_markers(path) {
+            return false;
+        }
+
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return false;
         };
-        if ALLOWED_APP_DIR_NAMES.contains(&name) {
+        if ALLOWED_APP_DIR_NAMES.contains(&name) || name.starts_with("readora-mem-") {
             return true;
         }
-        if name.eq_ignore_ascii_case("cache") {
-            if let Some(parent_name) = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-            {
-                return ALLOWED_APP_DIR_NAMES.contains(&parent_name);
-            }
+        if name.eq_ignore_ascii_case("cache")
+            && let Some(parent) = path.parent()
+            && !has_repo_markers(parent)
+            && let Some(parent_name) = parent.file_name().and_then(|n| n.to_str())
+        {
+            return ALLOWED_APP_DIR_NAMES.contains(&parent_name)
+                || parent_name.starts_with("readora-mem-");
         }
         false
     }
@@ -209,6 +218,26 @@ impl NativePlatformAdapter {
     pub fn cleanup_all_app_artifacts(
         data_dir: &Path,
         cache_dir: &Path,
+    ) -> Result<AppCleanupReportDto, ApplicationError> {
+        Self::cleanup_app_artifacts_internal(data_dir, cache_dir, false, true)
+    }
+
+    /// Cleans live application directories after SQLite tables have been transactionally reset,
+    /// tolerating OS file-sharing locks on open `readora.sqlite*` handles (e.g. Windows
+    /// `ERROR_SHARING_VIOLATION`).
+    pub fn cleanup_live_app_artifacts(
+        data_dir: &Path,
+        cache_dir: &Path,
+        clean_shared_sample_dir: bool,
+    ) -> Result<AppCleanupReportDto, ApplicationError> {
+        Self::cleanup_app_artifacts_internal(data_dir, cache_dir, true, clean_shared_sample_dir)
+    }
+
+    fn cleanup_app_artifacts_internal(
+        data_dir: &Path,
+        cache_dir: &Path,
+        tolerate_open_sqlite_lock: bool,
+        clean_shared_sample_dir: bool,
     ) -> Result<AppCleanupReportDto, ApplicationError> {
         let mut report = AppCleanupReportDto {
             redacted_data_dir: Self::redacted_data_dir_display().to_owned(),
@@ -228,12 +257,20 @@ impl NativePlatformAdapter {
             for file_name in KNOWN_SQLITE_FILES {
                 let candidate = data_dir.join(file_name);
                 if candidate.is_file() {
-                    fs::remove_file(&candidate).map_err(|e| {
-                        ApplicationError::Platform(format!(
-                            "failed to remove application database file {file_name}: {e}"
-                        ))
-                    })?;
-                    report.removed_database_files += 1;
+                    match fs::remove_file(&candidate) {
+                        Ok(()) => {
+                            report.removed_database_files += 1;
+                        }
+                        Err(_err) if tolerate_open_sqlite_lock => {
+                            // On Windows, an open SQLite handle returns ERROR_SHARING_VIOLATION (32).
+                            // All application tables were already transactionally cleared and checkpointed.
+                        }
+                        Err(e) => {
+                            return Err(ApplicationError::Platform(format!(
+                                "failed to remove application database file {file_name}: {e}"
+                            )));
+                        }
+                    }
                 }
             }
 
@@ -287,14 +324,16 @@ impl NativePlatformAdapter {
             }
         }
 
-        // Also clean Readora's temporary sample directory (`$TMPDIR/readora-samples`) if present
-        let sample_dir = std::env::temp_dir().join("readora-samples");
-        if sample_dir.is_dir() {
-            let sample_file = sample_dir.join("Readora-Welcome-Guide.pdf");
-            if sample_file.is_file() && fs::remove_file(&sample_file).is_ok() {
-                report.removed_temp_entries += 1;
+        if clean_shared_sample_dir {
+            // Also clean Readora's temporary sample directory (`$TMPDIR/readora-samples`) if present
+            let sample_dir = std::env::temp_dir().join("readora-samples");
+            if sample_dir.is_dir() {
+                let sample_file = sample_dir.join("Readora-Welcome-Guide.pdf");
+                if sample_file.is_file() && fs::remove_file(&sample_file).is_ok() {
+                    report.removed_temp_entries += 1;
+                }
+                let _ = fs::remove_dir(&sample_dir);
             }
-            let _ = fs::remove_dir(&sample_dir);
         }
 
         Ok(report)
@@ -457,23 +496,23 @@ impl NativePlatformAdapter {
         let manifest: ReleaseManifestDto = serde_json::from_str(&raw_json).map_err(|e| {
             ApplicationError::Platform(format!("invalid release manifest JSON: {e}"))
         })?;
-        if manifest.version.trim().is_empty() || manifest.sha256.trim().is_empty() {
+        if manifest.version.trim().is_empty() {
             return Err(ApplicationError::Platform(
-                "release manifest is missing required version or sha256 fields".to_owned(),
+                "release manifest is missing required version field".to_owned(),
             ));
         }
         Ok(Some(manifest))
     }
 
-    /// Atomically stages a verified release manifest inside `data_dir/updates/release-manifest.json`.
+    /// Atomically stages a release manifest inside `data_dir/updates/release-manifest.json`.
     pub fn stage_release_manifest_in(
         &self,
         data_dir: &Path,
         manifest: &ReleaseManifestDto,
     ) -> Result<PathBuf, ApplicationError> {
-        if manifest.version.trim().is_empty() || manifest.sha256.trim().is_empty() {
+        if manifest.version.trim().is_empty() {
             return Err(ApplicationError::Platform(
-                "release manifest version and sha256 must not be empty".to_owned(),
+                "release manifest version must not be empty".to_owned(),
             ));
         }
         let manifest_path = Self::release_manifest_path_in(data_dir);
@@ -560,6 +599,20 @@ impl NativePlatformAdapter {
             ApplicationError::Platform(format!("invalid GitHub release JSON response: {e}"))
         })?;
 
+        let is_draft = value
+            .get("draft")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let is_prerelease = value
+            .get("prerelease")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if is_draft || is_prerelease {
+            return Err(ApplicationError::Platform(
+                "latest release is a draft or prerelease".to_owned(),
+            ));
+        }
+
         let raw_tag = value
             .get("tag_name")
             .and_then(serde_json::Value::as_str)
@@ -642,28 +695,26 @@ impl NativePlatformAdapter {
                     .map(|d| d.trim_start_matches("sha256:").to_owned());
 
                 let matches_os = os_extensions.iter().any(|ext| asset_name.contains(ext));
+                if !matches_os {
+                    continue;
+                }
                 let matches_arch = arch_tokens.is_empty()
                     || arch_tokens.iter().any(|tok| asset_name.contains(tok));
                 let is_preferred_updater_bundle =
                     target_os == "macos" && asset_name.ends_with(".app.tar.gz");
-                let score: u8 = match (matches_os, matches_arch, is_preferred_updater_bundle) {
-                    (true, true, true) => 4,
-                    (true, true, false) => 3,
-                    (true, false, _) => 2,
-                    (false, _, _) => 1,
+                let score: u8 = match (matches_arch, is_preferred_updater_bundle) {
+                    (true, true) => 4,
+                    (true, false) => 3,
+                    (false, _) => 2,
                 };
 
                 if score > best_score {
                     best_score = score;
-                    if asset_size > 0 {
-                        selected_size = asset_size;
-                    }
-                    if asset_url.is_some() {
-                        selected_url = asset_url;
-                    }
-                    if asset_digest.as_ref().is_some_and(|d| !d.is_empty()) {
-                        selected_sha256 = asset_digest;
-                    }
+                    selected_size = asset_size;
+                    selected_url = asset_url;
+                    selected_sha256 = asset_digest
+                        .map(|d| d.trim().to_owned())
+                        .filter(|d| !d.is_empty());
                     if score == 4 {
                         break;
                     }
@@ -671,13 +722,9 @@ impl NativePlatformAdapter {
             }
         }
 
-        let package_size_bytes = if selected_size > 0 {
-            selected_size
-        } else {
-            42 * 1024 * 1024
-        };
+        let package_size_bytes = selected_size;
         let download_url = selected_url.or(html_url);
-        let sha256 = selected_sha256.unwrap_or_else(|| format!("github-tag-{version}"));
+        let sha256 = selected_sha256.unwrap_or_default();
 
         Ok(ReleaseManifestDto {
             version,
@@ -802,6 +849,103 @@ impl PlatformPort for NativePlatformAdapter {
         }
 
         write_result
+    }
+
+    fn remove_file_if_exists(&self, path: &str) -> Result<bool, ApplicationError> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(ApplicationError::Platform(
+                "file path must not be empty".to_owned(),
+            ));
+        }
+        match fs::remove_file(Path::new(trimmed)) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(ApplicationError::Platform(format!(
+                "failed to remove file: {err}"
+            ))),
+        }
+    }
+
+    fn read_file_bytes(
+        &self,
+        path: &str,
+        max_size_bytes: u64,
+    ) -> Result<Vec<u8>, ApplicationError> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(ApplicationError::Platform(
+                "file path must not be empty".to_owned(),
+            ));
+        }
+        let target = Path::new(trimmed);
+        let meta = fs::metadata(target).map_err(|_| {
+            ApplicationError::Platform("target file does not exist or is unreadable".to_owned())
+        })?;
+        if !meta.is_file() {
+            return Err(ApplicationError::Platform(
+                "target path is not a regular file".to_owned(),
+            ));
+        }
+        if max_size_bytes > 0 && meta.len() > max_size_bytes {
+            return Err(ApplicationError::Platform(format!(
+                "file size ({} bytes) exceeds maximum allowed ({max_size_bytes} bytes)",
+                meta.len()
+            )));
+        }
+        let file = File::open(target).map_err(|_| {
+            ApplicationError::Platform("failed to open file for reading".to_owned())
+        })?;
+        let cap = usize::try_from(meta.len().min(16 * 1024 * 1024)).unwrap_or(64 * 1024);
+        let mut buf = Vec::with_capacity(cap);
+        if max_size_bytes > 0 {
+            file.take(max_size_bytes.saturating_add(1))
+                .read_to_end(&mut buf)
+                .map_err(|_| ApplicationError::Platform("failed to read file bytes".to_owned()))?;
+            if (buf.len() as u64) > max_size_bytes {
+                return Err(ApplicationError::Platform(format!(
+                    "file size exceeds maximum allowed ({max_size_bytes} bytes)"
+                )));
+            }
+        } else {
+            let mut f = file;
+            f.read_to_end(&mut buf)
+                .map_err(|_| ApplicationError::Platform("failed to read file bytes".to_owned()))?;
+        }
+        Ok(buf)
+    }
+
+    fn remove_empty_dir_if_exists(&self, path: &str) -> Result<bool, ApplicationError> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        match fs::remove_dir(Path::new(trimmed)) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Ok(false),
+        }
+    }
+
+    fn is_path_within_dir(&self, candidate_path: &str, parent_dir: &Path) -> bool {
+        let Ok(canon_parent) = fs::canonicalize(parent_dir) else {
+            let candidate = Path::new(candidate_path);
+            return candidate != parent_dir && candidate.starts_with(parent_dir);
+        };
+        let candidate = Path::new(candidate_path);
+        let resolved_candidate = fs::canonicalize(candidate).or_else(|_| {
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+            let name = candidate
+                .file_name()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+            fs::canonicalize(parent).map(|cp| cp.join(name))
+        });
+        match resolved_candidate {
+            Ok(canon_cand) => canon_cand != canon_parent && canon_cand.starts_with(&canon_parent),
+            Err(_) => false,
+        }
     }
 }
 
@@ -989,5 +1133,68 @@ mod tests {
         assert_eq!(report.removed_cache_entries, 2);
         assert!(report.data_dir_removed);
         assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn platform_rejects_repo_directories_draft_prereleases_and_cross_os_digest_mixing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_repo = dir.path().join("readora");
+        fs::create_dir_all(fake_repo.join("cache")).unwrap();
+        fs::write(fake_repo.join("Cargo.toml"), b"[workspace]\n").unwrap();
+        assert!(!NativePlatformAdapter::is_safe_readora_directory(
+            &fake_repo
+        ));
+        assert!(!NativePlatformAdapter::is_safe_readora_directory(
+            &fake_repo.join("cache")
+        ));
+
+        // Draft and prerelease GitHub payloads are rejected
+        let draft_json = r#"{"tag_name":"v2.0.0","draft":true,"assets":[]}"#;
+        assert!(NativePlatformAdapter::parse_github_release_json(draft_json, "macos").is_err());
+
+        let prerelease_json = r#"{"tag_name":"v2.0.0-rc.1","prerelease":true,"assets":[]}"#;
+        assert!(
+            NativePlatformAdapter::parse_github_release_json(prerelease_json, "macos").is_err()
+        );
+
+        // Wrong-OS asset digest is never mixed onto an OS-matching asset without digest
+        let mixed_assets_json = r#"{
+            "tag_name": "v1.3.0",
+            "assets": [
+                {
+                    "name": "Readora_1.3.0_x64-setup.exe",
+                    "size": 38797312,
+                    "browser_download_url": "https://example.com/win.exe",
+                    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                {
+                    "name": "Readora_1.3.0_aarch64.dmg",
+                    "size": 44040192,
+                    "browser_download_url": "https://example.com/mac.dmg"
+                }
+            ]
+        }"#;
+        let parsed = NativePlatformAdapter::parse_github_release_json_for_target(
+            mixed_assets_json,
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.download_url.as_deref(),
+            Some("https://example.com/mac.dmg")
+        );
+        assert_eq!(parsed.sha256, "");
+        assert!(!NativePlatformAdapter::is_hex_sha256(&parsed.sha256));
+
+        // Linux sees no Linux asset -> does NOT select Windows .exe!
+        let linux_parsed = NativePlatformAdapter::parse_github_release_json_for_target(
+            mixed_assets_json,
+            "linux",
+            "x86_64",
+        )
+        .unwrap();
+        assert!(linux_parsed.download_url.is_none());
+        assert_eq!(linux_parsed.sha256, "");
     }
 }

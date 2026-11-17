@@ -41,7 +41,16 @@ impl ScaleBucket {
 
 /// Validated zoom factor between `0.25` and `5.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f32")]
 pub struct ZoomLevel(f32);
+
+impl TryFrom<f32> for ZoomLevel {
+    type Error = DomainError;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
 
 impl ZoomLevel {
     /// Default 100% zoom level (`1.0`).

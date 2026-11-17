@@ -9,17 +9,15 @@ use crate::ports::platform::PlatformPort;
 use crate::ports::render_cache::RenderCancellationPort;
 use crate::ports::storage::RecentDocumentRepository;
 
-/// Applies a `NavigationAction` to `view_state`, increments the document's render generation
-/// to cancel obsolete in-flight renders, and persists the updated reading position.
-pub fn execute_navigation_action(
+/// Applies `action` to `view_state` in memory and advances `cancellation` only if `view_state`
+/// actually changed. Returns `(updated_view_state, generation, did_change)`.
+pub fn apply_navigation_action(
     view_state: &mut ViewState,
-    canonical_path: &str,
-    display_name: &str,
     action: NavigationAction,
     cancellation: &dyn RenderCancellationPort,
-    recent_repo: &dyn RecentDocumentRepository,
-    platform: &dyn PlatformPort,
-) -> Result<(ViewState, u64), ApplicationError> {
+) -> Result<(ViewState, u64, bool), ApplicationError> {
+    let before = view_state.clone();
+
     match action {
         NavigationAction::GoToPage(zero_based) => {
             view_state.go_to_page(PageIndex::new(zero_based))?;
@@ -59,15 +57,45 @@ pub fn execute_navigation_action(
         }
     }
 
-    let new_generation = cancellation.next_generation(&view_state.document_id);
+    if *view_state == before {
+        return Ok((
+            view_state.clone(),
+            cancellation.current_generation(&view_state.document_id),
+            false,
+        ));
+    }
 
-    let recent = RecentDocument::from_view_state(
+    let new_generation = cancellation.next_generation(&view_state.document_id);
+    Ok((view_state.clone(), new_generation, true))
+}
+
+/// Applies a `NavigationAction` to `view_state`, increments the document's render generation
+/// to cancel obsolete in-flight renders when state changes, and persists the updated reading position.
+pub fn execute_navigation_action(
+    view_state: &mut ViewState,
+    canonical_path: &str,
+    display_name: &str,
+    action: NavigationAction,
+    cancellation: &dyn RenderCancellationPort,
+    recent_repo: &dyn RecentDocumentRepository,
+    platform: &dyn PlatformPort,
+) -> Result<(ViewState, u64), ApplicationError> {
+    let (updated, generation, changed) = apply_navigation_action(view_state, action, cancellation)?;
+    if !changed {
+        return Ok((updated, generation));
+    }
+
+    let mut recent = RecentDocument::from_view_state(
         canonical_path,
         display_name,
-        view_state,
+        &updated,
         platform.current_unix_ms(),
     );
+    if let Some(prev) = recent_repo.get(&updated.document_id)? {
+        recent.is_favorite = prev.is_favorite;
+        recent.is_archived = prev.is_archived;
+    }
     recent_repo.upsert(&recent)?;
 
-    Ok((view_state.clone(), new_generation))
+    Ok((updated, generation))
 }

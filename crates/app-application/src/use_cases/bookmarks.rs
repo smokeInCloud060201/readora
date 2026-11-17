@@ -1,7 +1,10 @@
 //! Use cases for creating, listing, and deleting user bookmarks and annotations.
 
+use std::path::{Component, Path};
+
 use app_domain::{
     Annotation, AnnotationId, Bookmark, BookmarkId, DocumentId, PageIndex, sanitize_display_name,
+    sanitize_export_stem,
 };
 
 use crate::dto::{ExportAnnotationsBundleDto, UpsertAnnotationCommand, UpsertBookmarkCommand};
@@ -42,11 +45,11 @@ pub fn execute_delete_bookmark(
     bookmark_id: &str,
     bookmark_repo: &dyn BookmarkRepository,
 ) -> Result<bool, ApplicationError> {
-    let id = BookmarkId::new(bookmark_id.trim());
+    let id = BookmarkId::try_new(bookmark_id)?;
     bookmark_repo.delete(&id)
 }
 
-/// Creates a persistent annotation (highlight, underline, or comment) on a validated page.
+/// Creates or updates a persistent annotation (highlight, underline, or comment) on a validated page.
 pub fn execute_upsert_annotation(
     command: &UpsertAnnotationCommand,
     page_count: u32,
@@ -55,8 +58,12 @@ pub fn execute_upsert_annotation(
 ) -> Result<Annotation, ApplicationError> {
     let doc_id = DocumentId::new(&command.document_id)?;
     let page_index = PageIndex::within(command.page_index, page_count)?;
+    let annotation_id = match command.id.as_deref().map(str::trim) {
+        Some(existing) if !existing.is_empty() => AnnotationId::new(existing),
+        _ => AnnotationId::generate(),
+    };
     let annotation = Annotation::new(
-        AnnotationId::generate(),
+        annotation_id,
         doc_id,
         page_index,
         command.kind,
@@ -82,8 +89,50 @@ pub fn execute_delete_annotation(
     annotation_id: &str,
     annotation_repo: &dyn AnnotationRepository,
 ) -> Result<bool, ApplicationError> {
-    let id = AnnotationId::new(annotation_id.trim());
+    let id = AnnotationId::try_new(annotation_id)?;
     annotation_repo.delete(&id)
+}
+
+fn validate_markdown_export_destination(raw_dest: &str) -> Result<&str, ApplicationError> {
+    let trimmed = raw_dest.trim();
+    if trimmed.is_empty() {
+        return Err(ApplicationError::Platform(
+            "export destination path must not be empty".to_owned(),
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(ApplicationError::Platform(
+            "export destination path contains control characters".to_owned(),
+        ));
+    }
+    let path = Path::new(trimmed);
+    if path.components().any(|c| matches!(c, Component::ParentDir))
+        || trimmed.split(['/', '\\']).any(|seg| seg == "..")
+    {
+        return Err(ApplicationError::Platform(
+            "export destination path must not contain '..' traversal segments".to_owned(),
+        ));
+    }
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Err(ApplicationError::Platform(
+            "export destination path must include a valid file name".to_owned(),
+        ));
+    };
+    if file_name.starts_with('.') {
+        return Err(ApplicationError::Platform(
+            "export destination file name must not start with '.'".to_owned(),
+        ));
+    }
+    let has_md_ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    if !has_md_ext {
+        return Err(ApplicationError::Platform(
+            "export destination path must have a .md extension".to_owned(),
+        ));
+    }
+    Ok(trimmed)
 }
 
 /// Generates a portable Markdown export bundle of a document's bookmarks and annotations,
@@ -98,6 +147,11 @@ pub fn execute_export_annotations_bundle(
     platform: &dyn PlatformPort,
 ) -> Result<ExportAnnotationsBundleDto, ApplicationError> {
     let doc_id = DocumentId::new(document_id)?;
+    let validated_dest = match destination_path {
+        Some(raw) => Some(validate_markdown_export_destination(raw)?),
+        None => None,
+    };
+
     let bookmarks = bookmark_repo.list_for_document(&doc_id)?;
     let annotations = if include_annotations {
         annotation_repo.list_for_document(&doc_id)?
@@ -106,11 +160,16 @@ pub fn execute_export_annotations_bundle(
     };
 
     let clean_title = sanitize_display_name(document_title);
-    let stem = clean_title
-        .strip_suffix(".pdf")
-        .or_else(|| clean_title.strip_suffix(".PDF"))
-        .unwrap_or(&clean_title);
-    let file_name = format!("{stem}-annotations.md");
+    let raw_stem = if clean_title.len() >= 4
+        && clean_title.is_char_boundary(clean_title.len() - 4)
+        && clean_title[clean_title.len() - 4..].eq_ignore_ascii_case(".pdf")
+    {
+        &clean_title[..clean_title.len() - 4]
+    } else {
+        &clean_title
+    };
+    let safe_stem = sanitize_export_stem(raw_stem);
+    let file_name = format!("{safe_stem}-annotations.md");
     let share_uri = format!("readora://document/{}", doc_id.as_str());
 
     let mut md = format!("# {clean_title} — Reading Notes & Annotations\n\n");
@@ -148,14 +207,9 @@ pub fn execute_export_annotations_bundle(
         }
     }
 
-    let saved_path = if let Some(path) = destination_path {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            platform.atomic_write_file(trimmed, md.as_bytes())?;
-            Some(trimmed.to_owned())
-        } else {
-            None
-        }
+    let saved_path = if let Some(dest) = validated_dest {
+        platform.atomic_write_file(dest, md.as_bytes())?;
+        Some(dest.to_owned())
     } else {
         None
     };

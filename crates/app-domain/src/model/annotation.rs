@@ -12,13 +12,23 @@ pub const MAX_ANNOTATION_TEXT_LEN: usize = 2000;
 
 /// Unique identifier for a user-created annotation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct AnnotationId(String);
 
 impl AnnotationId {
-    /// Wraps an existing annotation ID string.
+    /// Wraps an existing annotation ID string, trimming surrounding whitespace.
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        Self(id.into().trim().to_owned())
+    }
+
+    /// Validates and constructs a non-empty `AnnotationId`.
+    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
+        let trimmed = raw.into().trim().to_owned();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyAnnotationId);
+        }
+        Ok(Self(trimmed))
     }
 
     /// Generates a new random annotation ID.
@@ -31,6 +41,14 @@ impl AnnotationId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for AnnotationId {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
     }
 }
 
@@ -102,6 +120,9 @@ impl Annotation {
         note_text: impl Into<String>,
         created_at_unix_ms: i64,
     ) -> Result<Self, DomainError> {
+        if id.as_str().trim().is_empty() {
+            return Err(DomainError::EmptyAnnotationId);
+        }
         let color_trimmed = color_hex.into().trim().to_lowercase();
         let valid_color = color_trimmed.len() == 7
             && color_trimmed.starts_with('#')

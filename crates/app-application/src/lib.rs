@@ -29,7 +29,7 @@ pub use use_cases::bookmarks::{
     execute_list_annotations, execute_list_bookmarks, execute_upsert_annotation,
     execute_upsert_bookmark,
 };
-pub use use_cases::navigate_view::execute_navigation_action;
+pub use use_cases::navigate_view::{apply_navigation_action, execute_navigation_action};
 pub use use_cases::open_document::{OpenedDocumentSession, execute_open_document};
 pub use use_cases::render_page::execute_render_page;
 pub use use_cases::search::{DEFAULT_MAX_SEARCH_HITS, execute_search_document};
@@ -170,12 +170,25 @@ mod tests {
         ) -> Result<(), ApplicationError> {
             Ok(())
         }
+
+        fn remove_file_if_exists(&self, _path: &str) -> Result<bool, ApplicationError> {
+            Ok(false)
+        }
+
+        fn read_file_bytes(
+            &self,
+            _path: &str,
+            _max_size_bytes: u64,
+        ) -> Result<Vec<u8>, ApplicationError> {
+            Ok(b"%PDF-1.7\n%%EOF".to_vec())
+        }
     }
 
     #[derive(Default)]
     struct FakeStorage {
         recents: Mutex<HashMap<DocumentId, RecentDocument>>,
         bookmarks: Mutex<Vec<Bookmark>>,
+        annotations: Mutex<Vec<app_domain::Annotation>>,
         settings: Mutex<AppSettings>,
     }
 
@@ -269,6 +282,45 @@ mod tests {
         fn save(&self, settings: &AppSettings) -> Result<(), ApplicationError> {
             *self.settings.lock().unwrap() = settings.clone();
             Ok(())
+        }
+    }
+
+    impl AnnotationRepository for FakeStorage {
+        fn upsert(
+            &self,
+            annotation: &app_domain::Annotation,
+        ) -> Result<app_domain::Annotation, ApplicationError> {
+            let mut guard = self.annotations.lock().unwrap();
+            if let Some(existing) = guard.iter_mut().find(|a| a.id == annotation.id) {
+                *existing = annotation.clone();
+            } else {
+                guard.push(annotation.clone());
+            }
+            Ok(annotation.clone())
+        }
+
+        fn list_for_document(
+            &self,
+            document_id: &DocumentId,
+        ) -> Result<Vec<app_domain::Annotation>, ApplicationError> {
+            Ok(self
+                .annotations
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|a| &a.document_id == document_id)
+                .cloned()
+                .collect())
+        }
+
+        fn delete(
+            &self,
+            annotation_id: &app_domain::AnnotationId,
+        ) -> Result<bool, ApplicationError> {
+            let mut guard = self.annotations.lock().unwrap();
+            let before = guard.len();
+            guard.retain(|a| &a.id != annotation_id);
+            Ok(guard.len() < before)
         }
     }
 
@@ -450,6 +502,9 @@ mod tests {
             SettingsPatchDto {
                 theme: Some(ThemePreference::Dark),
                 render_cache_budget_bytes: Some(32 * 1024 * 1024),
+                reopen_last_document: Some(false),
+                remember_page_position: Some(false),
+                confirm_before_delete: Some(true),
                 ..SettingsPatchDto::default()
             },
             &storage,
@@ -457,6 +512,149 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated_settings.theme, ThemePreference::Dark);
+        assert!(!updated_settings.reopen_last_document);
+        assert!(!updated_settings.remember_page_position);
+        assert!(updated_settings.confirm_before_delete);
         assert_eq!(*infra.budget.lock().unwrap(), 32 * 1024 * 1024);
+
+        assert!(
+            execute_update_settings(
+                SettingsPatchDto {
+                    github_release_repo: Some("../../evil/slug".to_owned()),
+                    ..SettingsPatchDto::default()
+                },
+                &storage,
+                &infra,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn navigation_noop_favorite_preservation_and_export_path_guards() {
+        let engine = FakePdfEngine;
+        let platform = FakePlatform;
+        let storage = FakeStorage::default();
+        let infra = FakeRenderInfra::default();
+
+        let opened = execute_open_document(
+            &OpenDocumentRequest {
+                path: "/tmp/guide.pdf".to_owned(),
+                password: None,
+            },
+            &engine,
+            &platform,
+            &storage,
+            &storage,
+            &storage,
+        )
+        .unwrap();
+
+        let doc_id = opened.session.descriptor.id.clone();
+        storage.set_favorite(&doc_id, true).unwrap();
+        storage.set_archived(&doc_id, true).unwrap();
+
+        // No-op PreviousPage on page 0 must not advance cancellation generation
+        let mut view_state = opened.session.view_state;
+        let (_same, gen_noop) = execute_navigation_action(
+            &mut view_state,
+            "/tmp/guide.pdf",
+            "guide.pdf",
+            NavigationAction::PreviousPage,
+            &infra,
+            &storage,
+            &platform,
+        )
+        .unwrap();
+        assert_eq!(gen_noop, 0);
+
+        // Zoom + navigate preserves favorite/archived flags
+        let _ = execute_navigation_action(
+            &mut view_state,
+            "/tmp/guide.pdf",
+            "guide.pdf",
+            NavigationAction::SetZoom(1.5),
+            &infra,
+            &storage,
+            &platform,
+        )
+        .unwrap();
+        let persisted = storage.get(&doc_id).unwrap().unwrap();
+        assert!(persisted.is_favorite);
+        assert!(persisted.is_archived);
+
+        // Reopen with zoom != 1.0 restores FitMode::Manual and preserves favorite/archived
+        let reopened = execute_open_document(
+            &OpenDocumentRequest {
+                path: "/tmp/guide.pdf".to_owned(),
+                password: None,
+            },
+            &engine,
+            &platform,
+            &storage,
+            &storage,
+            &storage,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.session.view_state.fit_mode,
+            app_domain::FitMode::Manual
+        );
+        let after_reopen = storage.get(&doc_id).unwrap().unwrap();
+        assert!(after_reopen.is_favorite);
+        assert!(after_reopen.is_archived);
+
+        // Annotation upsert in place via explicit ID
+        let created = execute_upsert_annotation(
+            &UpsertAnnotationCommand {
+                id: Some("ann-custom-1".to_owned()),
+                document_id: doc_id.as_str().to_owned(),
+                page_index: 0,
+                kind: app_domain::AnnotationKind::Comment,
+                color_hex: "#f3d96b".to_owned(),
+                quote_text: "Excerpt".to_owned(),
+                note_text: "Initial note".to_owned(),
+            },
+            10,
+            &storage,
+            &platform,
+        )
+        .unwrap();
+        assert_eq!(created.id.as_str(), "ann-custom-1");
+
+        // Export rejects dotfiles, traversal, empty paths, and non-.md extensions
+        for bad_dest in [
+            "",
+            "/Users/victim/.zshrc",
+            "/tmp/.hidden.md",
+            "/tmp/../notes.md",
+            "/tmp/notes.sh",
+        ] {
+            assert!(
+                execute_export_annotations_bundle(
+                    doc_id.as_str(),
+                    "CON.pdf",
+                    true,
+                    Some(bad_dest),
+                    &storage,
+                    &storage,
+                    &platform,
+                )
+                .is_err(),
+                "expected export destination '{bad_dest}' to be rejected"
+            );
+        }
+
+        let ok_export = execute_export_annotations_bundle(
+            doc_id.as_str(),
+            "CON.pdf",
+            true,
+            Some("/tmp/safe-notes.md"),
+            &storage,
+            &storage,
+            &platform,
+        )
+        .unwrap();
+        assert_eq!(ok_export.file_name, "doc_CON-annotations.md");
     }
 }

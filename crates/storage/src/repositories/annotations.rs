@@ -104,8 +104,9 @@ fn map_annotation_row(row: &rusqlite::Row<'_>) -> Result<Annotation, Application
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
 
     let doc_id = DocumentId::new(raw_doc_id)?;
+    let ann_id = AnnotationId::try_new(raw_id)?;
     Ok(Annotation::new(
-        AnnotationId::new(raw_id),
+        ann_id,
         doc_id,
         PageIndex::new(page_u32),
         AnnotationKind::from_storage(&raw_kind),

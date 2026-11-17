@@ -1,6 +1,6 @@
 //! Use cases for reading and updating application settings and cache budgets.
 
-use app_domain::{AppSettings, ZoomLevel};
+use app_domain::{AppSettings, DomainError, ZoomLevel, is_valid_github_repo_slug};
 
 use crate::dto::SettingsPatchDto;
 use crate::error::ApplicationError;
@@ -47,11 +47,23 @@ pub fn execute_update_settings(
     if let Some(auto_check_updates) = patch.auto_check_updates {
         settings.auto_check_updates = auto_check_updates;
     }
+    if let Some(reopen_last_document) = patch.reopen_last_document {
+        settings.reopen_last_document = reopen_last_document;
+    }
+    if let Some(remember_page_position) = patch.remember_page_position {
+        settings.remember_page_position = remember_page_position;
+    }
+    if let Some(confirm_before_delete) = patch.confirm_before_delete {
+        settings.confirm_before_delete = confirm_before_delete;
+    }
     if let Some(github_repo) = patch.github_release_repo {
         let trimmed = github_repo.trim();
-        if !trimmed.is_empty() && trimmed.contains('/') {
-            settings.github_release_repo = trimmed.to_owned();
+        if !is_valid_github_repo_slug(trimmed) {
+            return Err(ApplicationError::Domain(DomainError::InvalidSettings(
+                format!("invalid GitHub repository slug '{trimmed}'"),
+            )));
         }
+        settings.github_release_repo = trimmed.to_owned();
     }
 
     settings.validate()?;

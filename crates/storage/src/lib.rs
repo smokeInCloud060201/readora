@@ -16,9 +16,10 @@ const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str =
     include_str!("../migrations/0002_library_collections_and_annotations.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_annotations.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_cascade_indexes.sql");
 
 /// Current append-only SQLite schema version shipped with this release.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Thread-safe SQLite storage adapter implementing `RecentDocumentRepository`,
 /// `BookmarkRepository`, and `SettingsRepository`.
@@ -116,6 +117,28 @@ impl SqliteStorage {
             })?;
         }
 
+        let has_m4: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 4",
+                params![],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ApplicationError::Storage(format!("failed to query migration 4: {e}")))?;
+
+        if has_m4.is_none() {
+            tx.execute_batch(MIGRATION_0004).map_err(|e| {
+                ApplicationError::Storage(format!("failed to apply migration 0004: {e}"))
+            })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_unix_ms) VALUES (4, 0)",
+                params![],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to record schema migration 4: {e}"))
+            })?;
+        }
+
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit migration transaction: {e}"))
         })?;
@@ -149,19 +172,25 @@ impl SqliteStorage {
     }
 
     /// Wipes all Readora-persisted rows (`annotations`, `bookmarks`, `recent_documents`,
-    /// `app_settings`) and checkpoints/truncates the SQLite WAL journal for clean reset or uninstall.
+    /// `app_settings`) atomically inside a transaction and checkpoints/vacuums SQLite for clean reset.
     pub fn reset_all_application_tables(&self) -> Result<(), ApplicationError> {
         let conn = self.lock_connection()?;
-        conn.execute_batch(
+        let tx = conn.unchecked_transaction().map_err(|e| {
+            ApplicationError::Storage(format!("failed to begin reset transaction: {e}"))
+        })?;
+        tx.execute_batch(
             "DELETE FROM annotations;
              DELETE FROM bookmarks;
              DELETE FROM recent_documents;
-             DELETE FROM app_settings;
-             PRAGMA wal_checkpoint(TRUNCATE);",
+             DELETE FROM app_settings;",
         )
         .map_err(|e| {
             ApplicationError::Storage(format!("failed to reset application SQLite tables: {e}"))
         })?;
+        tx.commit().map_err(|e| {
+            ApplicationError::Storage(format!("failed to commit reset transaction: {e}"))
+        })?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
         Ok(())
     }
 }
@@ -268,8 +297,35 @@ mod tests {
         storage.save(&updated).unwrap();
         assert_eq!(storage.load().unwrap().theme, ThemePreference::Dark);
 
+        // Verify cascade trigger on recent_documents deletion removes associated bookmarks & annotations
+        BookmarkRepository::upsert(&storage, &bm2).unwrap();
+        AnnotationRepository::upsert(&storage, &ann).unwrap();
+        assert_eq!(
+            BookmarkRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            AnnotationRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .len(),
+            1
+        );
+
         storage.remove(&doc_id).unwrap();
         assert!(storage.get(&doc_id).unwrap().is_none());
+        assert!(
+            BookmarkRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            AnnotationRepository::list_for_document(&storage, &doc_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(storage.schema_version().unwrap(), 4);
         assert_eq!(storage.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     }
 

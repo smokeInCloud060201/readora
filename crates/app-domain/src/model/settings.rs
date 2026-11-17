@@ -18,11 +18,34 @@ pub const MAX_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_PREFETCH_WINDOW: u32 = 5;
 
 const fn default_auto_check_updates() -> bool {
+    false
+}
+
+const fn default_true() -> bool {
     true
 }
 
 fn default_github_release_repo() -> String {
     "smokeInCloud060201/readora".to_owned()
+}
+
+/// Validates that `repo` is a well-formed GitHub `owner/repo` slug (`1..=64` ASCII
+/// `[A-Za-z0-9._-]` characters per segment, excluding `.` and `..`).
+#[must_use]
+pub fn is_valid_github_repo_slug(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let valid_segment = |seg: &str| {
+        (1..=64).contains(&seg.len())
+            && seg != "."
+            && seg != ".."
+            && seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    };
+    valid_segment(owner) && valid_segment(name)
 }
 
 /// User-configurable application preferences and performance budgets.
@@ -46,6 +69,15 @@ pub struct AppSettings {
     /// Whether Readora should automatically check for staged/available updates on launch.
     #[serde(default = "default_auto_check_updates")]
     pub auto_check_updates: bool,
+    /// Whether to automatically reopen the last active document on launch.
+    #[serde(default = "default_true")]
+    pub reopen_last_document: bool,
+    /// Whether to remember and restore per-document page, zoom, and rotation positions.
+    #[serde(default = "default_true")]
+    pub remember_page_position: bool,
+    /// Whether to prompt for confirmation before deleting library documents or items.
+    #[serde(default)]
+    pub confirm_before_delete: bool,
     /// GitHub `owner/repo` slug used to query `/repos/{owner}/{repo}/releases/latest`.
     #[serde(default = "default_github_release_repo")]
     pub github_release_repo: String,
@@ -57,27 +89,46 @@ pub struct AppSettings {
     pub dismissed_update_version: Option<String>,
 }
 
-/// Compares two semantic version strings (`major.minor.patch`, optionally prefixed with `v`).
+/// Compares two semantic version strings (`major.minor.patch`, optionally prefixed with `v`
+/// and optionally carrying `-prerelease` and/or `+build` suffixes).
+///
+/// Per SemVer 2.0.0 precedence: `[major, minor, patch]` are compared numerically first;
+/// if equal, a normal release (no `-prerelease`) has higher precedence (`Ordering::Greater`)
+/// than a prerelease version, and two prerelease suffixes compare lexicographically.
 #[must_use]
 pub fn compare_semver(left: &str, right: &str) -> Ordering {
-    fn parse_parts(raw: &str) -> [u64; 3] {
+    fn parse_parts(raw: &str) -> ([u64; 3], Option<&str>) {
         let cleaned = raw.trim().trim_start_matches(['v', 'V']);
-        let core = cleaned.split(['-', '+']).next().unwrap_or("");
+        let without_build = cleaned.split('+').next().unwrap_or("");
+        let (core, prerelease) = match without_build.split_once('-') {
+            Some((c, pre)) if !pre.is_empty() => (c, Some(pre)),
+            Some((c, _)) => (c, None),
+            None => (without_build, None),
+        };
         let mut out = [0_u64; 3];
         for (idx, part) in core.split('.').take(3).enumerate() {
             out[idx] = part.parse::<u64>().unwrap_or(0);
         }
-        out
+        (out, prerelease)
     }
 
-    let l = parse_parts(left);
-    let r = parse_parts(right);
-    l.cmp(&r)
+    let (l_nums, l_pre) = parse_parts(left);
+    let (r_nums, r_pre) = parse_parts(right);
+    match l_nums.cmp(&r_nums) {
+        Ordering::Equal => match (l_pre, r_pre) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(lp), Some(rp)) => lp.cmp(rp),
+        },
+        non_eq => non_eq,
+    }
 }
 
 impl AppSettings {
     /// Validates that all settings invariants hold.
     pub fn validate(&self) -> Result<(), DomainError> {
+        let _ = ZoomLevel::new(self.default_zoom.factor())?;
         if !(MIN_CACHE_BUDGET_BYTES..=MAX_CACHE_BUDGET_BYTES)
             .contains(&self.render_cache_budget_bytes)
         {
@@ -93,6 +144,12 @@ impl AppSettings {
                 max_window: MAX_PREFETCH_WINDOW,
             });
         }
+        if !is_valid_github_repo_slug(&self.github_release_repo) {
+            return Err(DomainError::InvalidSettings(format!(
+                "invalid GitHub repository slug '{}'",
+                self.github_release_repo
+            )));
+        }
         Ok(())
     }
 }
@@ -107,7 +164,10 @@ impl Default for AppSettings {
             render_cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             prefetch_window: 1,
             show_extracted_text_layer: false,
-            auto_check_updates: true,
+            auto_check_updates: default_auto_check_updates(),
+            reopen_last_document: default_true(),
+            remember_page_position: default_true(),
+            confirm_before_delete: false,
             github_release_repo: default_github_release_repo(),
             installed_version: None,
             dismissed_update_version: None,

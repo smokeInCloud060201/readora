@@ -130,6 +130,9 @@ pub struct UpsertBookmarkCommand {
 /// Command to create or update a persistent user annotation on a page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpsertAnnotationCommand {
+    /// Optional existing annotation ID when editing an annotation in place.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Target document ID.
     pub document_id: String,
     /// Zero-based page index.
@@ -180,6 +183,15 @@ pub struct SettingsPatchDto {
     pub show_extracted_text_layer: Option<bool>,
     /// Optional toggle for automatically checking for updates on launch.
     pub auto_check_updates: Option<bool>,
+    /// Optional toggle for automatically reopening the last active document on launch.
+    #[serde(default)]
+    pub reopen_last_document: Option<bool>,
+    /// Optional toggle for remembering per-document page, zoom, and rotation positions.
+    #[serde(default)]
+    pub remember_page_position: Option<bool>,
+    /// Optional toggle for prompting before deleting items.
+    #[serde(default)]
+    pub confirm_before_delete: Option<bool>,
     /// Optional GitHub `owner/repo` slug for checking GitHub Releases.
     pub github_release_repo: Option<String>,
 }

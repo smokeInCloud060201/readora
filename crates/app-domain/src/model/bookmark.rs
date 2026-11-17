@@ -12,13 +12,23 @@ pub const MAX_BOOKMARK_LABEL_LEN: usize = 200;
 
 /// Unique identifier for a user-created bookmark.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct BookmarkId(String);
 
 impl BookmarkId {
-    /// Wraps an existing bookmark ID string.
+    /// Wraps an existing bookmark ID string, trimming surrounding whitespace.
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        Self(id.into().trim().to_owned())
+    }
+
+    /// Validates and constructs a non-empty `BookmarkId`.
+    pub fn try_new(raw: impl Into<String>) -> Result<Self, DomainError> {
+        let trimmed = raw.into().trim().to_owned();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyBookmarkId);
+        }
+        Ok(Self(trimmed))
     }
 
     /// Generates a new random bookmark ID.
@@ -31,6 +41,14 @@ impl BookmarkId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for BookmarkId {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
     }
 }
 
@@ -58,6 +76,9 @@ impl Bookmark {
         label: impl Into<String>,
         created_at_unix_ms: i64,
     ) -> Result<Self, DomainError> {
+        if id.as_str().trim().is_empty() {
+            return Err(DomainError::EmptyBookmarkId);
+        }
         let trimmed: String = label
             .into()
             .chars()

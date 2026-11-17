@@ -9,7 +9,16 @@ use crate::error::DomainError;
 
 /// Opaque, non-empty identifier representing an opened or persisted document.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct DocumentId(String);
+
+impl TryFrom<String> for DocumentId {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
 
 impl DocumentId {
     /// Creates a validated `DocumentId` from an arbitrary string.

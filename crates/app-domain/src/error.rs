@@ -54,6 +54,14 @@ pub enum DomainError {
         max_px: u32,
     },
 
+    /// Bookmark identifier is empty or whitespace.
+    #[error("bookmark identifier must not be empty")]
+    EmptyBookmarkId,
+
+    /// Annotation identifier is empty or whitespace.
+    #[error("annotation identifier must not be empty")]
+    EmptyAnnotationId,
+
     /// Bookmark label is empty or exceeds the maximum character limit.
     #[error("bookmark label must be between 1 and {max_len} characters")]
     InvalidBookmarkLabel {
@@ -67,6 +75,10 @@ pub enum DomainError {
         /// Validation failure reason.
         reason: String,
     },
+
+    /// General application settings validation failure.
+    #[error("invalid application settings: {0}")]
+    InvalidSettings(String),
 
     /// Cache byte budget is outside the valid range.
     #[error("render cache budget {budget_bytes} bytes is outside [{min_bytes}, {max_bytes}]")]

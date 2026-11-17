@@ -27,6 +27,7 @@ impl SettingsRepository for SqliteStorage {
             let parsed: AppSettings = serde_json::from_str(&json_str).map_err(|e| {
                 ApplicationError::Storage(format!("corrupt settings JSON in storage: {e}"))
             })?;
+            parsed.validate()?;
             Ok(parsed)
         } else {
             Ok(AppSettings::default())

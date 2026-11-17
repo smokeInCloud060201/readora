@@ -74,7 +74,7 @@ where
     }
 
     let data_url = encode_png_data_url(&rendered.png_bytes);
-    let byte_size = rendered.memory_footprint_bytes();
+    let byte_size = data_url.len().max(64);
 
     cache.put(
         cache_key,

@@ -41,27 +41,7 @@ impl RecentDocumentRepository for SqliteStorage {
 
     fn get(&self, document_id: &DocumentId) -> Result<Option<RecentDocument>, ApplicationError> {
         let conn = self.lock_connection()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT document_id, file_path, display_name, last_page, page_count,
-                        zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived
-                  FROM recent_documents
-                  WHERE document_id = ?1",
-            )
-            .map_err(|e| ApplicationError::Storage(format!("prepare recent lookup failed: {e}")))?;
-
-        let mut rows = stmt
-            .query(params![document_id.as_str()])
-            .map_err(|e| ApplicationError::Storage(format!("query recent lookup failed: {e}")))?;
-
-        if let Some(row) = rows
-            .next()
-            .map_err(|e| ApplicationError::Storage(format!("row fetch failed: {e}")))?
-        {
-            Ok(Some(map_recent_row(row)?))
-        } else {
-            Ok(None)
-        }
+        query_recent_by_id(&conn, document_id)
     }
 
     fn list(&self, limit: usize) -> Result<Vec<RecentDocument>, ApplicationError> {
@@ -96,17 +76,13 @@ impl RecentDocumentRepository for SqliteStorage {
         document_id: &DocumentId,
         is_favorite: bool,
     ) -> Result<Option<RecentDocument>, ApplicationError> {
-        {
-            let conn = self.lock_connection()?;
-            conn.execute(
-                "UPDATE recent_documents SET is_favorite = ?1 WHERE document_id = ?2",
-                params![i32::from(is_favorite), document_id.as_str()],
-            )
-            .map_err(|e| {
-                ApplicationError::Storage(format!("update favorite status failed: {e}"))
-            })?;
-        }
-        self.get(document_id)
+        let conn = self.lock_connection()?;
+        conn.execute(
+            "UPDATE recent_documents SET is_favorite = ?1 WHERE document_id = ?2",
+            params![i32::from(is_favorite), document_id.as_str()],
+        )
+        .map_err(|e| ApplicationError::Storage(format!("update favorite status failed: {e}")))?;
+        query_recent_by_id(&conn, document_id)
     }
 
     fn set_archived(
@@ -114,17 +90,13 @@ impl RecentDocumentRepository for SqliteStorage {
         document_id: &DocumentId,
         is_archived: bool,
     ) -> Result<Option<RecentDocument>, ApplicationError> {
-        {
-            let conn = self.lock_connection()?;
-            conn.execute(
-                "UPDATE recent_documents SET is_archived = ?1 WHERE document_id = ?2",
-                params![i32::from(is_archived), document_id.as_str()],
-            )
-            .map_err(|e| {
-                ApplicationError::Storage(format!("update archived status failed: {e}"))
-            })?;
-        }
-        self.get(document_id)
+        let conn = self.lock_connection()?;
+        conn.execute(
+            "UPDATE recent_documents SET is_archived = ?1 WHERE document_id = ?2",
+            params![i32::from(is_archived), document_id.as_str()],
+        )
+        .map_err(|e| ApplicationError::Storage(format!("update archived status failed: {e}")))?;
+        query_recent_by_id(&conn, document_id)
     }
 
     fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError> {
@@ -135,6 +107,33 @@ impl RecentDocumentRepository for SqliteStorage {
         )
         .map_err(|e| ApplicationError::Storage(format!("delete recent document failed: {e}")))?;
         Ok(())
+    }
+}
+
+fn query_recent_by_id(
+    conn: &rusqlite::Connection,
+    document_id: &DocumentId,
+) -> Result<Option<RecentDocument>, ApplicationError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT document_id, file_path, display_name, last_page, page_count,
+                    zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived
+              FROM recent_documents
+              WHERE document_id = ?1",
+        )
+        .map_err(|e| ApplicationError::Storage(format!("prepare recent lookup failed: {e}")))?;
+
+    let mut rows = stmt
+        .query(params![document_id.as_str()])
+        .map_err(|e| ApplicationError::Storage(format!("query recent lookup failed: {e}")))?;
+
+    if let Some(row) = rows
+        .next()
+        .map_err(|e| ApplicationError::Storage(format!("row fetch failed: {e}")))?
+    {
+        Ok(Some(map_recent_row(row)?))
+    } else {
+        Ok(None)
     }
 }
 

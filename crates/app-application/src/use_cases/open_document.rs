@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use app_domain::{DocumentDescriptor, RecentDocument, ViewState};
+use app_domain::{AppSettings, DocumentDescriptor, FitMode, PageIndex, RecentDocument, ViewState};
 use pdf_engine::{DEFAULT_MAX_PDF_FILE_SIZE_BYTES, OpenDocumentOptions, PdfDocument, PdfEngine};
 
 use crate::dto::{DocumentSessionDto, OpenDocumentRequest};
@@ -49,30 +49,48 @@ pub fn execute_open_document(
         engine_info.metadata,
     )?;
 
-    let settings = settings_repo.load().unwrap_or_default();
+    let settings = match settings_repo.load() {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            tracing::warn!(
+                "failed to load persisted settings during open_document; falling back to defaults: {err}"
+            );
+            AppSettings::default()
+        }
+    };
     let mut view_state = ViewState::new(file_info.document_id.clone(), descriptor.page_count)?;
     view_state.layout_mode = settings.default_layout;
     view_state.fit_mode = settings.default_fit_mode;
     view_state.zoom = settings.default_zoom;
 
-    // Restore last reading position, zoom, and rotation if previously opened.
-    if let Some(previous) = recent_repo.get(&file_info.document_id)? {
-        let clamped_page = previous
+    // Restore last reading position, zoom, and rotation if previously opened and enabled in settings.
+    let previous = recent_repo.get(&file_info.document_id)?;
+    if let Some(ref prev) = previous
+        && settings.remember_page_position
+    {
+        let clamped_page = prev
             .last_page
             .zero_based()
             .min(descriptor.page_count.saturating_sub(1));
-        let _ = view_state.go_to_page(app_domain::PageIndex::new(clamped_page));
-        view_state.zoom = previous.last_zoom;
-        view_state.rotation = previous.last_rotation;
+        let _ = view_state.go_to_page(PageIndex::new(clamped_page));
+        view_state.zoom = prev.last_zoom;
+        if (prev.last_zoom.factor() - 1.0).abs() > f32::EPSILON {
+            view_state.fit_mode = FitMode::Manual;
+        }
+        view_state.rotation = prev.last_rotation;
     }
 
     let now_ms = platform.current_unix_ms();
-    let recent_entry = RecentDocument::from_view_state(
+    let mut recent_entry = RecentDocument::from_view_state(
         &file_info.canonical_path,
         &descriptor.file_name,
         &view_state,
         now_ms,
     );
+    if let Some(prev) = previous {
+        recent_entry.is_favorite = prev.is_favorite;
+        recent_entry.is_archived = prev.is_archived;
+    }
     recent_repo.upsert(&recent_entry)?;
 
     let outline = document.outline().unwrap_or_default();
