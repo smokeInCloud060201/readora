@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useModalDialog } from "../../shared/hooks/useModalDialog";
 
 interface OpenPasswordDialogProps {
@@ -15,9 +15,17 @@ export const OpenPasswordDialog: React.FC<OpenPasswordDialogProps> = ({
   onCancel,
 }) => {
   const [password, setPassword] = useState("");
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
   const { dialogRef, handleBackdropMouseDown } = useModalDialog(onCancel, {
     initialFocusSelector: 'input[type="password"]',
   });
+
+  useEffect(() => {
+    if (errorMessage) {
+      passwordInputRef.current?.focus();
+      passwordInputRef.current?.select();
+    }
+  }, [errorMessage]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +57,7 @@ export const OpenPasswordDialog: React.FC<OpenPasswordDialogProps> = ({
         )}
         <form onSubmit={handleSubmit} className="modal-form">
           <input
+            ref={passwordInputRef}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

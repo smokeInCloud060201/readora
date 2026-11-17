@@ -1664,7 +1664,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: 100;
 }
 
 .modal-card,
@@ -2172,6 +2172,15 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+.comment-composer-input {
+  min-height: 52px;
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
 .add-comment-submit-btn {
   height: 28px;
   padding: 0 10px;
@@ -2581,6 +2590,11 @@ textarea:focus-visible,
 .desktop-menu-trigger.active {
   background: var(--bg-button);
   color: var(--text-primary);
+}
+
+.desktop-dropdown-menu,
+.toolbar-dropdown-menu {
+  z-index: 70;
 }
 
 .desktop-dropdown-menu {
@@ -3220,8 +3234,18 @@ textarea:focus-visible,
   color: #fca5a5;
 }
 
+.print-document-root {
+  display: none;
+}
+
 @media print {
-  body,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+  }
+
   .app-shell,
   .app-body-frame,
   .reader-workspace,
@@ -3231,6 +3255,48 @@ textarea:focus-visible,
     overflow: visible !important;
     background: #ffffff !important;
     padding: 0 !important;
+  }
+
+  .app-shell.has-active-print-root,
+  body:has(.print-document-root) .app-shell,
+  .pdf-page-sheet-spacer {
+    display: none !important;
+  }
+
+  .print-document-root {
+    display: block !important;
+    width: 100%;
+    background: #ffffff !important;
+    color: #1f211c !important;
+  }
+
+  .print-page-sheet {
+    page-break-after: always;
+    break-after: page;
+    margin: 0 auto;
+    padding: 0;
+  }
+
+  .print-page-sheet:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+
+  .print-page-img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+
+  .print-document-root[data-print-annotations="false"] .print-page-annotations {
+    display: none !important;
+  }
+
+  .print-page-annotations {
+    margin-top: 8px;
+    padding: 6px 12px;
+    font-size: 10pt;
   }
 
   .focus-header-stack,

@@ -48,7 +48,11 @@ export const ImportPdfDialog: React.FC<ImportPdfDialogProps> = ({
           e.preventDefault();
           setIsDragging(true);
         }}
-        onDragLeave={() => setIsDragging(false)}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setIsDragging(false);
+          }
+        }}
         onDrop={handleDrop}
       >
         <button

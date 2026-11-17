@@ -6,7 +6,7 @@ import type { AppUpdateStatusDto } from "../../types/ipc";
 
 interface UpdateDialogProps {
   updateStatus: AppUpdateStatusDto;
-  onConfirmInstall: (version: string) => void;
+  onConfirmInstall: (version: string) => Promise<void> | void;
   onDismiss: (version: string) => void;
   onCheckAgain: () => void;
   onClose: () => void;
@@ -193,8 +193,18 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
                 className="focus-btn primary"
                 disabled={isInstalling}
                 onClick={() => {
+                  const requestedVersion =
+                    updateStatus.latest_version ?? updateStatus.current_version;
                   setIsInstalling(true);
-                  onConfirmInstall(targetVersion);
+                  void (async () => {
+                    try {
+                      await onConfirmInstall(requestedVersion);
+                    } catch {
+                      // Error presentation is owned by caller; guarantee dialog never stays locked
+                    } finally {
+                      setIsInstalling(false);
+                    }
+                  })();
                 }}
               >
                 {isInstalling

@@ -16,6 +16,7 @@ import {
   type AppSettingsDto,
   type AppUpdateStatusDto,
   type BookmarkDto,
+  type CommandErrorDto,
   type DocumentSessionDto,
   type ExportAnnotationsBundleDto,
   type NavigationActionDto,
@@ -28,6 +29,7 @@ import {
   type SearchRequestDto,
   type SettingsPatchDto,
   type SystemDiagnosticsDto,
+  type UpdateInstallOutcome,
   type UpsertAnnotationCommandDto,
   type UpsertBookmarkCommandDto,
   type ViewStateDto,
@@ -42,18 +44,22 @@ import {
   searchPdfJsDocument,
   type ParsedPdfJsDocument,
 } from "../pdf/pdfCanvasRenderer";
-import { parseGithubReleasePayload } from "../pdf/releaseParser";
 import {
-  buildSyntheticPageLayout,
+  isAllowedGithubHttpsUrl,
+  parseGithubReleasePayload,
+} from "../pdf/releaseParser";
+import {
   computeMatchBoundingBoxes,
   findMatchesInPageText,
   normalizePdfGlyphText,
+  ZOOM_PRESETS,
 } from "../pdf/textSearch";
 import { BrowserFallbackBridge } from "./fallbackBridge";
 
 export {
   computeMatchBoundingBoxes,
   findMatchesInPageText,
+  isAllowedGithubHttpsUrl,
   normalizePdfGlyphText,
   parseGithubReleasePayload,
 };
@@ -99,8 +105,124 @@ function getNativeDesktopBridge(): NativeDesktopBridge | null {
 const fallbackBridge = new BrowserFallbackBridge();
 const nativeCanvasDocs = new Map<string, ParsedPdfJsDocument>();
 const nativeCanvasRenderCache = new Map<string, string>();
+const nativeViewStates = new Map<string, ViewStateDto>();
 let cachedNativeEngineKind: string | null = null;
 let nativeSearchGeneration = 1;
+
+const UPDATE_FAILURE_STATUSES = new Set([
+  "checksum_verification_failed",
+  "signature_verification_failed",
+  "invalid_download_url",
+  "missing_download_url",
+  "invalid_parameters",
+  "failed",
+]);
+
+function mapUpdateStatusToOutcome(status: string): UpdateInstallOutcome {
+  if (status === "restarting") {
+    return "restarting";
+  }
+  if (status === "downloaded_installer") {
+    return "downloaded_installer";
+  }
+  if (status === "opened_release" || status === "opened_release_page") {
+    return "opened_release";
+  }
+  return "staged";
+}
+
+function mergeSessionWithCanvasDoc(
+  session: DocumentSessionDto,
+  canvasDoc: ParsedPdfJsDocument | null,
+): DocumentSessionDto {
+  if (!canvasDoc) {
+    nativeViewStates.set(session.descriptor.id, { ...session.view_state });
+    return session;
+  }
+  const mergedPageCount = Math.max(
+    session.descriptor.page_count,
+    session.view_state.page_count,
+    canvasDoc.pageCount,
+  );
+  const mergedViewState: ViewStateDto = {
+    ...session.view_state,
+    page_count: mergedPageCount,
+  };
+  nativeViewStates.set(session.descriptor.id, { ...mergedViewState });
+  return {
+    ...session,
+    descriptor: {
+      ...session.descriptor,
+      page_count: mergedPageCount,
+      metadata: canvasDoc.metadata,
+    },
+    view_state: mergedViewState,
+    outline:
+      canvasDoc.outline.length > 0 ? canvasDoc.outline : session.outline,
+  };
+}
+
+function applyLocalFallbackNavigation(
+  documentId: string,
+  prev: ViewStateDto | undefined,
+  action: NavigationActionDto,
+  pageCount: number,
+): ViewStateDto | null {
+  const base: ViewStateDto = prev
+    ? { ...prev, page_count: Math.max(prev.page_count, pageCount) }
+    : {
+        document_id: documentId,
+        current_page: 0,
+        page_count: pageCount,
+        zoom: 1.0,
+        fit_mode: "fit_width",
+        rotation: "deg0",
+        layout_mode: "continuous",
+        render_mode: "standard",
+      };
+
+  switch (action.kind) {
+    case "go_to_page":
+      if (action.value < 0 || action.value >= base.page_count) {
+        return null;
+      }
+      base.current_page = action.value;
+      return base;
+    case "next_page":
+      if (base.current_page + 1 < base.page_count) {
+        base.current_page += 1;
+      }
+      return base;
+    case "previous_page":
+      if (base.current_page > 0) {
+        base.current_page -= 1;
+      }
+      return base;
+    case "set_zoom":
+      base.zoom = Math.min(5.0, Math.max(0.25, action.value));
+      base.fit_mode = "manual";
+      return base;
+    case "step_zoom_in":
+      base.zoom = ZOOM_PRESETS.find((p) => p > base.zoom + 0.01) ?? 5.0;
+      base.fit_mode = "manual";
+      return base;
+    case "step_zoom_out":
+      base.zoom =
+        [...ZOOM_PRESETS].reverse().find((p) => p < base.zoom - 0.01) ?? 0.25;
+      base.fit_mode = "manual";
+      return base;
+    case "set_fit_mode":
+      base.fit_mode = action.value;
+      if (action.value === "fit_page") {
+        base.zoom = 0.9;
+      } else if (action.value === "fit_width") {
+        base.zoom = 1.0;
+      }
+      return base;
+    default:
+      return null;
+  }
+}
 
 async function resolveNativeEngineKind(
   invoke: TauriInvokeFn,
@@ -123,12 +245,12 @@ async function ensureNativeCanvasDoc(
   fileNameHint = "Document.pdf",
   password: string | null = null,
 ): Promise<ParsedPdfJsDocument | null> {
-  if (!hasUsableCanvas2D()) {
-    return null;
-  }
   const existing = nativeCanvasDocs.get(documentId);
   if (existing) {
     return existing;
+  }
+  if (!hasUsableCanvas2D()) {
+    return null;
   }
   const engineKind = await resolveNativeEngineKind(invoke);
   if (engineKind === "pdfium_dynamic") {
@@ -149,50 +271,6 @@ async function ensureNativeCanvasDoc(
   }
   nativeCanvasDocs.set(documentId, parsed);
   return parsed;
-}
-
-async function enrichRawSearchHits(
-  documentId: string,
-  request: SearchRequestDto,
-  rawHits: SearchHitDto[],
-  extractTextFn: (docId: string, pageIdx: number) => Promise<string>,
-): Promise<SearchHitDto[]> {
-  const q = request.query.trim();
-  if (!q || rawHits.length === 0) {
-    return rawHits;
-  }
-  const needle = request.case_sensitive ? q : q.toLowerCase();
-  const enriched: SearchHitDto[] = [];
-  for (const hit of rawHits) {
-    if (hit.bounding_box) {
-      enriched.push(hit);
-      continue;
-    }
-    const text = await extractTextFn(documentId, hit.page_index);
-    const layout = buildSyntheticPageLayout(text);
-    const hay = request.case_sensitive ? text : text.toLowerCase();
-    let searchFrom = 0;
-    let currentIdx = 0;
-    let foundPos = 0;
-    while (searchFrom < hay.length) {
-      const pos = hay.indexOf(needle, searchFrom);
-      if (pos === -1) break;
-      foundPos = pos;
-      if (currentIdx === hit.match_index) {
-        break;
-      }
-      currentIdx += 1;
-      searchFrom = pos + Math.max(1, needle.length);
-    }
-    const boxes = computeMatchBoundingBoxes(layout, foundPos, needle.length);
-    enriched.push({
-      ...hit,
-      match_text: hit.match_text ?? q,
-      bounding_box: boxes[0],
-      bounding_boxes: boxes,
-    });
-  }
-  return enriched;
 }
 
 export const readoraApi = {
@@ -224,24 +302,8 @@ export const readoraApi = {
           destroyParsedPdf(previous);
         }
         nativeCanvasDocs.set(session.descriptor.id, parsedCanvasDoc);
-        return {
-          ...session,
-          descriptor: {
-            ...session.descriptor,
-            page_count: parsedCanvasDoc.pageCount,
-            metadata: parsedCanvasDoc.metadata,
-          },
-          view_state: {
-            ...session.view_state,
-            page_count: parsedCanvasDoc.pageCount,
-          },
-          outline:
-            parsedCanvasDoc.outline.length > 0
-              ? parsedCanvasDoc.outline
-              : session.outline,
-        };
       }
-      return session;
+      return mergeSessionWithCanvasDoc(session, parsedCanvasDoc);
     }
     return fallbackBridge.openDocumentFile(file, password);
   },
@@ -260,25 +322,7 @@ export const readoraApi = {
         session.descriptor.file_name,
         request.password,
       );
-      if (parsedCanvasDoc) {
-        return {
-          ...session,
-          descriptor: {
-            ...session.descriptor,
-            page_count: parsedCanvasDoc.pageCount,
-            metadata: parsedCanvasDoc.metadata,
-          },
-          view_state: {
-            ...session.view_state,
-            page_count: parsedCanvasDoc.pageCount,
-          },
-          outline:
-            parsedCanvasDoc.outline.length > 0
-              ? parsedCanvasDoc.outline
-              : session.outline,
-        };
-      }
-      return session;
+      return mergeSessionWithCanvasDoc(session, parsedCanvasDoc);
     }
     return fallbackBridge.openDocument(request);
   },
@@ -286,7 +330,14 @@ export const readoraApi = {
   async openSampleDocument(): Promise<DocumentSessionDto> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<DocumentSessionDto>("document_open_sample");
+      const session = await invoke<DocumentSessionDto>("document_open_sample");
+      const parsedCanvasDoc = await ensureNativeCanvasDoc(
+        invoke,
+        session.descriptor.id,
+        session.descriptor.file_name,
+        null,
+      );
+      return mergeSessionWithCanvasDoc(session, parsedCanvasDoc);
     }
     return fallbackBridge.openDocument({
       path: "/samples/Readora-Welcome-Guide.pdf",
@@ -294,9 +345,29 @@ export const readoraApi = {
     });
   },
 
+  async getDocumentSession(documentId: string): Promise<DocumentSessionDto> {
+    const invoke = getNativeTauriInvoke();
+    if (invoke) {
+      const session = await invoke<DocumentSessionDto>("document_get_info", {
+        documentId,
+      });
+      const canvasDoc =
+        nativeCanvasDocs.get(documentId) ??
+        (await ensureNativeCanvasDoc(
+          invoke,
+          documentId,
+          session.descriptor.file_name,
+          null,
+        ));
+      return mergeSessionWithCanvasDoc(session, canvasDoc);
+    }
+    return fallbackBridge.getDocumentSession(documentId);
+  },
+
   async closeDocument(documentId: string): Promise<void> {
     destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
+    nativeViewStates.delete(documentId);
     purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
@@ -312,7 +383,71 @@ export const readoraApi = {
   ): Promise<ViewStateDto> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      return invoke<ViewStateDto>("document_navigate", { documentId, action });
+      const canvasDoc =
+        nativeCanvasDocs.get(documentId) ??
+        (await ensureNativeCanvasDoc(invoke, documentId));
+      const prevView = nativeViewStates.get(documentId);
+
+      try {
+        const res = await invoke<ViewStateDto>("document_navigate", {
+          documentId,
+          action,
+        });
+        if (!canvasDoc) {
+          nativeViewStates.set(documentId, { ...res });
+          return res;
+        }
+        const mergedPageCount = Math.max(res.page_count, canvasDoc.pageCount);
+        let mergedCurrentPage = res.current_page;
+        if (res.page_count < mergedPageCount && prevView) {
+          if (
+            action.kind === "next_page" &&
+            res.current_page === prevView.current_page &&
+            prevView.current_page + 1 < mergedPageCount
+          ) {
+            mergedCurrentPage = prevView.current_page + 1;
+          } else if (
+            action.kind === "previous_page" &&
+            prevView.current_page >= res.page_count
+          ) {
+            mergedCurrentPage = Math.max(0, prevView.current_page - 1);
+          } else if (
+            action.kind !== "go_to_page" &&
+            action.kind !== "next_page" &&
+            action.kind !== "previous_page" &&
+            prevView.current_page >= res.page_count &&
+            prevView.current_page < mergedPageCount
+          ) {
+            mergedCurrentPage = prevView.current_page;
+          }
+        }
+        const merged: ViewStateDto = {
+          ...res,
+          current_page: mergedCurrentPage,
+          page_count: mergedPageCount,
+        };
+        nativeViewStates.set(documentId, { ...merged });
+        return merged;
+      } catch (err) {
+        const maybeCode = (err as Partial<CommandErrorDto> | null)?.code ?? "";
+        if (
+          canvasDoc &&
+          (maybeCode === "page_out_of_bounds" ||
+            maybeCode === "validation_error")
+        ) {
+          const fallbackUpdated = applyLocalFallbackNavigation(
+            documentId,
+            prevView,
+            action,
+            canvasDoc.pageCount,
+          );
+          if (fallbackUpdated) {
+            nativeViewStates.set(documentId, { ...fallbackUpdated });
+            return fallbackUpdated;
+          }
+        }
+        throw err;
+      }
     }
     return fallbackBridge.navigate(documentId, action);
   },
@@ -322,7 +457,9 @@ export const readoraApi = {
   ): Promise<RenderedPageResultDto> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      const canvasDoc = await ensureNativeCanvasDoc(invoke, command.document_id);
+      const canvasDoc =
+        nativeCanvasDocs.get(command.document_id) ??
+        (await ensureNativeCanvasDoc(invoke, command.document_id));
       if (canvasDoc) {
         const rendered = await renderPdfJsPageToDataUrl(
           canvasDoc,
@@ -334,7 +471,19 @@ export const readoraApi = {
           return rendered;
         }
       }
-      return invoke<RenderedPageResultDto>("page_render", { command });
+      const dpr =
+        typeof window !== "undefined"
+          ? Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+          : 1;
+      const hiDpiCommand: RenderPageCommandDto = {
+        ...command,
+        scale: Number(
+          Math.min(10, Math.max(0.25, command.scale * dpr)).toFixed(2),
+        ),
+      };
+      return invoke<RenderedPageResultDto>("page_render", {
+        command: hiDpiCommand,
+      });
     }
     return fallbackBridge.renderPage(command);
   },
@@ -345,7 +494,9 @@ export const readoraApi = {
   ): Promise<string> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      const canvasDoc = await ensureNativeCanvasDoc(invoke, documentId);
+      const canvasDoc =
+        nativeCanvasDocs.get(documentId) ??
+        (await ensureNativeCanvasDoc(invoke, documentId));
       if (canvasDoc) {
         await extractPdfJsPageLayout(canvasDoc, pageIndex);
         return canvasDoc.pageTexts.get(pageIndex) ?? "";
@@ -358,7 +509,9 @@ export const readoraApi = {
   async searchDocument(request: SearchRequestDto): Promise<SearchHitDto[]> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
-      const canvasDoc = await ensureNativeCanvasDoc(invoke, request.document_id);
+      const canvasDoc =
+        nativeCanvasDocs.get(request.document_id) ??
+        (await ensureNativeCanvasDoc(invoke, request.document_id));
       if (canvasDoc) {
         const gen = ++nativeSearchGeneration;
         return searchPdfJsDocument(
@@ -367,15 +520,7 @@ export const readoraApi = {
           () => gen !== nativeSearchGeneration,
         );
       }
-      const rawHits = await invoke<SearchHitDto[]>("document_search", {
-        request,
-      });
-      return enrichRawSearchHits(
-        request.document_id,
-        request,
-        rawHits,
-        (docId, idx) => this.extractPageText(docId, idx),
-      );
+      return invoke<SearchHitDto[]>("document_search", { request });
     }
     return fallbackBridge.searchDocument(request);
   },
@@ -419,6 +564,7 @@ export const readoraApi = {
   async deleteRecentDocument(documentId: string): Promise<void> {
     destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
+    nativeViewStates.delete(documentId);
     purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
@@ -476,6 +622,7 @@ export const readoraApi = {
     documentId: string,
     includeAnnotations: boolean,
     destinationPath: string | null = null,
+    saveToDownloads = false,
   ): Promise<ExportAnnotationsBundleDto> {
     const invoke = getNativeTauriInvoke();
     if (invoke) {
@@ -483,6 +630,7 @@ export const readoraApi = {
         documentId,
         includeAnnotations,
         destinationPath,
+        saveToDownloads,
       });
     }
     return fallbackBridge.exportAnnotations(
@@ -573,13 +721,39 @@ export const readoraApi = {
     const invoke = getNativeTauriInvoke();
     const bridge = getNativeDesktopBridge();
     if (invoke && bridge) {
-      await bridge.triggerSelfUpdate(version);
-      return invoke<AppUpdateStatusDto>("app_check_for_updates", {
+      const res = await bridge.triggerSelfUpdate(version);
+      const status = res?.status ?? "";
+      if (
+        UPDATE_FAILURE_STATUSES.has(status) ||
+        status.endsWith("_failed") ||
+        status === "error"
+      ) {
+        const code = status || "update_failed";
+        const err: CommandErrorDto = {
+          code,
+          message:
+            "Update verification failed (" +
+            code.replace(/_/g, " ") +
+            "). Installation was aborted for your safety.",
+        };
+        throw err;
+      }
+      const checked = await invoke<AppUpdateStatusDto>("app_check_for_updates", {
         includeDismissed: true,
       });
+      return {
+        ...checked,
+        install_outcome: mapUpdateStatusToOutcome(status),
+      };
     }
     if (invoke) {
-      return invoke<AppUpdateStatusDto>("app_install_update", { version });
+      const installed = await invoke<AppUpdateStatusDto>("app_install_update", {
+        version,
+      });
+      return {
+        ...installed,
+        install_outcome: installed.install_outcome ?? "staged",
+      };
     }
     return fallbackBridge.installUpdate(version);
   },
@@ -597,7 +771,9 @@ export const readoraApi = {
       destroyParsedPdf(parsed);
     }
     nativeCanvasDocs.clear();
+    nativeViewStates.clear();
     nativeCanvasRenderCache.clear();
+    cachedNativeEngineKind = null;
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       return invoke<AppCleanupReportDto>("app_cleanup_data");

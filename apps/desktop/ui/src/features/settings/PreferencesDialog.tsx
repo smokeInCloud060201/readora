@@ -10,6 +10,7 @@ import {
   type SettingsPatchDto,
   type SystemDiagnosticsDto,
   type ThemePreference,
+  type ThirdPartyNoticeDto,
 } from "../../types/ipc";
 
 export type PreferencesSection =
@@ -25,6 +26,46 @@ interface PreferencesDialogProps {
   onCleanupAppData?: () => void;
   onClose: () => void;
 }
+
+const PREFERENCE_ZOOM_PRESETS: readonly number[] = [
+  0.5, 0.75, 1.0, 1.25, 1.5, 2.0,
+];
+
+const FALLBACK_APP_VERSION = "1.0.6";
+const FALLBACK_SQLITE_SCHEMA_VERSION = 4;
+
+const FALLBACK_THIRD_PARTY_NOTICES: readonly ThirdPartyNoticeDto[] = [
+  {
+    name: "PDFium",
+    version: "chromium/6723",
+    license: "BSD-3-Clause AND Apache-2.0",
+    role: "Dynamic native PDF rendering engine",
+  },
+  {
+    name: "pdfjs-dist (Mozilla PDF.js)",
+    version: "6.5",
+    license: "Apache-2.0",
+    role: "Local WebView/Canvas PDF parsing, rendering, and text extraction",
+  },
+  {
+    name: "rusqlite + SQLite",
+    version: "0.32",
+    license: "MIT AND Blessing",
+    role: "Local WAL persistence for recents, bookmarks, annotations, and settings",
+  },
+  {
+    name: "tao + wry",
+    version: "0.31 / 0.48",
+    license: "Apache-2.0 OR MIT",
+    role: "Cross-platform native desktop windowing and OS WebView shell",
+  },
+  {
+    name: "React + TypeScript",
+    version: "19.x / 5.9",
+    license: "MIT AND Apache-2.0",
+    role: "Presentation UI layer",
+  },
+];
 
 const SHORTCUT_ITEMS: readonly { label: string; keys: string }[] = [
   { label: "Open document", keys: "⌘ / Ctrl + O" },
@@ -45,6 +86,22 @@ const SHORTCUT_ITEMS: readonly { label: string; keys: string }[] = [
   { label: "Print document", keys: "⌘ / Ctrl + P" },
   { label: "Preferences", keys: "⌘ / Ctrl + ," },
 ];
+
+function clampCacheMiB(raw: string): number {
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (Number.isNaN(parsed)) {
+    return 64;
+  }
+  return Math.min(512, Math.max(8, parsed));
+}
+
+function clampPrefetchWindow(raw: string): number {
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (Number.isNaN(parsed)) {
+    return 1;
+  }
+  return Math.min(5, Math.max(0, parsed));
+}
 
 export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   settings,
@@ -69,11 +126,11 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [defaultZoomFactor, setDefaultZoomFactor] = useState<number>(
     settings.default_zoom || 1.0,
   );
-  const [cacheMiB, setCacheMiB] = useState<number>(
-    Math.round(settings.render_cache_budget_bytes / (1024 * 1024)),
+  const [cacheMiBInput, setCacheMiBInput] = useState<string>(() =>
+    String(Math.round(settings.render_cache_budget_bytes / (1024 * 1024))),
   );
-  const [prefetchWindow, setPrefetchWindow] = useState<number>(
-    settings.prefetch_window,
+  const [prefetchWindowInput, setPrefetchWindowInput] = useState<string>(() =>
+    String(settings.prefetch_window),
   );
   const [showExtractedTextLayer, setShowExtractedTextLayer] = useState<boolean>(
     Boolean(settings.show_extracted_text_layer),
@@ -101,17 +158,31 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     void readoraApi.getSystemDiagnostics().then(setDiagnostics);
   }, []);
 
+  const isCustomDefaultZoom = !PREFERENCE_ZOOM_PRESETS.some(
+    (preset) => Math.abs(preset - defaultZoomFactor) < 0.001,
+  );
+
+  const generalZoomSelectValue =
+    defaultFitMode === "fit_page" || defaultFitMode === "fit_width"
+      ? defaultFitMode
+      : Math.abs(defaultZoomFactor - 1.0) < 0.001
+        ? "manual"
+        : `zoom:${defaultZoomFactor}`;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const clampedCache = clampCacheMiB(cacheMiBInput);
+    const clampedPrefetch = clampPrefetchWindow(prefetchWindowInput);
+    setCacheMiBInput(String(clampedCache));
+    setPrefetchWindowInput(String(clampedPrefetch));
+
     onSave({
       theme,
       default_layout: defaultLayout,
       default_fit_mode: defaultFitMode,
-      default_zoom_factor:
-        defaultFitMode === "manual" ? 1.0 : defaultZoomFactor,
-      render_cache_budget_bytes:
-        Math.min(512, Math.max(8, cacheMiB)) * 1024 * 1024,
-      prefetch_window: Math.min(5, Math.max(0, prefetchWindow)),
+      default_zoom_factor: Math.min(5.0, Math.max(0.25, defaultZoomFactor)),
+      render_cache_budget_bytes: clampedCache * 1024 * 1024,
+      prefetch_window: clampedPrefetch,
       reopen_last_document: reopenOnLaunch,
       remember_page_position: rememberPagePosition,
       confirm_before_delete: confirmBeforeDeleting,
@@ -128,6 +199,15 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       item.label.toLowerCase().includes(shortcutFilter.trim().toLowerCase()) ||
       item.keys.toLowerCase().includes(shortcutFilter.trim().toLowerCase()),
   );
+
+  const resolvedVersion =
+    diagnostics?.app_version ??
+    settings.installed_version ??
+    FALLBACK_APP_VERSION;
+  const resolvedNotices =
+    diagnostics && diagnostics.third_party_notices.length > 0
+      ? diagnostics.third_party_notices
+      : FALLBACK_THIRD_PARTY_NOTICES;
 
   return (
     <div
@@ -191,8 +271,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
           </div>
 
           <span className="preferences-version">
-            Focus Reader{" "}
-            {diagnostics?.app_version ?? settings.installed_version ?? "1.0.0"}
+            Focus Reader {resolvedVersion}
           </span>
         </nav>
 
@@ -310,19 +389,45 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 <span>Default zoom</span>
                 <select
                   aria-label="General Default Zoom"
-                  value={defaultFitMode}
+                  value={generalZoomSelectValue}
                   onChange={(e) => {
-                    const mode = e.target.value as FitMode;
-                    setDefaultFitMode(mode);
-                    if (mode === "manual") {
+                    const raw = e.target.value;
+                    if (raw === "fit_page" || raw === "fit_width") {
+                      setDefaultFitMode(raw);
+                    } else if (raw === "manual") {
+                      setDefaultFitMode("manual");
                       setDefaultZoomFactor(1.0);
+                    } else if (raw.startsWith("zoom:")) {
+                      const parsedZoom = Number.parseFloat(raw.slice(5));
+                      if (!Number.isNaN(parsedZoom)) {
+                        setDefaultFitMode("manual");
+                        setDefaultZoomFactor(parsedZoom);
+                      }
                     }
                   }}
                   className="focus-select"
                 >
                   <option value="fit_page">Fit page</option>
                   <option value="fit_width">Fit width</option>
-                  <option value="manual">100% (Actual size)</option>
+                  {PREFERENCE_ZOOM_PRESETS.map((preset) => (
+                    <option
+                      key={preset}
+                      value={
+                        Math.abs(preset - 1.0) < 0.001
+                          ? "manual"
+                          : `zoom:${preset}`
+                      }
+                    >
+                      {Math.abs(preset - 1.0) < 0.001
+                        ? "100% (Actual size)"
+                        : `${Math.round(preset * 100)}%`}
+                    </option>
+                  ))}
+                  {isCustomDefaultZoom && (
+                    <option value={`zoom:${defaultZoomFactor}`}>
+                      {Math.round(defaultZoomFactor * 100)}% (Custom)
+                    </option>
+                  )}
                 </select>
               </label>
 
@@ -379,9 +484,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
               <dl className="details-meta-list">
                 <div className="details-meta-row">
                   <dt>Release Version</dt>
-                  <dd>
-                    {diagnostics?.app_version ?? "0.1.0"} (MIT OR Apache-2.0)
-                  </dd>
+                  <dd>{resolvedVersion} (MIT OR Apache-2.0)</dd>
                 </div>
                 <div className="details-meta-row">
                   <dt>Platform Target</dt>
@@ -393,7 +496,12 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 </div>
                 <div className="details-meta-row">
                   <dt>SQLite Schema</dt>
-                  <dd>v{diagnostics?.sqlite_schema_version ?? 3} (WAL)</dd>
+                  <dd>
+                    v
+                    {diagnostics?.sqlite_schema_version ??
+                      FALLBACK_SQLITE_SCHEMA_VERSION}{" "}
+                    (WAL)
+                  </dd>
                 </div>
                 <div className="details-meta-row">
                   <dt>Local Data Location</dt>
@@ -410,7 +518,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 THIRD-PARTY OPEN-SOURCE NOTICES (SBOM)
               </p>
               <div className="shortcuts-list">
-                {(diagnostics?.third_party_notices ?? []).map((notice) => (
+                {resolvedNotices.map((notice) => (
                   <div key={notice.name} className="shortcut-row">
                     <span>
                       <strong>{notice.name}</strong> ({notice.version})
@@ -493,15 +601,14 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   onChange={(e) => {
                     const mode = e.target.value as FitMode;
                     setDefaultFitMode(mode);
-                    if (mode === "manual") {
-                      setDefaultZoomFactor(1.0);
-                    }
                   }}
                   className="focus-select"
                 >
                   <option value="fit_width">Fit Width</option>
                   <option value="fit_page">Fit Page</option>
-                  <option value="manual">Manual Zoom (100%)</option>
+                  <option value="manual">
+                    Manual Zoom ({Math.round(defaultZoomFactor * 100)}%)
+                  </option>
                 </select>
               </label>
 
@@ -511,9 +618,10 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   type="number"
                   min={8}
                   max={512}
-                  value={cacheMiB}
-                  onChange={(e) =>
-                    setCacheMiB(Number.parseInt(e.target.value, 10) || 64)
+                  value={cacheMiBInput}
+                  onChange={(e) => setCacheMiBInput(e.target.value)}
+                  onBlur={() =>
+                    setCacheMiBInput(String(clampCacheMiB(cacheMiBInput)))
                   }
                   className="focus-input compact"
                 />
@@ -525,9 +633,12 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                   type="number"
                   min={0}
                   max={5}
-                  value={prefetchWindow}
-                  onChange={(e) =>
-                    setPrefetchWindow(Number.parseInt(e.target.value, 10) || 0)
+                  value={prefetchWindowInput}
+                  onChange={(e) => setPrefetchWindowInput(e.target.value)}
+                  onBlur={() =>
+                    setPrefetchWindowInput(
+                      String(clampPrefetchWindow(prefetchWindowInput)),
+                    )
                   }
                   className="focus-input compact"
                 />

@@ -12,6 +12,7 @@ interface ThumbnailsPanelProps {
 
 const ESTIMATED_THUMB_ROW_HEIGHT = 136;
 const MAX_CACHED_THUMBNAILS = 64;
+const MAX_CONCURRENT_THUMB_RENDERS = 2;
 
 export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   documentId,
@@ -25,17 +26,65 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   const [scrollCenterPage, setScrollCenterPage] = useState<number>(currentPage);
   const thumbnailsRef = useRef<Record<number, string>>({});
   const panelRef = useRef<HTMLElement | null>(null);
+  const prevCurrentPageRef = useRef<number>(currentPage);
+  const prevDocumentIdRef = useRef<string | undefined>(documentId);
+  const isProgrammaticScrollRef = useRef<boolean>(false);
+  const activeRendersRef = useRef<number>(0);
+  const slotWaitersRef = useRef<Array<() => void>>([]);
   const pages = Array.from({ length: pageCount }, (_, i) => i);
 
-  useEffect(() => {
-    thumbnailsRef.current = {};
-    setThumbnails({});
-    setScrollCenterPage(currentPage);
-  }, [documentId]);
+  const syncPanelScrollToPage = (targetPage: number, forceTopReset = false) => {
+    const el = panelRef.current;
+    if (!el) return;
+    const itemTop = targetPage * ESTIMATED_THUMB_ROW_HEIGHT;
+    const itemBottom = itemTop + ESTIMATED_THUMB_ROW_HEIGHT;
+
+    let nextScrollTop: number | null = null;
+    if (forceTopReset && targetPage === 0) {
+      nextScrollTop = 0;
+    } else if (el.clientHeight > 0) {
+      const viewTop = el.scrollTop;
+      const viewBottom = el.scrollTop + el.clientHeight;
+      if (itemTop < viewTop + 24 || itemBottom > viewBottom - 24) {
+        nextScrollTop = Math.max(
+          0,
+          itemTop - Math.round(el.clientHeight * 0.35),
+        );
+      }
+    } else {
+      nextScrollTop =
+        targetPage === 0 ? 0 : Math.max(0, itemTop - ESTIMATED_THUMB_ROW_HEIGHT);
+    }
+
+    if (nextScrollTop !== null && nextScrollTop !== el.scrollTop) {
+      isProgrammaticScrollRef.current = true;
+      el.scrollTop = nextScrollTop;
+      queueMicrotask(() => {
+        isProgrammaticScrollRef.current = false;
+      });
+    }
+  };
 
   useEffect(() => {
-    setScrollCenterPage(currentPage);
-  }, [currentPage]);
+    const docChanged = prevDocumentIdRef.current !== documentId;
+    const pageChanged = prevCurrentPageRef.current !== currentPage;
+
+    if (docChanged) {
+      prevDocumentIdRef.current = documentId;
+      prevCurrentPageRef.current = currentPage;
+      thumbnailsRef.current = {};
+      setThumbnails({});
+      setScrollCenterPage(currentPage);
+      syncPanelScrollToPage(currentPage, true);
+      return;
+    }
+
+    if (pageChanged) {
+      prevCurrentPageRef.current = currentPage;
+      setScrollCenterPage(currentPage);
+      syncPanelScrollToPage(currentPage, false);
+    }
+  }, [currentPage, documentId]);
 
   useEffect(() => {
     if (!documentId || pageCount <= 0) {
@@ -45,29 +94,60 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
     }
 
     let cancelled = false;
-    const candidateIndices = new Set<number>();
-    const currentStart = Math.max(0, currentPage - 8);
-    const currentEnd = Math.min(pageCount - 1, currentPage + 12);
-    for (let i = currentStart; i <= currentEnd; i += 1) {
-      candidateIndices.add(i);
-    }
-
     const scrollStart = Math.max(0, scrollCenterPage - 8);
     const scrollEnd = Math.min(pageCount - 1, scrollCenterPage + 12);
+    const candidateIndices: number[] = [];
     for (let i = scrollStart; i <= scrollEnd; i += 1) {
-      candidateIndices.add(i);
+      candidateIndices.push(i);
     }
-
-    const ordered = Array.from(candidateIndices).sort(
+    candidateIndices.sort(
       (a, b) =>
         Math.abs(a - scrollCenterPage) - Math.abs(b - scrollCenterPage),
     );
 
-    void (async () => {
-      for (const idx of ordered) {
-        if (cancelled) break;
-        if (thumbnailsRef.current[idx] !== undefined) continue;
+    const acquireSlot = async (): Promise<boolean> => {
+      while (activeRendersRef.current >= MAX_CONCURRENT_THUMB_RENDERS) {
+        if (cancelled) return false;
+        await new Promise<void>((resolve) => {
+          slotWaitersRef.current.push(resolve);
+        });
+      }
+      if (cancelled) return false;
+      activeRendersRef.current += 1;
+      return true;
+    };
+
+    const releaseSlot = () => {
+      activeRendersRef.current = Math.max(0, activeRendersRef.current - 1);
+      const nextWaiter = slotWaitersRef.current.shift();
+      nextWaiter?.();
+    };
+
+    let nextCursor = 0;
+    const workerCount = Math.min(
+      MAX_CONCURRENT_THUMB_RENDERS,
+      candidateIndices.length,
+    );
+
+    const runWorker = async () => {
+      while (!cancelled) {
+        const cursor = nextCursor;
+        nextCursor += 1;
+        if (cursor >= candidateIndices.length) {
+          break;
+        }
+        const idx = candidateIndices[cursor];
+        if (idx === undefined || thumbnailsRef.current[idx] !== undefined) {
+          continue;
+        }
+        const acquired = await acquireSlot();
+        if (!acquired) {
+          break;
+        }
         try {
+          if (thumbnailsRef.current[idx] !== undefined) {
+            continue;
+          }
           const rendered = await readoraApi.renderPage({
             document_id: documentId,
             page_index: idx,
@@ -76,7 +156,9 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
             render_mode: "standard",
             generation: null,
           });
-          if (cancelled) break;
+          if (cancelled || rendered.document_id !== documentId) {
+            continue;
+          }
           setThumbnails((prev) => {
             const next: Record<number, string> = {
               ...prev,
@@ -101,16 +183,27 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
           });
         } catch {
           // Ignore individual thumbnail render errors
+        } finally {
+          releaseSlot();
         }
       }
-    })();
+    };
+
+    for (let w = 0; w < workerCount; w += 1) {
+      void runWorker();
+    }
 
     return () => {
       cancelled = true;
+      const waiters = slotWaitersRef.current.splice(0);
+      for (const wake of waiters) {
+        wake();
+      }
     };
-  }, [currentPage, documentId, pageCount, scrollCenterPage]);
+  }, [documentId, pageCount, scrollCenterPage]);
 
   const handlePanelScroll = () => {
+    if (isProgrammaticScrollRef.current) return;
     const el = panelRef.current;
     if (!el || pageCount <= 0) return;
     const approxIdx = Math.min(
@@ -133,8 +226,12 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
     .toUpperCase();
 
   const shouldVirtualizeDom = pageCount > 60;
-  const minDomIdx = Math.min(currentPage, scrollCenterPage) - 20;
-  const maxDomIdx = Math.max(currentPage, scrollCenterPage) + 25;
+  const minDomIdx = shouldVirtualizeDom
+    ? Math.max(0, scrollCenterPage - 20)
+    : 0;
+  const maxDomIdx = shouldVirtualizeDom
+    ? Math.min(pageCount - 1, scrollCenterPage + 25)
+    : pageCount - 1;
 
   return (
     <aside

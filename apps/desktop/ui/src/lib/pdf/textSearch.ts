@@ -1,7 +1,7 @@
 import { type RenderMode, type SearchBoundingBoxDto } from "../../types/ipc";
 
 export const ZOOM_PRESETS: readonly number[] = [
-  0.25, 0.5, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0,
+  0.25, 0.5, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0, 5.0,
 ];
 
 export const SAMPLE_PAGES: readonly string[] = [

@@ -12,7 +12,12 @@ interface PrintDialogProps {
   viewState: ViewStateDto;
   renderedPage: RenderedPageResultDto | null;
   onClose: () => void;
-  onConfirmPrint: (summary: string, includeAnnotations: boolean) => void;
+  onExecutePrint?: (
+    pageIndices: number[],
+    summary: string,
+    includeAnnotations: boolean,
+  ) => Promise<void>;
+  onConfirmPrint?: (summary: string, includeAnnotations: boolean) => void;
 }
 
 const PAGE_RANGE_PATTERN =
@@ -47,11 +52,41 @@ export function validateCustomPageRange(
   return null;
 }
 
+export function resolvePrintPageIndices(
+  pageScope: "all" | "current" | "range",
+  currentPage: number,
+  pageCount: number,
+  rawRange: string,
+): number[] {
+  if (pageScope === "current") {
+    return [Math.min(Math.max(0, currentPage), Math.max(0, pageCount - 1))];
+  }
+  if (pageScope === "all") {
+    return Array.from({ length: pageCount }, (_, idx) => idx);
+  }
+  const indices = new Set<number>();
+  for (const segment of rawRange.trim().split(",")) {
+    const parts = segment.trim().split("-");
+    const start = Number.parseInt(parts[0] ?? "", 10);
+    const end =
+      parts.length > 1 ? Number.parseInt(parts[1] ?? "", 10) : start;
+    if (!Number.isNaN(start) && !Number.isNaN(end) && start <= end) {
+      for (let p = start; p <= end; p += 1) {
+        if (p >= 1 && p <= pageCount) {
+          indices.add(p - 1);
+        }
+      }
+    }
+  }
+  return Array.from(indices).sort((a, b) => a - b);
+}
+
 export const PrintDialog: React.FC<PrintDialogProps> = ({
   descriptor,
   viewState,
   renderedPage,
   onClose,
+  onExecutePrint,
   onConfirmPrint,
 }) => {
   const [printer, setPrinter] = useState("Default Printer");
@@ -62,10 +97,18 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
   );
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
-  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
+  const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(() => {
+    if (!isPreparingPrint) {
+      onClose();
+    }
+  });
 
   const handlePrint = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPreparingPrint) {
+      return;
+    }
     if (pageScope === "range") {
       const validationMessage = validateCustomPageRange(
         pageRangeInput,
@@ -86,12 +129,29 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
     const annotationsLabel = includeAnnotations
       ? "with annotations"
       : "without annotations";
-    onConfirmPrint(
-      `Sent ${descriptor.file_name} (${scopeLabel}, ${copies} cop${
-        copies === 1 ? "y" : "ies"
-      }, ${annotationsLabel}) to ${printer}`,
-      includeAnnotations,
+    const summary = `Sent ${descriptor.file_name} (${scopeLabel}, ${copies} cop${
+      copies === 1 ? "y" : "ies"
+    }, ${annotationsLabel}) to ${printer}`;
+    const pageIndices = resolvePrintPageIndices(
+      pageScope,
+      viewState.current_page,
+      descriptor.page_count,
+      pageRangeInput,
     );
+
+    if (onExecutePrint) {
+      setIsPreparingPrint(true);
+      void (async () => {
+        try {
+          await onExecutePrint(pageIndices, summary, includeAnnotations);
+        } finally {
+          setIsPreparingPrint(false);
+        }
+      })();
+      return;
+    }
+
+    onConfirmPrint?.(summary, includeAnnotations);
   };
 
   return (
@@ -113,6 +173,7 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
           <button
             type="button"
             className="icon-close-btn"
+            disabled={isPreparingPrint}
             onClick={onClose}
             aria-label="Close print dialog"
           >
@@ -288,12 +349,17 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
               <button
                 type="button"
                 className="focus-btn secondary"
+                disabled={isPreparingPrint}
                 onClick={onClose}
               >
                 Cancel
               </button>
-              <button type="submit" className="focus-btn primary">
-                Print
+              <button
+                type="submit"
+                className="focus-btn primary"
+                disabled={isPreparingPrint}
+              >
+                {isPreparingPrint ? "Preparing pages..." : "Print"}
               </button>
             </div>
           </div>

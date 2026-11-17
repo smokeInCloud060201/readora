@@ -5,6 +5,10 @@ import {
   type BookmarkDto,
   type DocumentDescriptorDto,
 } from "../../types/ipc";
+import {
+  MAX_ANNOTATION_NOTE_LEN,
+  sliceByUnicodeCodePoints,
+} from "../reader/FloatingAnnotationTools";
 
 interface BookmarksPanelProps {
   bookmarks: BookmarkDto[];
@@ -70,7 +74,10 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
 
   const handleCommentSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = commentText.trim();
+    const trimmed = sliceByUnicodeCodePoints(
+      commentText.trim(),
+      MAX_ANNOTATION_NOTE_LEN,
+    );
     if (!trimmed || !onAddComment) {
       return;
     }
@@ -130,10 +137,24 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                   Page {currentPage + 1}
                 </span>
               </div>
-              <input
-                type="text"
+              <textarea
+                rows={2}
+                maxLength={MAX_ANNOTATION_NOTE_LEN}
                 value={commentText}
-                onChange={(e) => setCommentText(e.target.value)}
+                onChange={(e) =>
+                  setCommentText(
+                    sliceByUnicodeCodePoints(
+                      e.target.value,
+                      MAX_ANNOTATION_NOTE_LEN,
+                    ),
+                  )
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleCommentSubmit(e);
+                  }
+                }}
                 placeholder={`Write a comment on page ${currentPage + 1}…`}
                 aria-label="New comment"
                 className="focus-input full-width comment-composer-input"

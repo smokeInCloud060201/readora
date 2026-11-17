@@ -45,6 +45,7 @@ import {
 import {
   compareSemver,
   DEFAULT_APP_VERSION,
+  isAllowedGithubHttpsUrl,
   isValidSha256Hex,
   parseGithubReleasePayload,
 } from "../pdf/releaseParser";
@@ -393,6 +394,17 @@ export class BrowserFallbackBridge {
     return structuredClone(session);
   }
 
+  getDocumentSession(documentId: string): DocumentSessionDto {
+    const session = this.sessions.get(documentId);
+    if (!session) {
+      throw this.makeError(
+        "document_not_open",
+        `Document '${documentId}' is not open`,
+      );
+    }
+    return structuredClone(session);
+  }
+
   navigate(documentId: string, action: NavigationActionDto): ViewStateDto {
     const session = this.sessions.get(documentId);
     if (!session) {
@@ -663,6 +675,38 @@ export class BrowserFallbackBridge {
   }
 
   upsertAnnotation(command: UpsertAnnotationCommandDto): AnnotationDto {
+    if (!Number.isInteger(command.page_index) || command.page_index < 0) {
+      throw this.makeError(
+        "validation_error",
+        "Annotation page_index must be a non-negative integer",
+      );
+    }
+    const colorTrimmed = command.color_hex.trim().toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(colorTrimmed)) {
+      throw this.makeError(
+        "validation_error",
+        `color_hex must be a #RRGGBB hex string, got '${colorTrimmed}'`,
+      );
+    }
+    // eslint-disable-next-line no-control-regex
+    const controlRe = /[\x00-\x09\x0B-\x1F\x7F]/g;
+    const cleanQuote = command.quote_text.replace(controlRe, "").trim();
+    const cleanNote = command.note_text.replace(controlRe, "").trim();
+    if (!cleanQuote && !cleanNote) {
+      throw this.makeError(
+        "validation_error",
+        "Annotation must contain quote_text or note_text",
+      );
+    }
+    const quoteCodePoints = Array.from(cleanQuote);
+    const noteCodePoints = Array.from(cleanNote);
+    if (quoteCodePoints.length > 4000 || noteCodePoints.length > 4000) {
+      throw this.makeError(
+        "validation_error",
+        "Annotation text exceeds maximum length of 4000 characters",
+      );
+    }
+
     const list = this.annotations.get(command.document_id) ?? [];
     const requestedId = command.id?.trim() || null;
     const existingIdx = requestedId
@@ -676,9 +720,9 @@ export class BrowserFallbackBridge {
       document_id: command.document_id,
       page_index: command.page_index,
       kind: command.kind,
-      color_hex: command.color_hex,
-      quote_text: command.quote_text.trim().slice(0, 2000),
-      note_text: command.note_text.trim().slice(0, 2000),
+      color_hex: colorTrimmed,
+      quote_text: cleanQuote,
+      note_text: cleanNote,
       created_at_unix_ms: existingItem?.created_at_unix_ms ?? Date.now(),
     };
     const updatedList =
@@ -910,11 +954,12 @@ export class BrowserFallbackBridge {
 
   getSystemDiagnostics(): SystemDiagnosticsDto {
     return {
-      app_version: this.settings.installed_version || DEFAULT_APP_VERSION,
+      app_version:
+        this.settings.installed_version || DEFAULT_APP_VERSION || "1.0.6",
       target_os: "macos",
       target_arch: "aarch64",
       pdf_engine_kind: "pure_rust_fallback",
-      sqlite_schema_version: 3,
+      sqlite_schema_version: 4,
       redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
       render_cache_usage_bytes: 0,
       third_party_notices: [
@@ -926,7 +971,7 @@ export class BrowserFallbackBridge {
         },
         {
           name: "pdfjs-dist (Mozilla PDF.js)",
-          version: "5.x",
+          version: "6.5",
           license: "Apache-2.0",
           role: "Local WebView/Canvas PDF parsing, rendering, and text extraction",
         },
@@ -944,7 +989,7 @@ export class BrowserFallbackBridge {
         },
         {
           name: "React + TypeScript",
-          version: "19.x / 5.7",
+          version: "19.x / 5.9",
           license: "MIT AND Apache-2.0",
           role: "Presentation UI layer",
         },
@@ -964,8 +1009,13 @@ export class BrowserFallbackBridge {
       const isDismissed =
         !includeDismissed &&
         this.settings.dismissed_update_version === manifest.version.trim();
+      const rawUrl = manifest.download_url?.trim() ?? "";
+      const hasSafeUrl =
+        rawUrl.length === 0 || isAllowedGithubHttpsUrl(rawUrl);
       const verified =
-        isValidSha256Hex(manifest.sha256) && manifest.package_size_bytes > 0;
+        isValidSha256Hex(manifest.sha256) &&
+        manifest.package_size_bytes > 0 &&
+        hasSafeUrl;
       return {
         current_version: currentVersion,
         update_available: !isDismissed,
@@ -974,7 +1024,7 @@ export class BrowserFallbackBridge {
         release_notes: manifest.notes,
         package_size_bytes: manifest.package_size_bytes,
         sha256_checksum: verified ? manifest.sha256.trim().toLowerCase() : null,
-        download_url: manifest.download_url ?? null,
+        download_url: rawUrl.length > 0 && hasSafeUrl ? rawUrl : null,
         github_repo: githubRepo,
         verified,
         staged_for_restart: false,
@@ -1029,7 +1079,18 @@ export class BrowserFallbackBridge {
         `Target version ${trimmed} is not newer than installed version ${currentVersion}`,
       );
     }
-    const stagedDownloadUrl = this.stagedManifest?.download_url ?? null;
+    const status = this.checkForUpdates(true);
+    if (
+      !this.stagedManifest ||
+      this.stagedManifest.version.trim() !== trimmed ||
+      !status.verified
+    ) {
+      throw this.makeError(
+        "checksum_verification_failed",
+        "Update verification failed (checksum verification failed). Installation was aborted for your safety.",
+      );
+    }
+    const stagedDownloadUrl = status.download_url;
     this.settings.installed_version = trimmed;
     this.settings.dismissed_update_version = null;
     this.stagedManifest = null;
@@ -1047,6 +1108,7 @@ export class BrowserFallbackBridge {
       verified: true,
       staged_for_restart: true,
       checked_at_unix_ms: Date.now(),
+      install_outcome: "staged",
     };
   }
 

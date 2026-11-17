@@ -25,6 +25,7 @@ function createTestPdfFile(
 
 describe("Readora Desktop Reader UI Vertical Slice", () => {
   const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
 
   beforeEach(async () => {
     // Isolate all tests from live GitHub API network calls so publishing new tags never races or breaks CI
@@ -871,20 +872,43 @@ describe("Readora Desktop Reader UI Vertical Slice", () => {
       expect(screen.getByText("Unknown")).toBeInTheDocument();
       expect(screen.queryByText("Local Author")).not.toBeInTheDocument();
 
-      // Export Markdown notes via Shift+Cmd+S and verify real Blob download
-      fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
-      expect(
-        screen.getByRole("dialog", { name: "Share Document Dialog" }),
-      ).toBeInTheDocument();
-      fireEvent.click(screen.getByText("Export notes (.md)"));
+      // Export Markdown notes via Shift+Cmd+S and verify real Blob download with deferred 10s revocation
+      let scheduledRevokeFn: (() => void) | null = null;
+      const setTimeoutSpy = vi
+        .spyOn(globalThis, "setTimeout")
+        .mockImplementation(((
+          handler: TimerHandler,
+          timeout?: number,
+          ...args: unknown[]
+        ) => {
+          if (timeout === 10_000 && typeof handler === "function") {
+            scheduledRevokeFn = () => {
+              (handler as (...cbArgs: unknown[]) => void)(...args);
+            };
+          }
+          return originalSetTimeout(handler, timeout, ...(args as []));
+        }) as typeof setTimeout);
 
-      await waitFor(() => {
-        expect(createUrlMock).toHaveBeenCalledTimes(1);
+      try {
+        fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+        expect(
+          screen.getByRole("dialog", { name: "Share Document Dialog" }),
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByText("Export notes (.md)"));
+
+        await waitFor(() => {
+          expect(createUrlMock).toHaveBeenCalledTimes(1);
+          expect(clickedDownloadName).toBe("Dense-Spec-annotations.md");
+          expect(capturedBlobText).toContain("Review memory budget invariant");
+          expect(capturedBlobText).toContain("Intro Bookmark");
+        });
+        expect(revokeUrlMock).not.toHaveBeenCalled();
+        expect(scheduledRevokeFn).not.toBeNull();
+        scheduledRevokeFn!();
         expect(revokeUrlMock).toHaveBeenCalledWith("blob:readora-test-export");
-        expect(clickedDownloadName).toBe("Dense-Spec-annotations.md");
-        expect(capturedBlobText).toContain("Review memory budget invariant");
-        expect(capturedBlobText).toContain("Intro Bookmark");
-      });
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
     } finally {
       extractSpy.mockRestore();
       anchorClickSpy.mockRestore();

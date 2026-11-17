@@ -28,6 +28,7 @@ interface ApplicationMenuBarProps {
   fileName: string | null;
   viewState: ViewStateDto | null;
   onToggleSidebar: (tab: Exclude<SidebarTab, null>) => void;
+  onOpenSearch?: () => void;
   onToggleRightPanel?: () => void;
   onCloseDocument: () => void;
   onShowLibraryRecents?: () => void;
@@ -55,6 +56,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
   fileName,
   viewState,
   onToggleSidebar,
+  onOpenSearch,
   onToggleRightPanel,
   onCloseDocument,
   onShowLibraryRecents,
@@ -267,7 +269,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
                 className="doc-action-menu-item"
                 disabled={!viewState}
                 onClick={() => {
-                  onToggleSidebar("search");
+                  onOpenSearch?.();
                   setActiveAppMenu(null);
                 }}
               >

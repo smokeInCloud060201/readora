@@ -11,6 +11,9 @@ interface SearchPanelProps {
   onClose?: () => void;
 }
 
+// eslint-disable-next-line no-control-regex
+const NON_ASCII_RE = /[^\x00-\x7F]/;
+
 export const SearchPanel: React.FC<SearchPanelProps> = ({
   hits,
   activeHitIndex = 0,
@@ -59,21 +62,22 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
     }
 
     const trimmed = query.trim();
+    const isShortAsciiOnly =
+      trimmed.length > 0 && trimmed.length < 2 && !NON_ASCII_RE.test(trimmed);
+
+    if (trimmed.length === 0 || isShortAsciiOnly) {
+      if (lastSearchedRef.current.query !== "" || hits.length > 0) {
+        lastSearchedRef.current = { query: "", caseSensitive };
+        updateActiveHitIdx(0);
+        onSearch("", caseSensitive);
+      }
+      return;
+    }
+
     if (
       lastSearchedRef.current.query === trimmed &&
       lastSearchedRef.current.caseSensitive === caseSensitive
     ) {
-      return;
-    }
-
-    if (trimmed.length === 0) {
-      lastSearchedRef.current = { query: "", caseSensitive };
-      updateActiveHitIdx(0);
-      onSearch("", caseSensitive);
-      return;
-    }
-
-    if (trimmed.length < 2) {
       return;
     }
 
@@ -100,7 +104,15 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
     }
     const trimmed = query.trim();
     if (
-      trimmed.length > 0 &&
+      trimmed.length === 0 ||
+      (trimmed.length < 2 && !NON_ASCII_RE.test(trimmed))
+    ) {
+      lastSearchedRef.current = { query: "", caseSensitive };
+      updateActiveHitIdx(0);
+      onSearch("", caseSensitive);
+      return;
+    }
+    if (
       lastSearchedRef.current.query === trimmed &&
       lastSearchedRef.current.caseSensitive === caseSensitive &&
       hits.length > 0
@@ -124,7 +136,17 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   };
 
   return (
-    <aside className="search-popover-panel" aria-label="Find in Document">
+    <aside
+      className="search-popover-panel"
+      aria-label="Find in Document"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && onClose) {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <form onSubmit={handleSubmit} className="search-popover-bar">
         <span className="search-popover-icon" aria-hidden="true">
           <FocusIcon name="search" size={14} />
@@ -137,6 +159,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           onKeyDown={(e) => {
             if (e.key === "Escape" && onClose) {
               e.preventDefault();
+              e.stopPropagation();
               onClose();
               return;
             }
@@ -152,10 +175,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
         <span className="search-hit-counter" data-testid="search-hit-counter">
           {hits.length > 0 ? `${currentHitIdx + 1} / ${hits.length}` : "0 / 0"}
         </span>
-        <button
-          type="submit"
-          className="focus-btn primary compact"
-        >
+        <button type="submit" className="focus-btn primary compact">
           Search
         </button>
         <button

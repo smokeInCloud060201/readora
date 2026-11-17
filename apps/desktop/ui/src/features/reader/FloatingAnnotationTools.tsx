@@ -3,6 +3,14 @@ import { FocusIcon } from "../../shared/components/FocusIcon";
 import { type AnnotationKind } from "../../types/ipc";
 
 export const MAX_HIGHLIGHT_EXCERPT_LEN = 400;
+export const MAX_ANNOTATION_NOTE_LEN = 4000;
+
+export function sliceByUnicodeCodePoints(
+  text: string,
+  maxCodePoints = MAX_ANNOTATION_NOTE_LEN,
+): string {
+  return Array.from(text).slice(0, maxCodePoints).join("");
+}
 
 export const HIGHLIGHT_SWATCHES = [
   { id: "amber", label: "Amber", hex: "#f3d96b" },
@@ -12,6 +20,14 @@ export const HIGHLIGHT_SWATCHES = [
   { id: "lavender", label: "Lavender", hex: "#c9afe2" },
 ] as const;
 
+function isNodeInsideReaderStage(node: Node | null | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+  const el = node instanceof Element ? node : node.parentElement;
+  return Boolean(el?.closest(".reader-stage"));
+}
+
 export function getWindowSelectedText(): string {
   if (
     typeof window === "undefined" ||
@@ -19,7 +35,17 @@ export function getWindowSelectedText(): string {
   ) {
     return "";
   }
-  return window.getSelection()?.toString().trim() ?? "";
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed === true) {
+    return "";
+  }
+  if (!isNodeInsideReaderStage(selection.anchorNode)) {
+    return "";
+  }
+  if (selection.focusNode && !isNodeInsideReaderStage(selection.focusNode)) {
+    return "";
+  }
+  return selection.toString().trim();
 }
 
 export function buildSafeQuoteExcerpt(
@@ -30,7 +56,7 @@ export function buildSafeQuoteExcerpt(
   const selected = getWindowSelectedText();
   const raw =
     selected || pageText.trim() || `Page ${currentPage + 1} excerpt`;
-  return raw.slice(0, maxLen);
+  return sliceByUnicodeCodePoints(raw, maxLen);
 }
 
 interface FloatingAnnotationToolsProps {

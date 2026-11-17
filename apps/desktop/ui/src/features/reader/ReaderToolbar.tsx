@@ -9,20 +9,20 @@ import {
 import { ApplicationMenuBar, type AppMenuKey } from "./ApplicationMenuBar";
 import { DocumentActionsMenu } from "./DocumentActionsMenu";
 
-export type SidebarTab =
-  | "thumbnails"
-  | "outline"
-  | "bookmarks"
-  | "search"
-  | null;
+export type SidebarTab = "thumbnails" | "outline" | "bookmarks" | null;
 
 interface ReaderToolbarProps {
   fileName: string | null;
   fileSizeBytes?: number | null;
   viewState: ViewStateDto | null;
+  displayZoom?: number;
   activeSidebar: SidebarTab;
+  isSearchOpen?: boolean;
+  hasOpenModal?: boolean;
   showRightPanel?: boolean;
   onToggleSidebar: (tab: Exclude<SidebarTab, null>) => void;
+  onToggleSearch?: () => void;
+  onOpenSearch?: () => void;
   onToggleRightPanel?: () => void;
   onCloseDocument: () => void;
   onShowLibraryRecents?: () => void;
@@ -68,9 +68,14 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   fileName,
   fileSizeBytes,
   viewState,
+  displayZoom,
   activeSidebar,
+  isSearchOpen = false,
+  hasOpenModal = false,
   showRightPanel = true,
   onToggleSidebar,
+  onToggleSearch,
+  onOpenSearch,
   onToggleRightPanel,
   onCloseDocument,
   onShowLibraryRecents,
@@ -110,6 +115,14 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
   const appMenuBarRef = useRef<HTMLDivElement | null>(null);
   const zoomMenuRef = useRef<HTMLDivElement | null>(null);
   const moreActionsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (hasOpenModal) {
+      setActiveAppMenu(null);
+      setShowZoomMenu(false);
+      setShowMoreActionsMenu(false);
+    }
+  }, [hasOpenModal]);
 
   useEffect(() => {
     if (!activeAppMenu && !showZoomMenu && !showMoreActionsMenu) {
@@ -176,7 +189,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
     }
   };
 
-  const zoomPercent = viewState ? Math.round(viewState.zoom * 100) : 100;
+  const effectiveZoom = displayZoom ?? viewState?.zoom ?? 1.0;
+  const zoomPercent = viewState ? Math.round(effectiveZoom * 100) : 100;
 
   return (
     <header
@@ -187,10 +201,15 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
       <ApplicationMenuBar
         menuBarRef={appMenuBarRef}
         activeAppMenu={activeAppMenu}
-        setActiveAppMenu={setActiveAppMenu}
+        setActiveAppMenu={(next) => {
+          setShowZoomMenu(false);
+          setShowMoreActionsMenu(false);
+          setActiveAppMenu(next);
+        }}
         fileName={fileName}
         viewState={viewState}
         onToggleSidebar={onToggleSidebar}
+        onOpenSearch={onOpenSearch ?? onToggleSearch}
         onToggleRightPanel={onToggleRightPanel}
         onCloseDocument={onCloseDocument}
         onShowLibraryRecents={onShowLibraryRecents}
@@ -366,10 +385,8 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             </button>
             <button
               type="button"
-              className={`focus-icon-btn ${
-                activeSidebar === "search" ? "active" : ""
-              }`}
-              onClick={() => onToggleSidebar("search")}
+              className={`focus-icon-btn ${isSearchOpen ? "active" : ""}`}
+              onClick={() => onToggleSearch?.()}
               title="Find in Document"
               aria-label="Find in Document"
               data-node-id="2:41"
@@ -403,6 +420,16 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   max={viewState.page_count}
                   value={pageInput}
                   onChange={(e) => setPageInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const resetVal = String(viewState.current_page + 1);
+                      setPageInput(resetVal);
+                      e.currentTarget.value = resetVal;
+                      e.currentTarget.blur();
+                    }
+                  }}
                   onBlur={() => setIsEditingPage(false)}
                   placeholder={`${viewState.current_page + 1} / ${viewState.page_count}`}
                   aria-label="Jump to page number"
@@ -463,7 +490,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                 type="button"
                 className="zoom-pill-btn"
                 data-testid="zoom-indicator"
-                onClick={() => setShowZoomMenu((prev) => !prev)}
+                onClick={() => {
+                  setActiveAppMenu(null);
+                  setShowMoreActionsMenu(false);
+                  setShowZoomMenu((prev) => !prev);
+                }}
                 aria-label="Zoom presets"
                 aria-haspopup="menu"
                 aria-expanded={showZoomMenu}
@@ -475,7 +506,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
 
               {showZoomMenu && (
                 <div
-                  className="zoom-dropdown-menu"
+                  className="zoom-dropdown-menu toolbar-dropdown-menu"
                   role="menu"
                   aria-label="Zoom Menu"
                   data-node-id="6:1223"
@@ -527,6 +558,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                       type="button"
                       role="menuitem"
                       className={`zoom-menu-item ${
+                        viewState.fit_mode === "manual" &&
                         Math.abs(viewState.zoom - preset) < 0.02
                           ? "selected"
                           : ""
@@ -589,7 +621,11 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
             <DocumentActionsMenu
               menuRef={moreActionsRef}
               isOpen={showMoreActionsMenu}
-              onToggleOpen={() => setShowMoreActionsMenu((prev) => !prev)}
+              onToggleOpen={() => {
+                setActiveAppMenu(null);
+                setShowZoomMenu(false);
+                setShowMoreActionsMenu((prev) => !prev);
+              }}
               onClose={() => setShowMoreActionsMenu(false)}
               isFavorite={isFavorite}
               onOpenDocumentDetails={onOpenDocumentDetails}

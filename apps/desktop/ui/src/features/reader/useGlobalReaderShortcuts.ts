@@ -7,9 +7,10 @@ interface GlobalReaderShortcutsParams {
   session: DocumentSessionDto | null;
   hasOpenModal: boolean;
   setActiveSidebar: React.Dispatch<React.SetStateAction<SidebarTab>>;
-  setShowImportDialog: React.Dispatch<React.SetStateAction<boolean>>;
-  setShowPrintDialog: React.Dispatch<React.SetStateAction<boolean>>;
-  setShowShareDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  onToggleSearch: () => void;
+  onOpenImportDialog: () => void;
+  onOpenPrintDialog: () => void;
+  onOpenShareDialog: () => void;
   onToggleNotesPanel: () => void;
   onNextPage: () => void;
   onPrevPage: () => void;
@@ -45,13 +46,37 @@ function isEditableElement(target: EventTarget | null): boolean {
   return false;
 }
 
+function shouldSkipWidgetShortcut(
+  target: EventTarget | null,
+  key: string,
+): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  if (
+    target.closest(
+      '[role="menu"], [role="menuitem"], [role="radiogroup"], [role="radio"]',
+    )
+  ) {
+    return true;
+  }
+  if (
+    (key === " " || key === "Spacebar" || key === "Enter") &&
+    target.closest("button, a, summary")
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function useGlobalReaderShortcuts({
   session,
   hasOpenModal,
   setActiveSidebar,
-  setShowImportDialog,
-  setShowPrintDialog,
-  setShowShareDialog,
+  onToggleSearch,
+  onOpenImportDialog,
+  onOpenPrintDialog,
+  onOpenShareDialog,
   onToggleNotesPanel,
   onNextPage,
   onPrevPage,
@@ -71,6 +96,10 @@ export function useGlobalReaderShortcuts({
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
       if (hasOpenModal) {
+        return;
+      }
+
+      if (shouldSkipWidgetShortcut(event.target, event.key)) {
         return;
       }
 
@@ -97,13 +126,22 @@ export function useGlobalReaderShortcuts({
           return;
         }
 
-        if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        const isContinuousLayout =
+          session.view_state.layout_mode === "continuous";
+
+        if (
+          event.key === "ArrowRight" ||
+          (!isContinuousLayout && event.key === "ArrowDown")
+        ) {
           event.preventDefault();
           onNextPage();
           return;
         }
 
-        if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        if (
+          event.key === "ArrowLeft" ||
+          (!isContinuousLayout && event.key === "ArrowUp")
+        ) {
           event.preventDefault();
           onPrevPage();
           return;
@@ -138,7 +176,7 @@ export function useGlobalReaderShortcuts({
       // Meta/Ctrl + O -> Open PDF Dialog
       if (key === "o" && !event.shiftKey) {
         event.preventDefault();
-        setShowImportDialog(true);
+        onOpenImportDialog();
         return;
       }
 
@@ -153,14 +191,7 @@ export function useGlobalReaderShortcuts({
       if (key === "f" && !event.shiftKey) {
         event.preventDefault();
         if (session) {
-          setActiveSidebar("search");
-          const existingInput = document.querySelector<HTMLInputElement>(
-            ".search-popover-input",
-          );
-          if (existingInput) {
-            existingInput.focus();
-            existingInput.select();
-          }
+          onToggleSearch();
         } else {
           const librarySearch = document.querySelector<HTMLInputElement>(
             'input[aria-label="Search library"]',
@@ -185,14 +216,14 @@ export function useGlobalReaderShortcuts({
       // Meta/Ctrl + P -> Print dialog
       if (key === "p" && !event.shiftKey) {
         event.preventDefault();
-        setShowPrintDialog(true);
+        onOpenPrintDialog();
         return;
       }
 
       // Shift + Meta/Ctrl + S -> Share / Export dialog
       if (key === "s" && event.shiftKey) {
         event.preventDefault();
-        setShowShareDialog(true);
+        onOpenShareDialog();
         return;
       }
 
@@ -258,9 +289,7 @@ export function useGlobalReaderShortcuts({
       if (!event.shiftKey && event.key === "\\") {
         event.preventDefault();
         setActiveSidebar((prev) =>
-          prev === "thumbnails" || prev === "outline" || prev === "search"
-            ? null
-            : "thumbnails",
+          prev === "thumbnails" || prev === "outline" ? null : "thumbnails",
         );
       }
     };
@@ -275,7 +304,10 @@ export function useGlobalReaderShortcuts({
     onFocusCommentComposer,
     onNextPage,
     onOpenDocumentDetails,
+    onOpenImportDialog,
     onOpenPreferences,
+    onOpenPrintDialog,
+    onOpenShareDialog,
     onPrevPage,
     onRotateCcw,
     onRotateCw,
@@ -284,12 +316,10 @@ export function useGlobalReaderShortcuts({
     onShowLibrary,
     onToggleHighlightOptions,
     onToggleNotesPanel,
+    onToggleSearch,
     onZoomIn,
     onZoomOut,
     session,
     setActiveSidebar,
-    setShowImportDialog,
-    setShowPrintDialog,
-    setShowShareDialog,
   ]);
 }

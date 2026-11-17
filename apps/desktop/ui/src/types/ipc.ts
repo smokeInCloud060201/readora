@@ -223,6 +223,12 @@ export interface ReleaseManifestDto {
   download_url?: string | null;
 }
 
+export type UpdateInstallOutcome =
+  | "restarting"
+  | "downloaded_installer"
+  | "opened_release"
+  | "staged";
+
 export interface AppUpdateStatusDto {
   current_version: string;
   update_available: boolean;
@@ -236,6 +242,7 @@ export interface AppUpdateStatusDto {
   verified: boolean;
   staged_for_restart: boolean;
   checked_at_unix_ms: number;
+  install_outcome?: UpdateInstallOutcome;
 }
 
 export interface ThirdPartyNoticeDto {

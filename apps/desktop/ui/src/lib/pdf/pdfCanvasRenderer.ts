@@ -127,16 +127,32 @@ async function resolveOutlineNodes(
   return result;
 }
 
+export type HardenedPdfJsInitParams = NonNullable<
+  Parameters<typeof pdfjsLib.getDocument>[0]
+> & {
+  isEvalSupported: false;
+};
+
+export function buildPdfJsDocumentInitParams(
+  bytes: Uint8Array,
+  password: string | null,
+): HardenedPdfJsInitParams {
+  return {
+    data: bytes.slice(),
+    password: password ?? undefined,
+    isEvalSupported: false,
+  };
+}
+
 export async function parsePdfWithPdfJs(
   fileName: string,
   bytes: Uint8Array,
   password: string | null,
 ): Promise<ParsedPdfJsDocument> {
   try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: bytes.slice(),
-      password: password ?? undefined,
-    });
+    const loadingTask = pdfjsLib.getDocument(
+      buildPdfJsDocumentInitParams(bytes, password),
+    );
     const pdfDoc = await loadingTask.promise;
     const pageCount = Math.max(1, pdfDoc.numPages);
 

@@ -28,6 +28,7 @@ interface PageViewportProps {
   activeSearchHitIndex?: number;
   showHighlightPopover?: boolean;
   setShowHighlightPopover?: React.Dispatch<React.SetStateAction<boolean>>;
+  onEffectiveZoomChange?: (effectiveZoom: number) => void;
   onCopyText: () => void;
   onVisiblePageChange?: (zeroBasedPage: number) => void;
   onNextPage?: () => void;
@@ -92,6 +93,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   activeSearchHitIndex = 0,
   showHighlightPopover: controlledShowHighlightPopover,
   setShowHighlightPopover: controlledSetShowHighlightPopover,
+  onEffectiveZoomChange,
   onCopyText,
   onVisiblePageChange,
   onNextPage,
@@ -106,6 +108,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const pageSheetRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const scrollAnimationFrameRef = useRef<number | null>(null);
   const isProgrammaticScrollRef = useRef<boolean>(false);
+  const initializedDocScrollRef = useRef<string | null>(null);
   const overscrollDeltaRef = useRef<number>(0);
   const lastPageTurnTimeRef = useRef<number>(0);
   const lastWheelZoomTimeRef = useRef<number>(0);
@@ -238,6 +241,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
   const sheetWidthPx = displayWidthPx + 72;
+  const estimatedSheetHeightPx = displayHeightPx + 144;
   const effectiveRenderScale =
     containerSize.width > 0 && viewState.fit_mode !== "manual"
       ? Number(
@@ -246,6 +250,15 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           ),
         )
       : viewState.zoom;
+
+  useEffect(() => {
+    onEffectiveZoomChange?.(effectiveRenderScale);
+  }, [
+    effectiveRenderScale,
+    onEffectiveZoomChange,
+    viewState.document_id,
+    viewState.fit_mode,
+  ]);
 
   // Clear cached page bitmaps whenever document, effective scale, rotation, or render_mode changes
   useEffect(() => {
@@ -257,12 +270,13 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     viewState.render_mode,
   ]);
 
-  // Insert active renderedPage only when its document_id and scale match
+  // Insert active renderedPage when its document_id and scale match
   useEffect(() => {
     if (
       renderedPage &&
       renderedPage.document_id === viewState.document_id &&
-      Math.abs(effectiveRenderScale - viewState.zoom) < 0.02
+      (Boolean(onEffectiveZoomChange) ||
+        Math.abs(effectiveRenderScale - viewState.zoom) < 0.02)
     ) {
       setRenderedPagesMap((prev) => ({
         ...prev,
@@ -271,6 +285,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     }
   }, [
     effectiveRenderScale,
+    onEffectiveZoomChange,
     renderedPage,
     viewState.document_id,
     viewState.zoom,
@@ -286,13 +301,14 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       viewState.page_count - 1,
       viewState.current_page + radius,
     );
-    const usesMeasuredScaleOverride =
-      Math.abs(effectiveRenderScale - viewState.zoom) >= 0.02;
+    const parentRendersAtEffectiveScale =
+      Boolean(onEffectiveZoomChange) ||
+      Math.abs(effectiveRenderScale - viewState.zoom) < 0.02;
 
     void (async () => {
       for (let idx = startPage; idx <= endPage; idx += 1) {
         if (cancelled) break;
-        if (idx === viewState.current_page && !usesMeasuredScaleOverride) {
+        if (idx === viewState.current_page && parentRendersAtEffectiveScale) {
           continue;
         }
         try {
@@ -331,6 +347,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   }, [
     effectiveRenderScale,
     isContinuous,
+    onEffectiveZoomChange,
     prefetchWindow,
     rotationDeg,
     viewState.current_page,
@@ -338,6 +355,57 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     viewState.page_count,
     viewState.render_mode,
     viewState.zoom,
+  ]);
+
+  // Restore saved scroll position when opening/switching to a document in Continuous Scroll mode
+  useEffect(() => {
+    if (!isContinuous) {
+      initializedDocScrollRef.current = null;
+      return;
+    }
+    if (initializedDocScrollRef.current === viewState.document_id) {
+      return;
+    }
+    initializedDocScrollRef.current = viewState.document_id;
+    const targetPage = viewState.current_page;
+    const container = viewportRef.current;
+    if (targetPage <= 0) {
+      if (container) {
+        container.scrollTop = 0;
+      }
+      return;
+    }
+
+    cancelProgrammaticScroll();
+    isProgrammaticScrollRef.current = true;
+    let settleRafId: number | null = null;
+    const initialRafId = requestAnimationFrame(() => {
+      const el = viewportRef.current;
+      if (el) {
+        const targetSheet = pageSheetRefs.current[targetPage];
+        const targetTop =
+          targetSheet && targetSheet.offsetTop > 0
+            ? Math.max(0, targetSheet.offsetTop - 24)
+            : targetPage * (estimatedSheetHeightPx + 28);
+        el.scrollTop = targetTop;
+      }
+      settleRafId = requestAnimationFrame(() => {
+        isProgrammaticScrollRef.current = false;
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(initialRafId);
+      if (settleRafId !== null) {
+        cancelAnimationFrame(settleRafId);
+      }
+      isProgrammaticScrollRef.current = false;
+    };
+  }, [
+    estimatedSheetHeightPx,
+    isContinuous,
+    viewState.current_page,
+    viewState.document_id,
   ]);
 
   // Track direction for subtle transition feedback
@@ -365,7 +433,10 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     const targetSheet = pageSheetRefs.current[viewState.current_page];
     if (!container || !targetSheet) return;
 
-    const targetTop = Math.max(0, targetSheet.offsetTop - 24);
+    const targetTop =
+      targetSheet.offsetTop > 0 || viewState.current_page === 0
+        ? Math.max(0, targetSheet.offsetTop - 24)
+        : viewState.current_page * (estimatedSheetHeightPx + 28);
     const startTop = container.scrollTop;
     const distance = targetTop - startTop;
 
@@ -394,7 +465,12 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     };
 
     scrollAnimationFrameRef.current = requestAnimationFrame(step);
-  }, [isContinuous, programmaticScrollTrigger, viewState.current_page]);
+  }, [
+    estimatedSheetHeightPx,
+    isContinuous,
+    programmaticScrollTrigger,
+    viewState.current_page,
+  ]);
 
   const handleViewportScroll = () => {
     if (!isContinuous || isProgrammaticScrollRef.current) return;
@@ -529,12 +605,11 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   const shouldVirtualizeSheets =
     isContinuous && viewState.page_count > VIRTUALIZATION_PAGE_THRESHOLD;
-  const estimatedSheetHeightPx = displayHeightPx + 148;
 
   return (
     <main
       ref={viewportRef}
-      className={`document-canvas-viewport ${
+      className={`document-canvas-viewport reader-stage ${
         isContinuous ? "continuous-scroll-mode" : "single-page-mode"
       }`}
       aria-label="Document Page Viewport"
