@@ -115,12 +115,13 @@ impl DocumentDescriptor {
         file_name: impl Into<String>,
         file_size_bytes: u64,
         page_count: u32,
-        metadata: DocumentMetadata,
+        mut metadata: DocumentMetadata,
     ) -> Result<Self, DomainError> {
         if page_count == 0 {
             return Err(DomainError::InvalidPageCount(0));
         }
         let clean_name = sanitize_display_name(&file_name.into());
+        metadata.title = metadata.title.as_deref().and_then(sanitize_metadata_title);
         Ok(Self {
             id,
             file_name: clean_name,
@@ -189,6 +190,96 @@ pub fn sanitize_display_name(raw: &str) -> String {
     } else {
         filtered
     }
+}
+
+/// Cleans an untrusted PDF `/Info /Title` string, returning `None` when the embedded title is
+/// empty, a generic converter placeholder, a URI (`file://`, `http://`, `https://`, etc.), or an
+/// OS filesystem path (`H:\...`, `\\server\...`, `/Users/...`) so the UI falls back to the clean
+/// PDF filename instead of displaying converter junk.
+#[must_use]
+pub fn sanitize_metadata_title(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let stripped = if cleaned.len() >= 17
+        && cleaned
+            .get(..17)
+            .is_some_and(|p| p.eq_ignore_ascii_case("microsoft word - "))
+    {
+        cleaned[17..].trim()
+    } else {
+        cleaned.as_str()
+    };
+    if stripped.is_empty() {
+        return None;
+    }
+
+    let lower = stripped.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "untitled" | "untitled document" | "document"
+    ) {
+        return None;
+    }
+
+    // Reject URI schemes commonly stamped by HTML-to-PDF / browser print converters
+    for scheme in [
+        "file:",
+        "http://",
+        "https://",
+        "ftp://",
+        "about:",
+        "data:",
+        "blob:",
+        "mailto:",
+        "javascript:",
+        "chrome-extension://",
+    ] {
+        if lower.starts_with(scheme) {
+            return None;
+        }
+    }
+
+    // Reject Windows drive paths (`C:\...`, `H:/...`) and UNC paths (`\\server\...`)
+    let bytes = stripped.as_bytes();
+    if (bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/'))
+        || stripped.starts_with("\\\\")
+    {
+        return None;
+    }
+
+    // Reject absolute Unix filesystem paths (`/Users/...`, `/home/...`, etc.)
+    if let Some(after_slash) = stripped.strip_prefix('/')
+        && (after_slash.contains('/')
+            || lower.starts_with("/tmp")
+            || lower.starts_with("/var")
+            || lower.starts_with("/etc"))
+    {
+        return None;
+    }
+
+    // Reject path-like converter source filenames (`folder/trungbokinh.htm`, `sub\index.html`)
+    if (stripped.contains('/') || stripped.contains('\\'))
+        && [
+            ".htm", ".html", ".xhtml", ".mht", ".mhtml", ".doc", ".docx", ".tmp",
+        ]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
+        return None;
+    }
+
+    Some(stripped.to_owned())
 }
 
 /// Returns `true` if `stem` (or the segment before the first `.`) matches a Windows reserved

@@ -15,7 +15,7 @@ pub use model::bookmark::{Bookmark, BookmarkId, MAX_BOOKMARK_LABEL_LEN};
 pub use model::document::{
     DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchBoundingBox,
     SearchHit, SignaturePresenceStatus, is_windows_reserved_device_name, sanitize_display_name,
-    sanitize_export_stem,
+    sanitize_export_stem, sanitize_metadata_title,
 };
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{
@@ -289,6 +289,37 @@ mod tests {
         assert!(
             serde_json::from_str::<PageDimensions>(r#"{"width_pt":612.0,"height_pt":792.0}"#)
                 .is_ok()
+        );
+
+        // Junk converter URI / OS-path /Title metadata is filtered out while genuine titles remain
+        assert_eq!(
+            sanitize_metadata_title(
+                "FILE://H:\\LOTUSHOME\\EBOOKS-HTML\\TRUNGBOKINH\\TRUNGBOKINH.HTM"
+            ),
+            None
+        );
+        assert_eq!(
+            sanitize_metadata_title(
+                "file://H:\\lotushome\\ebooks-html\\trungbokinh\\trungbokinh.htm"
+            ),
+            None
+        );
+        assert_eq!(sanitize_metadata_title("C:\\Documents\\book.htm"), None);
+        assert_eq!(
+            sanitize_metadata_title("/Users/alice/Downloads/book.html"),
+            None
+        );
+        assert_eq!(
+            sanitize_metadata_title("https://example.com/paper.pdf"),
+            None
+        );
+        assert_eq!(
+            sanitize_metadata_title("Microsoft Word - Trung Bộ Kinh"),
+            Some("Trung Bộ Kinh".to_owned())
+        );
+        assert_eq!(
+            sanitize_metadata_title("Spec (v2.0) — Notes on /Encrypt"),
+            Some("Spec (v2.0) — Notes on /Encrypt".to_owned())
         );
     }
 }

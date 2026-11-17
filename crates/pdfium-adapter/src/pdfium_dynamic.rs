@@ -360,7 +360,7 @@ fn worker_open_document(
         title: doc
             .metadata()
             .get(PdfDocumentMetadataTagType::Title)
-            .map(|t| t.value().to_owned()),
+            .and_then(|t| app_domain::sanitize_metadata_title(t.value())),
         author: doc
             .metadata()
             .get(PdfDocumentMetadataTagType::Author)

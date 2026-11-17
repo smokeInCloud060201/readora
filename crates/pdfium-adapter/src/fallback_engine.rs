@@ -103,7 +103,9 @@ impl FallbackPdfDocument {
             inspect_advanced_pdf_capabilities(&structural_text);
 
         let metadata = DocumentMetadata {
-            title: extract_pdf_string_value(&structural_text, "/Title"),
+            title: extract_pdf_string_value(&structural_text, "/Title")
+                .as_deref()
+                .and_then(app_domain::sanitize_metadata_title),
             author: extract_pdf_string_value(&structural_text, "/Author"),
             subject: extract_pdf_string_value(&structural_text, "/Subject"),
             creator: extract_pdf_string_value(&structural_text, "/Creator"),

@@ -82,7 +82,6 @@ function rotateBoundingBox(
 }
 
 export const PageViewport: React.FC<PageViewportProps> = ({
-  documentTitle,
   viewState,
   effectiveRenderMode,
   renderedPage,
@@ -244,7 +243,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
   const sheetWidthPx = displayWidthPx + 72;
-  const estimatedSheetHeightPx = displayHeightPx + 144;
+  const estimatedSheetHeightPx = displayHeightPx + 86;
   const effectiveRenderScale =
     containerSize.width > 0 && viewState.fit_mode !== "manual"
       ? Number(
@@ -597,7 +596,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const activeUnderline = latestPageAnnotation
     ? latestPageAnnotation.kind === "underline"
     : underlineInstead;
-  const displayTitle = (documentTitle || "PDF Document").replace(/\.pdf$/i, "");
   const pageTurnClass =
     !isContinuous && pageTurnDirection === "next"
       ? "page-turn-next"
@@ -681,27 +679,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
               }
               style={{ width: `${sheetWidthPx}px` }}
             >
-              <div className="pdf-sheet-running-header">
-                <span
-                  className="pdf-sheet-kicker"
-                  data-node-id={isCurrentPage ? "2:131" : undefined}
-                >
-                  {displayTitle.toUpperCase()}
-                </span>
-                <span
-                  className="pdf-sheet-meta"
-                  data-node-id={isCurrentPage ? "2:132" : undefined}
-                >
-                  Page {pageIdx + 1} / {viewState.page_count} ·{" "}
-                  {Math.round(
-                    (containerSize.width > 0 && viewState.fit_mode !== "manual"
-                      ? effectiveRenderScale
-                      : viewState.zoom) * 100,
-                  )}
-                  % · {rotationDeg}°
-                </span>
-              </div>
-
               <div className="page-image-frame">
                 {isCurrentPage && isLoading && (
                   <div className="render-loading-badge" role="status">
@@ -840,15 +817,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                     {pageText}
                   </div>
                 ))}
-
-              <div className="pdf-sheet-running-footer">
-                <span data-node-id={isCurrentPage ? "2:147" : undefined}>
-                  {displayTitle.toUpperCase()}
-                </span>
-                <span data-node-id={isCurrentPage ? "2:148" : undefined}>
-                  {pageIdx + 1}
-                </span>
-              </div>
             </div>
           );
         })}

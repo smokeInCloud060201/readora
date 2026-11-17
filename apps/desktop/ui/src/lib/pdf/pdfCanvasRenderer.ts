@@ -69,6 +69,66 @@ function makePdfError(code: string, message: string): CommandErrorDto {
   return { code, message };
 }
 
+export function sanitizeMetadataTitle(
+  raw: string | null | undefined,
+): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const withoutCtrl = Array.from(raw)
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .trim();
+  if (!withoutCtrl) {
+    return null;
+  }
+
+  const stripped = withoutCtrl.replace(/^microsoft word\s*-\s*/i, "").trim();
+  if (!stripped) {
+    return null;
+  }
+
+  const lower = stripped.toLowerCase();
+  if (
+    lower === "untitled" ||
+    lower === "untitled document" ||
+    lower === "document"
+  ) {
+    return null;
+  }
+
+  if (
+    /^(?:file:|https?:\/\/|ftp:\/\/|about:|data:|blob:|mailto:|javascript:|chrome-extension:\/\/)/i.test(
+      stripped,
+    )
+  ) {
+    return null;
+  }
+
+  if (/^[a-zA-Z]:[\\/]/.test(stripped) || stripped.startsWith("\\\\")) {
+    return null;
+  }
+
+  if (
+    stripped.startsWith("/") &&
+    (stripped.slice(1).includes("/") || /^\/(?:tmp|var|etc)\b/i.test(stripped))
+  ) {
+    return null;
+  }
+
+  if (
+    (stripped.includes("/") || stripped.includes("\\")) &&
+    /\.(?:htm|html|xhtml|mht|mhtml|doc|docx|tmp)$/i.test(stripped)
+  ) {
+    return null;
+  }
+
+  return stripped;
+}
+
 const PAPER_LIGHT_RGB: readonly [number, number, number] = [252, 251, 246]; // #fcfbf6
 const INK_LIGHT_RGB: readonly [number, number, number] = [35, 37, 31]; // #23251f
 const PAPER_GRAY_RGB: readonly [number, number, number] = [244, 244, 240]; // #f4f4f0
@@ -241,11 +301,12 @@ export async function parsePdfWithPdfJs(
     try {
       const metaResult = await pdfDoc.getMetadata();
       const info = (metaResult?.info ?? {}) as Record<string, unknown>;
+      const cleanEmbeddedTitle =
+        typeof info.Title === "string"
+          ? sanitizeMetadataTitle(info.Title)
+          : null;
       metadata = {
-        title:
-          typeof info.Title === "string" && info.Title.trim().length > 0
-            ? info.Title.trim()
-            : fileName.replace(/\.pdf$/i, ""),
+        title: cleanEmbeddedTitle ?? fileName.replace(/\.pdf$/i, ""),
         author:
           typeof info.Author === "string" && info.Author.trim().length > 0
             ? info.Author.trim()

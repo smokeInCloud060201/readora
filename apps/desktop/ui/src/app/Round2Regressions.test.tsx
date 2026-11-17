@@ -625,9 +625,9 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
       value: 800,
     });
 
-    // Exact spacer height: at 100% zoom, displayWidthPx=608, displayHeightPx=Math.round(608 * 792/612)=787 -> 787 + 144 = 931px
+    // Exact spacer height: at 100% zoom, displayWidthPx=608, displayHeightPx=Math.round(608 * 792/612)=787 -> 787 + 86 = 873px
     const spacer1 = screen.getByTestId("pdf-page-spacer-1");
-    expect(spacer1).toHaveStyle({ height: "931px" });
+    expect(spacer1).toHaveStyle({ height: "873px" });
 
     // Initial requestAnimationFrame restored scrollTop to Page 50 instead of staying at 0
     await waitFor(() => {
@@ -1222,5 +1222,26 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
         ),
       ).toBe(true);
     });
+
+    // Synthetic top/bottom running bars are absent and converter URL/path /Title metadata is stripped
+    expect(
+      document.querySelector(".pdf-sheet-running-header"),
+    ).not.toBeInTheDocument();
+    expect(
+      document.querySelector(".pdf-sheet-running-footer"),
+    ).not.toBeInTheDocument();
+    expect(
+      pdfCanvasRenderer.sanitizeMetadataTitle(
+        "FILE://H:\\LOTUSHOME\\EBOOKS-HTML\\TRUNGBOKINH\\TRUNGBOKINH.HTM",
+      ),
+    ).toBeNull();
+    expect(
+      pdfCanvasRenderer.sanitizeMetadataTitle(
+        "file://H:\\lotushome\\ebooks-html\\trungbokinh\\trungbokinh.htm",
+      ),
+    ).toBeNull();
+    expect(
+      pdfCanvasRenderer.sanitizeMetadataTitle("Microsoft Word - Trung Bộ Kinh"),
+    ).toBe("Trung Bộ Kinh");
   });
 });
