@@ -1,7 +1,7 @@
 # Delivery Roadmap
 
 ## Phase 0 — Technical validation
-- Build a minimal Tauri 2 shell on macOS, Windows, and Linux.
+- Build a minimal native `tao` + `wry` desktop shell on macOS, Windows, and Linux.
 - Prototype the chosen PDFium binding and native library loading on each target architecture.
 - Test render latency, memory, encrypted files, text extraction, and large PDFs.
 - Complete binding/engine license review and create a third-party notices process.
@@ -53,11 +53,9 @@ application logic
 independent of the
 desktop shell
 
-Desktop shell           Tauri 2                 Native desktop
-packaging and
-controlled
-frontend/backend
-communication
+Desktop shell           tao + wry               Native desktop windowing,
+                                                OS WebView, and authenticated
+                                                loopback RPC bridge
 
 Frontend                React + TypeScript +    Reader UI and feature
 Vite                    modules
@@ -116,7 +114,7 @@ systems
 │   └── desktop/
 │       ├── src-tauri/
 │       └── ui/
-└── docs/
+└── .docs/
     ├── ARCHITECTURE.md
     ├── FEATURE_MODULES.md
     ├── CODING_CONVENTIONS.md
@@ -237,10 +235,10 @@ architecture boundaries that future features must follow.
 **Main tasks**
 
 1.  Create the Cargo workspace and crate boundaries.
-2.  Set up the Tauri 2 desktop application.
+2.  Set up the native `tao` + `wry` desktop shell (`readora-desktop`).
 3.  Set up React, TypeScript, Vite, and frontend lint/type-check
     scripts.
-4.  Establish typed request/response contracts for Tauri commands.
+4.  Establish typed request/response contracts for authenticated loopback RPC commands.
 5.  Define application logging and error-reporting conventions.
 6.  Add configuration and user-preference foundations.
 7.  Implement basic OS adapters for file selection and application
@@ -692,14 +690,14 @@ Use this checklist during the weekly project review.
   -----------------------------------------------------------------------
 Phase                   Status                  Evidence / notes
   ----------------------- ----------------------- -----------------------
-0 --- Technical         Complete                ADR-0001..0004 recorded in
-foundation                                      `.docs/decisions.md`
+0 --- Technical         Complete                ADR-001..004 recorded in
+foundation                                      `.docs/DECISIONS.md`
 
-1 --- Desktop           Complete                8-crate Rust workspace +
-foundation                                      Tauri 2 + React/TS strict
+1 --- Desktop           Complete                9-member Rust workspace +
+foundation                                      `tao`/`wry` + React/TS strict
 
 2 --- PDF engine        Complete                `pdf-engine` traits +
-integration                                     `pdfium-adapter` + tests
+integration                                     `pdfium-adapter` (`chromium/6723`) + tests
 
 3 --- Core reader MVP   Complete                Full reader UI, Figma SVG
                                                 icon system, Library,
@@ -707,7 +705,7 @@ integration                                     `pdfium-adapter` + tests
 
 4 --- Productivity      Complete                Multi-page search, SQLite
 features                                        bookmarks & annotations
-                                                (`0001`–`0003` migrations)
+                                                (`0001`–`0004` migrations)
 
 5 --- Advanced          Complete                Form/signature inspection,
 capabilities                                    atomic annotation export,

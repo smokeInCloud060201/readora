@@ -36,7 +36,7 @@ src/
 - `thiserror` for library/domain errors.
 - Add context at boundaries; preserve source errors.
 - Avoid stringly typed status values and error codes.
-- Avoid `anyhow` in domain/public library APIs; it is acceptable at executable boundaries.
+- Avoid `anyhow` in workspace crates; use explicit `thiserror` error enums and structured `CommandErrorDto` at RPC boundaries.
 
 ### Async and concurrency
 - Async for I/O and orchestration; CPU-bound rendering belongs on a bounded blocking/worker pool.

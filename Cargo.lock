@@ -73,6 +73,7 @@ name = "app-domain"
 version = "1.0.6"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "uuid",
 ]
@@ -2243,7 +2244,6 @@ dependencies = [
  "serde_json",
  "tao",
  "tempfile",
- "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "uuid",

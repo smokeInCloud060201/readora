@@ -2,146 +2,121 @@
 
 ## 1. Architectural style
 
-Use a **modular monolith with ports and adapters (hexagonal architecture)**.
+Readora uses a **modular monolith with ports and adapters (hexagonal architecture)** paired with a lightweight **`tao` + `wry` native desktop shell** and an **authenticated loopback HTTP/RPC transport**.
 
 Why:
-- A desktop PDF reader is primarily a local interactive application; microservices add deployment and IPC complexity without a clear benefit.
-- Rust can keep rendering, parsing, search indexing, and storage close to the process for low latency.
-- Ports isolate the PDF engine, storage, OS integration, and future alternatives.
-- Tauri is the desktop composition root and bridge, not the place for business logic.
+- A desktop PDF reader is a local interactive application; microservices add deployment and IPC complexity without benefit.
+- Rust keeps rendering, parsing, search indexing, SQLite persistence, and caching inside one process for low latency.
+- Ports isolate the PDF engine, SQLite storage, and OS platform integration behind explicit traits.
+- `apps/desktop/src-tauri` (`readora-desktop`) is strictly the composition root, native window/WebView host, and authenticated RPC boundary—never the home for domain rules.
 
 ## 2. Context and runtime flow
 
 ```text
 ┌────────────────────────────── Desktop process ──────────────────────────────┐
 │                                                                             │
-│  React + TypeScript UI                                                      │
-│  ├─ Reader workspace / tabs / toolbar / panels                             │
-│  └─ typed API client                                                       │
-│             │ Tauri commands + events                                      │
+│  React 19 + TypeScript UI (apps/desktop/ui)                                 │
+│  ├─ Reader workspace / library / toolbar / inspector panels                 │
+│  └─ Typed RPC client (src/lib/tauri/client.ts)                              │
+│             │ Authenticated loopback POST (127.0.0.1:<ephemeral>)           │
+│             │ + Host / Origin / Sec-Fetch-Site / X-Readora-Token            │
 │             ▼                                                               │
-│  Tauri adapter / composition root (apps/desktop/src-tauri)                 │
+│  Native desktop shell & composition root (apps/desktop/src-tauri)           │
+│  ├─ tao Window + wry OS WebView (strict navigation & CSP enforcement)       │
+│  ├─ Hardened loopback HTTP/RPC server (server.rs, bounded worker pool)      │
+│  └─ DesktopCommandHandler (commands/mod.rs)                                 │
 │             │                                                               │
 │             ▼                                                               │
-│  Application use cases                                                     │
-│  ├─ OpenDocument   ├─ RenderPage   ├─ SearchText                            │
-│  ├─ NavigatePage   ├─ UpdateBookmark ├─ SaveAnnotation                      │
-│  └─ ExportDocument └─ ReadSettings                                          │
-│             │ ports                                                        │
-│       ┌─────┴─────────────┐                                                 │
-│       ▼                   ▼                                                 │
-│  PDF engine port      Storage / platform ports                              │
-│       │                   │                                                 │
-│  PDFium adapter       SQLite / filesystem / dialogs / OS                    │
+│  AppCore facade (crates/app-core)                                           │
+│             │                                                               │
+│             ▼                                                               │
+│  Application use cases (crates/app-application)                             │
+│  ├─ OpenDocument   ├─ RenderPage       ├─ SearchDocument                    │
+│  ├─ NavigatePage   ├─ UpsertBookmark   ├─ UpsertAnnotation / Export         │
+│  └─ Settings       └─ Check/Stage/InstallUpdates & Cleanup                  │
+│             │ ports (traits)                                                │
+│       ┌─────┴──────────────────────┐                                        │
+│       ▼                            ▼                                        │
+│  PdfEngine / PdfDocument      Storage / Platform / RenderCache ports        │
+│       │                            │                                        │
+│  pdfium-adapter               storage (rusqlite WAL) / platform / infra     │
+│  (PDFium chromium/6723 +                                                    │
+│   pure-Rust fallback)                                                       │
 │                                                                             │
-│  Domain: Document, PageIndex, ViewState, Bookmark, Annotation, SearchHit    │
+│  Domain (crates/app-domain): DocumentDescriptor, PageIndex, ViewState,      │
+│  ZoomLevel, Rotation, Bookmark, Annotation, AppSettings, SemVer             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 3. Crate responsibilities and dependency direction
+## 3. Workspace crates (9 Cargo members) and dependency direction
 
-| Crate | Responsibility | Must not depend on |
+The Cargo workspace in [`Cargo.toml`](../Cargo.toml) contains **9 Rust members** plus the React frontend workspace package in [`pnpm-workspace.yaml`](../pnpm-workspace.yaml):
+
+| Crate / Package | Responsibility | Must not depend on |
 |---|---|---|
-| `app-domain` | Entities, value objects, invariants, domain errors | Tauri, UI, SQLite, PDFium |
-| `app-application` | Use cases, orchestration, ports, DTOs | Concrete adapters |
-| `pdf-engine` | Engine-neutral traits/types for open/render/text/search | PDFium implementation |
-| `pdfium-adapter` | PDFium bindings, native library loading, engine-specific conversions | UI, Tauri commands |
-| `storage` | SQLite repositories, migrations, preferences, recent files | UI, PDFium |
-| `platform` | File dialogs, OS paths, open-with, print integration, notifications | Domain internals |
-| `app-infrastructure` | Shared adapter implementations and app services | UI |
-| `app-core` | Composition/wiring, application state, command-facing facade | Frontend |
-| `src-tauri` | Tauri commands, events, capabilities, startup/shutdown | Business rules |
-| `ui` | React views, view models, accessibility, styling | Direct native/PDFium access |
+| `crates/app-domain` | Entities, value objects, invariants, SemVer comparison, domain errors | `tao`, `wry`, UI, SQLite, PDFium, OS I/O |
+| `crates/pdf-engine` | Engine-neutral `PdfEngine` / `PdfDocument` traits, geometry, zeroizing password options | PDFium implementation, SQLite, UI |
+| `crates/app-application` | Use cases, orchestration, port traits, boundary DTOs | Concrete adapters (`rusqlite`, `pdfium-render`, `wry`) |
+| `crates/pdfium-adapter` | Dynamic `pdfium-render` bindings (`chromium/6723`) + pure-Rust fallback engine & PNG encoder | UI, desktop shell |
+| `crates/storage` | `rusqlite` (`WAL` mode) repositories and append-only migrations (`0001`–`0004`) | UI, PDFium |
+| `crates/platform` | Canonical path validation, SHA-256 verification, atomic writes, release JSON parsing, scoped cleanup | Domain internals, UI |
+| `crates/app-infrastructure` | Byte-bounded LRU rendered-page cache and generation cancellation registry | UI, SQLite |
+| `crates/app-core` | Dependency wiring, session management, and command-facing facade | Frontend, `tao`/`wry` |
+| `apps/desktop/src-tauri` (`readora-desktop`) | Native `tao` + `wry` window/WebView shell, authenticated loopback RPC server, self-updater, installer hooks | Domain business rules |
+| `apps/desktop/ui` (`readora-ui`) | React 19 + TypeScript strict presentation views, hooks, accessibility, styling | Direct filesystem, SQL, or PDFium access |
 
 Dependency direction:
 
 ```text
-Tauri composition root ───────► app-core
-app-core ─────────────────────► app-application
-app-application ──────────────► app-domain + ports
-adapters ────────────────────► ports + app-domain
-pdfium-adapter ──────────────► pdf-engine
-storage ─────────────────────► app-application ports + app-domain
-UI ──────────────────────────► typed Tauri API only
+readora-desktop (apps/desktop/src-tauri) ──► app-core
+app-core ──────────────────────────────────► app-application + adapters
+app-application ───────────────────────────► app-domain + pdf-engine + ports
+adapters ──────────────────────────────────► ports + app-domain
+pdfium-adapter ────────────────────────────► pdf-engine
+storage ───────────────────────────────────► app-application ports + app-domain
+apps/desktop/ui ───────────────────────────► typed client (src/lib/tauri/client.ts) only
 ```
 
-Keep `app-domain` the innermost crate. If two crates need each other, move the shared contract inward or create a small dedicated contract crate; do not create a cycle.
+Keep `app-domain` the innermost crate with zero external infrastructure dependencies.
 
-## 4. Threading and rendering model
+## 4. Threading, loopback RPC, and rendering model
 
-- UI thread: input, layout, lightweight view state only.
-- Tauri async command layer: validates requests and dispatches use cases.
-- PDF worker pool: bounded CPU workers for render, text extraction, and indexing.
-- Storage worker: short SQLite transactions; WAL mode can be evaluated for concurrent reads.
-- Event channel: progress, page-ready, search-progress, document-closed notifications.
+- **Main OS thread**: `tao` event loop, native window lifecycle, and `wry` OS WebView (`WKWebView` on macOS, `WebView2` on Windows, `WebKitGTK 4.1` on Linux).
+- **Loopback HTTP/RPC worker pool**: Ephemeral `127.0.0.1:0` listener with explicit error backoff feeding a bounded `sync_channel(64)` and `8` worker threads (`main.rs` + `server.rs`), enforcing wall-clock request deadlines (`20s`), header/body size caps, anti-rebinding `Host` checks, `Origin` + `Sec-Fetch-Site`, and constant-time 256-bit `X-Readora-Token` authentication.
+- **Storage**: Short `rusqlite` transactions in `WAL` mode with `busy_timeout` and `foreign_keys = ON`.
+- **Rendering & caching policy**:
+  1. Open document and inspect metadata, page count, outlines, forms, and signature fields.
+  2. Compute visible page range in the viewport plus configurable prefetch window (`0`–`5` pages).
+  3. Quantize zoom scale buckets and cancel stale renders per document via `GenerationCancellationRegistry`.
+  4. Cache rendered PNG data URLs in `MemoryRenderCache` keyed by `(DocumentId, PageIndex, ScaleBucket, Rotation, RenderMode)` under a configurable byte budget (`8`–`512 MiB`, default `64 MiB`) with LRU eviction.
 
-Rendering policy:
-1. Open document and read metadata/page count.
-2. Compute visible page range from viewport.
-3. Request visible pages at target scale and device pixel ratio.
-4. Prefetch a small number of adjacent pages.
-5. Deduplicate identical in-flight requests.
-6. Cancel stale requests after navigation/zoom/close.
-7. Cache by `(document_id, page_index, scale_bucket, rotation, render_mode)`.
-8. Enforce a byte-based cache budget and evict least-recently-used entries.
+Never hold a mutex across PDF rendering or disk I/O.
 
-Never hold a global lock while calling PDFium or doing disk I/O. Confirm PDFium thread-safety constraints for the selected binding/build and serialize access if required by the engine.
+## 5. Typed RPC contract (`/__readora_rpc`, `/__readora_import`, `/__readora_pdf_read`, `/__readora_update`)
 
-## 5. Tauri IPC contract
+`DesktopCommandHandler::dispatch_rpc` exposes coarse, typed commands:
+- `document_open`, `document_open_sample`, `document_close`, `document_get_info`, `document_navigate`
+- `page_render`, `page_cancel_renders`, `page_extract_text`, `document_search`
+- `recent_documents_list`, `recent_document_set_favorite`, `recent_document_set_archived`, `recent_document_delete`
+- `bookmark_upsert`, `bookmark_list`, `bookmark_delete`
+- `annotation_upsert`, `annotation_list`, `annotation_delete`, `annotation_export`
+- `settings_get`, `settings_update`, `system_diagnostics`, `app_cleanup_data`
+- `app_check_for_updates`, `app_stage_update_manifest`, `app_stage_github_release`, `app_install_update`, `app_dismiss_update`
 
-Expose coarse, typed commands, not low-level engine calls.
-
-Examples:
-- `document_open(path_or_dialog_request) -> DocumentSummary`
-- `document_close(document_id) -> ()`
-- `document_get_info(document_id) -> DocumentInfo`
-- `page_render(document_id, page_index, render_options) -> RenderedPageHandle`
-- `document_search(document_id, query, options) -> SearchRequestId`
-- `bookmark_upsert(document_id, bookmark) -> Bookmark`
-- `settings_get() -> Settings`
-- `settings_update(patch) -> Settings`
-
-Use events for long-running work:
-- `document-open-progress`
-- `page-rendered`
-- `search-progress`
-- `search-completed`
-- `operation-failed`
-
-Do not return multi-megabyte bitmap arrays through ordinary JSON IPC. Use a bounded asset/protocol strategy or a file-backed temporary render cache with opaque handles and strict cleanup. Benchmark IPC transfer options on all three operating systems.
+Binary PDF imports (`/__readora_import`, bounded at `512 MiB`) and binary PDF reads (`/__readora_pdf_read`) use dedicated authenticated binary endpoints rather than JSON byte arrays.
 
 ## 6. Persistence
 
-SQLite stores application metadata only:
-- recent documents (path, display name, last-opened, last-page)
-- bookmarks and user annotations
-- reading preferences and application settings
-- optional local search index metadata
+SQLite (`readora.sqlite` in OS application data directory) stores application metadata only:
+- recent documents, favorite/archive flags, and last reading position/zoom/rotation
+- bookmarks and user annotations (highlights, underlines, comments)
+- reading preferences and application settings (including opt-in `auto_check_updates` default `false`)
+- append-only schema migrations (`0001` → `0002` → `0003` → `0004`)
 
-PDF files remain at user-selected locations. Do not silently copy originals into an application database. Use migrations, transactions, schema versioning, and backup/restore tests. Treat file paths as platform-specific opaque values; do not assume UTF-8 paths on every platform.
+External user PDF files remain untouched at their original paths; browser/drag-and-drop imports are staged inside `<app_data_dir>/library/pdfs/` and cleaned up cleanly on `--uninstall-cleanup` or package purge.
 
 ## 7. PDF engine strategy
 
-Define `PdfEngine` and `PdfDocument` traits in `pdf-engine`; put all PDFium-specific types in `pdfium-adapter`.
-
-PDFium is a reasonable initial candidate for rendering and broad PDF support. Validate:
-- exact crate version and license of the Rust binding
-- PDFium upstream license and third-party notices
-- availability of signed/reproducible binaries for each target/architecture
-- security update cadence and vulnerability response
-- text extraction, forms, annotations, signatures, encryption, and accessibility needs
-- binary size, startup time, memory, and rendering performance
-
-Do not assume one Rust wrapper implements every PDF feature. Build a capability matrix and prototype the required operations. Keep the adapter replaceable if licensing or feature gaps require another engine.
-
-## 8. Cross-platform abstractions
-
-Keep OS-specific code behind `platform`:
-- native open/save dialogs
-- path resolution and app data/cache directories
-- file associations and drag/drop
-- printing
-- menu, tray, deep links, and notifications
-- startup/update integration
-
-Use `cfg(target_os = "...")` only inside platform adapters or narrow build configuration. Test behavior on real OS runners, not only cross-compilation.
+`PdfEngine` and `PdfDocument` live in `crates/pdf-engine`; all `pdfium-render` bindings live exclusively in `crates/pdfium-adapter`.
+- Release installers bundle prebuilt PDFium pinned to **`chromium/6723`** (`bblanchon/pdfium-binaries` tag `chromium%2F6723`), matching [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and [`sbom.cdx.json`](../sbom.cdx.json).
+- When no dynamic PDFium binary is present (e.g., clean developer checkouts and CI unit tests), `PdfiumEngineAdapter` transparently falls back to its built-in deterministic pure-Rust PDF parser/renderer.

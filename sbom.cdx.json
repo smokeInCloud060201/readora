@@ -2,14 +2,14 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
-  "version": 1,
+  "version": 2,
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:cargo/readora-desktop@0.1.0",
+      "bom-ref": "pkg:cargo/readora-desktop@1.0.6",
       "name": "readora-desktop",
-      "version": "0.1.0",
-      "description": "Local-first open-source cross-platform PDF reader built with Rust, Tauri 2, and React.",
+      "version": "1.0.6",
+      "description": "Local-first open-source cross-platform PDF reader built with Rust, tao 0.31.1, wry 0.48.1, and React 19.3.1.",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -20,65 +20,184 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-domain@0.1.0",
+      "bom-ref": "pkg:cargo/app-domain@1.0.6",
       "name": "app-domain",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-application@0.1.0",
+      "bom-ref": "pkg:cargo/app-application@1.0.6",
       "name": "app-application",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/pdf-engine@0.1.0",
+      "bom-ref": "pkg:cargo/pdf-engine@1.0.6",
       "name": "pdf-engine",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/pdfium-adapter@0.1.0",
+      "bom-ref": "pkg:cargo/pdfium-adapter@1.0.6",
       "name": "pdfium-adapter",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/storage@0.1.0",
+      "bom-ref": "pkg:cargo/storage@1.0.6",
       "name": "storage",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/platform@0.1.0",
+      "bom-ref": "pkg:cargo/platform@1.0.6",
       "name": "platform",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-infrastructure@0.1.0",
+      "bom-ref": "pkg:cargo/app-infrastructure@1.0.6",
       "name": "app-infrastructure",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/app-core@0.1.0",
+      "bom-ref": "pkg:cargo/app-core@1.0.6",
       "name": "app-core",
-      "version": "0.1.0",
+      "version": "1.0.6",
       "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tao@0.31.1",
+      "name": "tao",
+      "version": "0.31.1",
+      "licenses": [{ "expression": "Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wry@0.48.1",
+      "name": "wry",
+      "version": "0.48.1",
+      "licenses": [{ "expression": "Apache-2.0 OR MIT" }]
     },
     {
       "type": "library",
       "bom-ref": "pkg:cargo/rusqlite@0.32.1",
       "name": "rusqlite",
       "version": "0.32.1",
+      "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libsqlite3-sys@0.30.1",
+      "name": "libsqlite3-sys",
+      "version": "0.30.1",
+      "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pdfium-render@0.8.37",
+      "name": "pdfium-render",
+      "version": "0.8.37",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libloading@0.9.0",
+      "name": "libloading",
+      "version": "0.9.0",
+      "licenses": [{ "expression": "ISC" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde@1.0.229",
+      "name": "serde",
+      "version": "1.0.229",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_json@1.0.154",
+      "name": "serde_json",
+      "version": "1.0.154",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror@2.0.21",
+      "name": "thiserror",
+      "version": "2.0.21",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/sha2@0.10.9",
+      "name": "sha2",
+      "version": "0.10.9",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/base64@0.22.1",
+      "name": "base64",
+      "version": "0.22.1",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/crc32fast@1.5.4",
+      "name": "crc32fast",
+      "version": "1.5.4",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/flate2@1.1.11",
+      "name": "flate2",
+      "version": "1.1.11",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bytes@1.12.1",
+      "name": "bytes",
+      "version": "1.12.1",
+      "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uuid@1.29.2",
+      "name": "uuid",
+      "version": "1.29.2",
+      "licenses": [{ "expression": "Apache-2.0 OR MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tempfile@3.27.0",
+      "name": "tempfile",
+      "version": "3.27.0",
+      "licenses": [{ "expression": "MIT OR Apache-2.0" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tracing@0.1.44",
+      "name": "tracing",
+      "version": "0.1.44",
+      "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tracing-subscriber@0.3.23",
+      "name": "tracing-subscriber",
+      "version": "0.3.23",
       "licenses": [{ "expression": "MIT" }]
     },
     {
@@ -90,9 +209,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/react@19.0.0",
+      "bom-ref": "pkg:npm/react@19.3.1",
       "name": "react",
-      "version": "19.0.0",
+      "version": "19.3.1",
+      "licenses": [{ "expression": "MIT" }]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/react-dom@19.3.1",
+      "name": "react-dom",
+      "version": "19.3.1",
       "licenses": [{ "expression": "MIT" }]
     },
     {

@@ -55,10 +55,12 @@ jobs:
       - name: Install frontend dependencies & build UI dist
         shell: bash
         run: |
-          RAW_TAG="${GITHUB_REF_NAME:-v1.0.2}"
-          if [[ "${RAW_TAG}" == v* ]]; then
-            export VITE_APP_VERSION="${RAW_TAG#v}"
+          set -euo pipefail
+          RAW_TAG="${GITHUB_REF_NAME:-v1.0.6}"
+          if [[ "${RAW_TAG}" != v* ]]; then
+            RAW_TAG="v1.0.6"
           fi
+          export VITE_APP_VERSION="${RAW_TAG#v}"
           pnpm --dir apps/desktop/ui install --frozen-lockfile
           pnpm --dir apps/desktop/ui build
 
@@ -82,28 +84,32 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
+          test -f LICENSE-MIT
+          test -f LICENSE-APACHE
           test -f THIRD_PARTY_NOTICES.md
           test -f sbom.cdx.json
 
-          RAW_TAG="${GITHUB_REF_NAME:-v0.1.0}"
+          RAW_TAG="${GITHUB_REF_NAME:-v1.0.6}"
           if [[ "${RAW_TAG}" != v* ]]; then
-            RAW_TAG="v0.1.0"
+            RAW_TAG="v1.0.6"
           fi
           CLEAN_VERSION="${RAW_TAG#v}"
           PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           REPO_SLUG="${GITHUB_REPOSITORY:-smokeInCloud060201/readora}"
+          PDFIUM_TAG="chromium%2F6723"
 
           mkdir -p release-artifacts
 
           if [[ "${MATRIX_PLATFORM}" == "macos-latest" ]]; then
             APP_DIR="dist-macos/Readora.app/Contents"
             mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources/ui" "${APP_DIR}/Resources/pdfium"
-            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz"; then
-              tar -xzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" -C "${RUNNER_TEMP}"
-              if [[ -f "${RUNNER_TEMP}/lib/libpdfium.dylib" ]]; then
-                cp "${RUNNER_TEMP}/lib/libpdfium.dylib" "${APP_DIR}/Resources/pdfium/libpdfium.dylib"
-              fi
-            fi
+
+            curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" \
+              "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-mac-arm64.tgz"
+            tar -xzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" -C "${RUNNER_TEMP}"
+            test -f "${RUNNER_TEMP}/lib/libpdfium.dylib"
+            cp "${RUNNER_TEMP}/lib/libpdfium.dylib" "${APP_DIR}/Resources/pdfium/libpdfium.dylib"
+
             cp target/release/readora-desktop "${APP_DIR}/MacOS/readora-desktop"
             chmod +x "${APP_DIR}/MacOS/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${APP_DIR}/Resources/ui/"
@@ -125,7 +131,7 @@ jobs:
             cp "${APP_DIR}/Resources/AppIcon.icns" "dist-macos/.VolumeIcon.icns"
             rm -rf "${ICONSET_DIR}"
 
-            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${APP_DIR}/Resources/"
+            cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${APP_DIR}/Resources/"
             cp apps/desktop/src-tauri/installer/macos/uninstall-cleanup.sh "${APP_DIR}/Resources/uninstall-cleanup.sh"
             chmod +x "${APP_DIR}/Resources/uninstall-cleanup.sh"
             cat > "${APP_DIR}/Info.plist" <<PLIST
@@ -167,9 +173,16 @@ jobs:
               security unlock-keychain -p "readora-ci" "${RUNNER_TEMP}/build.keychain"
               security import "${RUNNER_TEMP}/build_cert.p12" -k "${RUNNER_TEMP}/build.keychain" -P "${APPLE_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign
               security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "readora-ci" "${RUNNER_TEMP}/build.keychain"
-              codesign --force --deep --options runtime --timestamp --sign "${APPLE_SIGNING_IDENTITY}" --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+              codesign --force --options runtime --timestamp --sign "${APPLE_SIGNING_IDENTITY}" \
+                "${APP_DIR}/Resources/pdfium/libpdfium.dylib"
+              codesign --force --options runtime --timestamp --sign "${APPLE_SIGNING_IDENTITY}" \
+                --entitlements apps/desktop/src-tauri/Entitlements.plist \
+                "dist-macos/Readora.app"
             else
-              codesign --force --deep --sign - --entitlements apps/desktop/src-tauri/Entitlements.plist "dist-macos/Readora.app"
+              codesign --force --sign - "${APP_DIR}/Resources/pdfium/libpdfium.dylib"
+              codesign --force --sign - \
+                --entitlements apps/desktop/src-tauri/Entitlements.plist \
+                "dist-macos/Readora.app"
             fi
             codesign --verify --deep --strict --verbose=2 "dist-macos/Readora.app"
 
@@ -190,16 +203,17 @@ jobs:
           elif [[ "${MATRIX_PLATFORM}" == "ubuntu-latest" ]]; then
             DEB_ROOT="dist-linux/readora-deb"
             mkdir -p "${DEB_ROOT}/DEBIAN" "${DEB_ROOT}/usr/bin" "${DEB_ROOT}/usr/share/readora/ui" "${DEB_ROOT}/usr/share/readora/pdfium" "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps" "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps" "${DEB_ROOT}/usr/share/applications"
-            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-linux-x64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz"; then
-              tar -xzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" -C "${RUNNER_TEMP}"
-              if [[ -f "${RUNNER_TEMP}/lib/libpdfium.so" ]]; then
-                cp "${RUNNER_TEMP}/lib/libpdfium.so" "${DEB_ROOT}/usr/share/readora/pdfium/libpdfium.so"
-              fi
-            fi
+
+            curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-linux-x64.tgz" \
+              "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-linux-x64.tgz"
+            tar -xzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" -C "${RUNNER_TEMP}"
+            test -f "${RUNNER_TEMP}/lib/libpdfium.so"
+            cp "${RUNNER_TEMP}/lib/libpdfium.so" "${DEB_ROOT}/usr/share/readora/pdfium/libpdfium.so"
+
             cp target/release/readora-desktop "${DEB_ROOT}/usr/bin/readora-desktop"
             chmod 0755 "${DEB_ROOT}/usr/bin/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${DEB_ROOT}/usr/share/readora/ui/"
-            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${DEB_ROOT}/usr/share/readora/"
+            cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${DEB_ROOT}/usr/share/readora/"
             cp assets/icons/32x32.png "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps/readora.png"
             cp assets/icons/icon.png "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps/readora.png"
             cat > "${DEB_ROOT}/usr/share/applications/readora.desktop" <<DESKTOP
@@ -221,6 +235,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
+          Depends: libwebkit2gtk-4.1-0, libgtk-3-0
           Maintainer: Readora Contributors
           Description: Local-first open-source desktop PDF reader for focused reading
           CONTROL
@@ -231,20 +246,20 @@ jobs:
           else
             WIN_STAGE="dist-windows/Readora"
             mkdir -p "${WIN_STAGE}/ui" "${WIN_STAGE}/pdfium" "${WIN_STAGE}/installer"
-            if curl -fSL --retry 2 -o "${RUNNER_TEMP}/pdfium-win-x64.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz"; then
-              tar -xzf "${RUNNER_TEMP}/pdfium-win-x64.tgz" -C "${RUNNER_TEMP}"
-              if [[ -f "${RUNNER_TEMP}/bin/pdfium.dll" ]]; then
-                cp "${RUNNER_TEMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
-              fi
-            fi
+
+            curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-win-x64.tgz" \
+              "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-win-x64.tgz"
+            tar -xzf "${RUNNER_TEMP}/pdfium-win-x64.tgz" -C "${RUNNER_TEMP}"
+            test -f "${RUNNER_TEMP}/bin/pdfium.dll"
+            cp "${RUNNER_TEMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
+
             if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
               echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${RUNNER_TEMP}/win_cert.pfx"
-              signtool.exe sign /f "${RUNNER_TEMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe || true
+              signtool.exe sign /f "${RUNNER_TEMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe
             fi
             cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
-            cp target/release/readora-desktop.exe "release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64.exe"
             cp -R apps/desktop/ui/dist/* "${WIN_STAGE}/ui/"
-            cp THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
+            cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
             cp apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh "${WIN_STAGE}/installer/"
             PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64-setup.zip"
             powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist-windows/Readora/*' -DestinationPath '${PRIMARY_ASSET}' -Force"
@@ -254,10 +269,10 @@ jobs:
           ASSET_SIZE=$(wc -c < "${PRIMARY_ASSET}" | tr -d '[:space:]')
           if command -v sha256sum >/dev/null 2>&1; then
             ASSET_SHA256=$(sha256sum "${PRIMARY_ASSET}" | awk '{print $1}')
-            sha256sum THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
+            sha256sum LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
           else
             ASSET_SHA256=$(shasum -a 256 "${PRIMARY_ASSET}" | awk '{print $1}')
-            shasum -a 256 THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
+            shasum -a 256 LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
           fi
 
           cat > "release-artifacts/release-manifest-${ARTIFACT_LABEL}.json" <<EOF
