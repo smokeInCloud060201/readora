@@ -69,30 +69,99 @@ function makePdfError(code: string, message: string): CommandErrorDto {
   return { code, message };
 }
 
+const PAPER_LIGHT_RGB: readonly [number, number, number] = [252, 251, 246]; // #fcfbf6
+const INK_LIGHT_RGB: readonly [number, number, number] = [35, 37, 31]; // #23251f
+const PAPER_GRAY_RGB: readonly [number, number, number] = [244, 244, 240]; // #f4f4f0
+const INK_GRAY_RGB: readonly [number, number, number] = [38, 39, 36]; // #262724
+const PAPER_DARK_RGB: readonly [number, number, number] = [38, 40, 35]; // #262823
+const INK_DARK_RGB: readonly [number, number, number] = [230, 232, 225]; // #e6e8e1
+
+function lerpChannel(a: number, b: number, t: number): number {
+  const clamped = Math.min(1, Math.max(0, t));
+  return Math.min(255, Math.max(0, Math.round(a + (b - a) * clamped)));
+}
+
+export function harmonizePixelBufferWithTheme(
+  data: Uint8ClampedArray,
+  renderMode: RenderMode,
+): void {
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const maxC = Math.max(r, g, b);
+    const minC = Math.min(r, g, b);
+    const chroma = maxC - minC;
+    const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    if (renderMode === "standard") {
+      const t = Math.pow(Math.min(1, Math.max(0, luma)), 1.12);
+      const nr = INK_LIGHT_RGB[0] + (PAPER_LIGHT_RGB[0] - INK_LIGHT_RGB[0]) * t;
+      const ng = INK_LIGHT_RGB[1] + (PAPER_LIGHT_RGB[1] - INK_LIGHT_RGB[1]) * t;
+      const nb = INK_LIGHT_RGB[2] + (PAPER_LIGHT_RGB[2] - INK_LIGHT_RGB[2]) * t;
+      if (chroma <= 12) {
+        data[i] = Math.round(nr);
+        data[i + 1] = Math.round(ng);
+        data[i + 2] = Math.round(nb);
+      } else {
+        const cr = r * (PAPER_LIGHT_RGB[0] / 255);
+        const cg = g * (PAPER_LIGHT_RGB[1] / 255);
+        const cb = b * (PAPER_LIGHT_RGB[2] / 255);
+        const w = (chroma - 12) / 24;
+        data[i] = lerpChannel(nr, cr, w);
+        data[i + 1] = lerpChannel(ng, cg, w);
+        data[i + 2] = lerpChannel(nb, cb, w);
+      }
+    } else if (renderMode === "grayscale") {
+      const t = Math.pow(Math.min(1, Math.max(0, luma)), 1.12);
+      data[i] = lerpChannel(INK_GRAY_RGB[0], PAPER_GRAY_RGB[0], t);
+      data[i + 1] = lerpChannel(INK_GRAY_RGB[1], PAPER_GRAY_RGB[1], t);
+      data[i + 2] = lerpChannel(INK_GRAY_RGB[2], PAPER_GRAY_RGB[2], t);
+    } else if (renderMode === "dark_inversion") {
+      const invT = Math.pow(1 - Math.min(1, Math.max(0, luma)), 0.92);
+      const nr =
+        PAPER_DARK_RGB[0] + (INK_DARK_RGB[0] - PAPER_DARK_RGB[0]) * invT;
+      const ng =
+        PAPER_DARK_RGB[1] + (INK_DARK_RGB[1] - PAPER_DARK_RGB[1]) * invT;
+      const nb =
+        PAPER_DARK_RGB[2] + (INK_DARK_RGB[2] - PAPER_DARK_RGB[2]) * invT;
+      if (chroma <= 12) {
+        data[i] = Math.round(nr);
+        data[i + 1] = Math.round(ng);
+        data[i + 2] = Math.round(nb);
+      } else {
+        const srcLuma = Math.max(1, 0.299 * r + 0.587 * g + 0.114 * b);
+        const targetLuma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+        const delta = targetLuma - srcLuma;
+        const cr = Math.min(
+          242,
+          Math.max(PAPER_DARK_RGB[0], r * 0.78 + delta + 12),
+        );
+        const cg = Math.min(
+          242,
+          Math.max(PAPER_DARK_RGB[1], g * 0.78 + delta + 12),
+        );
+        const cb = Math.min(
+          242,
+          Math.max(PAPER_DARK_RGB[2], b * 0.78 + delta + 12),
+        );
+        const w = (chroma - 12) / 28;
+        data[i] = lerpChannel(nr, cr, w);
+        data[i + 1] = lerpChannel(ng, cg, w);
+        data[i + 2] = lerpChannel(nb, cb, w);
+      }
+    }
+  }
+}
+
 function applyRenderModeToCanvas(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   renderMode: RenderMode,
 ): void {
-  if (renderMode === "standard") return;
   const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i] ?? 0;
-    const g = data[i + 1] ?? 0;
-    const b = data[i + 2] ?? 0;
-    if (renderMode === "grayscale") {
-      const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-      data[i] = lum;
-      data[i + 1] = lum;
-      data[i + 2] = lum;
-    } else if (renderMode === "dark_inversion") {
-      data[i] = 255 - r;
-      data[i + 1] = 255 - g;
-      data[i + 2] = 255 - b;
-    }
-  }
+  harmonizePixelBufferWithTheme(imageData.data, renderMode);
   ctx.putImageData(imageData, 0, 0);
 }
 

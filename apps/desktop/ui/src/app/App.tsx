@@ -212,6 +212,15 @@ export const App: React.FC = () => {
   const [libraryCollection, setLibraryCollection] =
     useState<LibraryCollectionView>("all");
 
+  const resolvedTheme: "light" | "dark" =
+    settings.theme === "system"
+      ? osPrefersDark
+        ? "dark"
+        : "light"
+      : settings.theme;
+  const resolvedThemeRef = useRef<"light" | "dark">(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
+
   sessionRef.current = session;
   settingsRef.current = settings;
 
@@ -298,6 +307,13 @@ export const App: React.FC = () => {
       quietBackground = false,
     ) => {
       const renderScale = targetScale ?? effectiveZoomRef.current ?? viewState.zoom;
+      const effectiveMode: RenderMode =
+        viewState.render_mode === "grayscale"
+          ? "grayscale"
+          : viewState.render_mode === "dark_inversion" ||
+              resolvedThemeRef.current === "dark"
+            ? "dark_inversion"
+            : "standard";
       const seq = ++renderSeqRef.current;
       if (!quietBackground) {
         setIsRendering(true);
@@ -310,7 +326,7 @@ export const App: React.FC = () => {
             page_index: viewState.current_page,
             scale: renderScale,
             rotation_degrees: rotationDegrees,
-            render_mode: viewState.render_mode,
+            render_mode: effectiveMode,
             generation: null,
           }),
           readoraApi.extractPageText(docId, viewState.current_page),
@@ -322,7 +338,7 @@ export const App: React.FC = () => {
           result: renderResult,
           zoom: renderScale,
           rotation: viewState.rotation,
-          renderMode: viewState.render_mode,
+          renderMode: effectiveMode,
         });
         setPageText(extractedText);
 
@@ -338,7 +354,7 @@ export const App: React.FC = () => {
                   page_index: nextIdx,
                   scale: renderScale,
                   rotation_degrees: rotationDegrees,
-                  render_mode: viewState.render_mode,
+                  render_mode: effectiveMode,
                   generation: null,
                 })
                 .catch(() => {});
@@ -351,7 +367,7 @@ export const App: React.FC = () => {
                   page_index: prevIdx,
                   scale: renderScale,
                   rotation_degrees: rotationDegrees,
-                  render_mode: viewState.render_mode,
+                  render_mode: effectiveMode,
                   generation: null,
                 })
                 .catch(() => {});
@@ -1113,12 +1129,23 @@ export const App: React.FC = () => {
     [session],
   );
 
-  const resolvedTheme: "light" | "dark" =
-    settings.theme === "system"
-      ? osPrefersDark
-        ? "dark"
-        : "light"
-      : settings.theme;
+  const prevThemeForRenderRef = useRef<"light" | "dark">(resolvedTheme);
+  useEffect(() => {
+    if (prevThemeForRenderRef.current === resolvedTheme) {
+      return;
+    }
+    prevThemeForRenderRef.current = resolvedTheme;
+    const active = sessionRef.current;
+    if (active && active.view_state.render_mode === "standard") {
+      void loadVisiblePageAndPrefetch(
+        active.descriptor.id,
+        active.view_state,
+        settingsRef.current.prefetch_window,
+        effectiveZoomRef.current,
+        true,
+      );
+    }
+  }, [loadVisiblePageAndPrefetch, resolvedTheme]);
 
   const handleToggleTheme = async () => {
     const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
@@ -1273,13 +1300,21 @@ export const App: React.FC = () => {
 
   const showBookmarksPanel = activeSidebar === "bookmarks" || showRightPanel;
 
+  const effectiveRenderMode: RenderMode =
+    session?.view_state.render_mode === "grayscale"
+      ? "grayscale"
+      : session?.view_state.render_mode === "dark_inversion" ||
+          resolvedTheme === "dark"
+        ? "dark_inversion"
+        : "standard";
+
   const activeRenderedPage: RenderedPageResultDto | null =
     session &&
     renderedState &&
     renderedState.result.document_id === session.descriptor.id &&
     Math.abs(renderedState.zoom - effectiveZoom) < 0.02 &&
     renderedState.rotation === session.view_state.rotation &&
-    renderedState.renderMode === session.view_state.render_mode
+    renderedState.renderMode === effectiveRenderMode
       ? renderedState.result
       : null;
 
@@ -1404,6 +1439,7 @@ export const App: React.FC = () => {
                   }
                   pageCount={session.descriptor.page_count}
                   currentPage={session.view_state.current_page}
+                  renderMode={effectiveRenderMode}
                   onSelectPage={(p) =>
                     void dispatchNavigation({ kind: "go_to_page", value: p })
                   }
@@ -1437,6 +1473,7 @@ export const App: React.FC = () => {
 
                 <PageViewport
                   viewState={session.view_state}
+                  effectiveRenderMode={effectiveRenderMode}
                   renderedPage={activeRenderedPage}
                   pageText={pageText}
                   prefetchWindow={settings.prefetch_window}

@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
+import { type RenderMode } from "../../types/ipc";
 
 interface ThumbnailsPanelProps {
   documentId?: string;
   documentTitle?: string;
   pageCount: number;
   currentPage: number;
+  renderMode?: RenderMode;
   onSelectPage: (zeroBasedPage: number) => void;
   onSwitchToOutline?: () => void;
 }
@@ -19,6 +21,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   documentTitle,
   pageCount,
   currentPage,
+  renderMode = "standard",
   onSelectPage,
   onSwitchToOutline,
 }) => {
@@ -28,6 +31,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   const panelRef = useRef<HTMLElement | null>(null);
   const prevCurrentPageRef = useRef<number>(currentPage);
   const prevDocumentIdRef = useRef<string | undefined>(documentId);
+  const prevRenderModeRef = useRef<RenderMode>(renderMode);
   const isProgrammaticScrollRef = useRef<boolean>(false);
   const activeRendersRef = useRef<number>(0);
   const slotWaitersRef = useRef<Array<() => void>>([]);
@@ -67,15 +71,19 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
 
   useEffect(() => {
     const docChanged = prevDocumentIdRef.current !== documentId;
+    const modeChanged = prevRenderModeRef.current !== renderMode;
     const pageChanged = prevCurrentPageRef.current !== currentPage;
 
-    if (docChanged) {
+    if (docChanged || modeChanged) {
       prevDocumentIdRef.current = documentId;
+      prevRenderModeRef.current = renderMode;
       prevCurrentPageRef.current = currentPage;
       thumbnailsRef.current = {};
       setThumbnails({});
       setScrollCenterPage(currentPage);
-      syncPanelScrollToPage(currentPage, true);
+      if (docChanged) {
+        syncPanelScrollToPage(currentPage, true);
+      }
       return;
     }
 
@@ -84,7 +92,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
       setScrollCenterPage(currentPage);
       syncPanelScrollToPage(currentPage, false);
     }
-  }, [currentPage, documentId]);
+  }, [currentPage, documentId, renderMode]);
 
   useEffect(() => {
     if (!documentId || pageCount <= 0) {
@@ -153,7 +161,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
             page_index: idx,
             scale: 0.35,
             rotation_degrees: 0,
-            render_mode: "standard",
+            render_mode: renderMode,
             generation: null,
           });
           if (cancelled || rendered.document_id !== documentId) {
@@ -200,7 +208,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
         wake();
       }
     };
-  }, [documentId, pageCount, scrollCenterPage]);
+  }, [documentId, pageCount, renderMode, scrollCenterPage]);
 
   const handlePanelScroll = () => {
     if (isProgrammaticScrollRef.current) return;

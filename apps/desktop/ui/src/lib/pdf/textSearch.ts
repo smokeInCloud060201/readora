@@ -303,19 +303,19 @@ export function buildSvgPageDataUrl(
 ): string {
   const bg =
     renderMode === "dark_inversion"
-      ? "#1e201b"
+      ? "#262823"
       : renderMode === "grayscale"
-        ? "#f2f2f2"
-        : "#fdfbf6";
+        ? "#f4f4f0"
+        : "#fcfbf6";
   const fg =
     renderMode === "dark_inversion"
-      ? "#e8ebe2"
+      ? "#e6e8e1"
       : renderMode === "grayscale"
-        ? "#2b2b2b"
-        : "#292b25";
+        ? "#262724"
+        : "#23251f";
   const muted =
     renderMode === "dark_inversion"
-      ? "#9aa191"
+      ? "#9aa389"
       : renderMode === "grayscale"
         ? "#6b6b6b"
         : "#788467";

@@ -5,6 +5,7 @@ import {
   type AnnotationDto,
   type AnnotationKind,
   type RenderedPageResultDto,
+  type RenderMode,
   type SearchBoundingBoxDto,
   type SearchHitDto,
   type ViewStateDto,
@@ -17,6 +18,7 @@ import {
 interface PageViewportProps {
   documentTitle?: string;
   viewState: ViewStateDto;
+  effectiveRenderMode?: RenderMode;
   renderedPage: RenderedPageResultDto | null;
   pageText: string;
   prefetchWindow?: number;
@@ -82,6 +84,7 @@ function rotateBoundingBox(
 export const PageViewport: React.FC<PageViewportProps> = ({
   documentTitle,
   viewState,
+  effectiveRenderMode,
   renderedPage,
   pageText,
   prefetchWindow = 1,
@@ -260,14 +263,17 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     viewState.fit_mode,
   ]);
 
+  const activeRenderMode: RenderMode =
+    effectiveRenderMode ?? viewState.render_mode;
+
   // Clear cached page bitmaps whenever document, effective scale, rotation, or render_mode changes
   useEffect(() => {
     setRenderedPagesMap({});
   }, [
+    activeRenderMode,
     effectiveRenderScale,
     viewState.document_id,
     viewState.rotation,
-    viewState.render_mode,
   ]);
 
   // Insert active renderedPage when its document_id and scale match
@@ -317,7 +323,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
             page_index: idx,
             scale: effectiveRenderScale,
             rotation_degrees: rotationDeg,
-            render_mode: viewState.render_mode,
+            render_mode: activeRenderMode,
             generation: null,
           });
           if (!cancelled && result.document_id === viewState.document_id) {
@@ -345,6 +351,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       cancelled = true;
     };
   }, [
+    activeRenderMode,
     effectiveRenderScale,
     isContinuous,
     onEffectiveZoomChange,
@@ -353,7 +360,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     viewState.current_page,
     viewState.document_id,
     viewState.page_count,
-    viewState.render_mode,
     viewState.zoom,
   ]);
 

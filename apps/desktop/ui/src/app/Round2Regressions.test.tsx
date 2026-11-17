@@ -1176,4 +1176,51 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
       }),
     ).rejects.toMatchObject({ code: "page_out_of_bounds" });
   });
+
+  it("harmonizes PDF page paper and ink colors seamlessly with light (#fcfbf6) and dark (#262823) app themes", async () => {
+    const lightPixels = new Uint8ClampedArray([
+      255, 255, 255, 255, // pure white PDF background
+      0, 0, 0, 255, // pure black PDF ink
+    ]);
+    pdfCanvasRenderer.harmonizePixelBufferWithTheme(lightPixels, "standard");
+    expect(Array.from(lightPixels.slice(0, 4))).toEqual([252, 251, 246, 255]);
+    expect(Array.from(lightPixels.slice(4, 8))).toEqual([35, 37, 31, 255]);
+
+    const darkPixels = new Uint8ClampedArray([
+      255, 255, 255, 255,
+      0, 0, 0, 255,
+    ]);
+    pdfCanvasRenderer.harmonizePixelBufferWithTheme(
+      darkPixels,
+      "dark_inversion",
+    );
+    expect(Array.from(darkPixels.slice(0, 4))).toEqual([38, 40, 35, 255]);
+    expect(Array.from(darkPixels.slice(4, 8))).toEqual([230, 232, 225, 255]);
+
+    // Switching app theme to dark automatically renders standard PDFs in dark_inversion mode
+    await readoraApi.updateSettings({ theme: "dark" });
+    vi.spyOn(readoraApi, "openDocumentFile").mockResolvedValue(
+      makeSession({
+        id: "doc-dark-paper",
+        fileName: "Dark-Paper.pdf",
+        pageCount: 2,
+        currentPage: 0,
+      }),
+    );
+    const renderSpy = vi.spyOn(readoraApi, "renderPage");
+
+    render(<App />);
+    fireEvent.click(screen.getByText("Import your first PDF"));
+    fireEvent.change(screen.getByLabelText("Choose local PDF file"), {
+      target: { files: [createTestPdfFile("Dark-Paper.pdf")] },
+    });
+
+    await waitFor(() => {
+      expect(
+        renderSpy.mock.calls.some(
+          ([cmd]) => cmd.render_mode === "dark_inversion",
+        ),
+      ).toBe(true);
+    });
+  });
 });
