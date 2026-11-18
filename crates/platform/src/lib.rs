@@ -21,19 +21,18 @@ use sha2::{Digest, Sha256};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(windows)]
 #[inline]
 fn is_reparse_or_symlink(meta: &fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        return (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-    }
-    #[cfg(not(windows))]
-    false
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_type().is_symlink() || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+}
+
+#[cfg(not(windows))]
+#[inline]
+fn is_reparse_or_symlink(meta: &fs::Metadata) -> bool {
+    meta.file_type().is_symlink()
 }
 
 #[inline]

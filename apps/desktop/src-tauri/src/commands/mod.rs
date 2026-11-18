@@ -268,12 +268,9 @@ impl DesktopCommandHandler {
     }
 
     /// Handles `settings_update`.
-    pub fn settings_update(
-        &self,
-        mut patch: SettingsPatchDto,
-    ) -> Result<AppSettings, CommandErrorDto> {
+    pub fn settings_update(&self, patch: SettingsPatchDto) -> Result<AppSettings, CommandErrorDto> {
         #[cfg(not(any(test, debug_assertions)))]
-        {
+        let patch = {
             if let Some(ref repo) = patch.github_release_repo
                 && repo.trim() != OFFICIAL_RELEASE_REPO
             {
@@ -282,10 +279,11 @@ impl DesktopCommandHandler {
                     message: "Release builds pin updates to the official repository".to_owned(),
                 });
             }
-            patch.github_release_repo = Some(OFFICIAL_RELEASE_REPO.to_owned());
-        }
-        #[cfg(any(test, debug_assertions))]
-        let _ = &mut patch;
+            SettingsPatchDto {
+                github_release_repo: Some(OFFICIAL_RELEASE_REPO.to_owned()),
+                ..patch
+            }
+        };
         Ok(self.core.update_settings(patch)?)
     }
 
