@@ -66,5 +66,5 @@ this software without specific prior written permission.
 | `react-dom` | `19.3.1` | `MIT` | DOM renderer for the desktop UI |
 | `pdfjs-dist` | `6.5.438` | `Apache-2.0` | WebView canvas PDF rendering and text-layer geometry |
 | `typescript` | `5.9.3` | `Apache-2.0` | Strict static type checking (build-time devDependency) |
-| `vite` | `6.4.5` | `MIT` | Frontend production asset bundler (build-time devDependency) |
-| `vitest` / `@testing-library/react` | `3.2.7` / `16.3.3` | `MIT` | Automated UI verification suite (build-time devDependency) |
+| `vite` | `6.4.6` | `MIT` | Frontend production asset bundler (build-time devDependency) |
+| `vitest` / `@testing-library/react` | `4.1.12` / `16.3.3` | `MIT` | Automated UI verification suite (build-time devDependency) |

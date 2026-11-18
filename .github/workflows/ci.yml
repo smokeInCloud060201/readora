@@ -57,6 +57,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit frontend dependencies for known vulnerabilities
+        run: pnpm audit
+
       - name: Run frontend lint, typecheck, tests, and production bundle
         run: |
           pnpm lint

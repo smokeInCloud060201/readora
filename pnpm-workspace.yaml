@@ -2,3 +2,11 @@ packages:
   - "apps/desktop/ui"
 allowBuilds:
   esbuild: true
+patchedDependencies:
+  picomatch@4.0.7: patches/picomatch@4.0.7.patch
+# GHSA-fc5q-39xc-vjpf (picomatch <=4.0.7, no upstream npm release yet):
+# Remediated locally via patches/picomatch@4.0.7.patch (patchedDependencies).
+# Remove this ignore entry and local patch once picomatch >=4.0.8 is published.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-fc5q-39xc-vjpf
