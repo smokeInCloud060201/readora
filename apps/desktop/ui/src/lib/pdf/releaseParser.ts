@@ -2,7 +2,7 @@
 import { type ReleaseManifestDto } from "../../types/ipc";
 
 export const DEFAULT_APP_VERSION: string =
-  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.1.2";
+  (import.meta.env.VITE_APP_VERSION as string | undefined)?.trim() || "1.1.3";
 
 export function isValidSha256Hex(value: string | null | undefined): boolean {
   return /^[0-9a-f]{64}$/i.test((value ?? "").trim());

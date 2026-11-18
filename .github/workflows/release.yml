@@ -68,9 +68,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          RAW_TAG="${GITHUB_REF_NAME:-v1.1.2}"
+          RAW_TAG="${GITHUB_REF_NAME:-v1.1.3}"
           if [[ "${RAW_TAG}" != v* ]]; then
-            RAW_TAG="v1.1.2"
+            RAW_TAG="v1.1.3"
           fi
           export VITE_APP_VERSION="${RAW_TAG#v}"
           pnpm install --frozen-lockfile
@@ -101,9 +101,9 @@ jobs:
           test -f THIRD_PARTY_NOTICES.md
           test -f sbom.cdx.json
 
-          RAW_TAG="${GITHUB_REF_NAME:-v1.1.2}"
+          RAW_TAG="${GITHUB_REF_NAME:-v1.1.3}"
           if [[ "${RAW_TAG}" != v* ]]; then
-            RAW_TAG="v1.1.2"
+            RAW_TAG="v1.1.3"
           fi
           CLEAN_VERSION="${RAW_TAG#v}"
           if [[ ! "${CLEAN_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
