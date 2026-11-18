@@ -583,10 +583,11 @@ pub fn resolve_export_target_dir(override_dir: Option<&Path>) -> Result<PathBuf,
                 message: format!("Failed to create export directory: {err}"),
             })?;
         }
-        return std::fs::canonicalize(custom).map_err(|err| CommandErrorDto {
+        let canon = std::fs::canonicalize(custom).map_err(|err| CommandErrorDto {
             code: "platform_error".to_owned(),
             message: format!("Failed to resolve export directory: {err}"),
-        });
+        })?;
+        return Ok(NativePlatformAdapter::normalize_canonical_path(&canon)?);
     }
 
     #[cfg(target_os = "windows")]
@@ -608,8 +609,9 @@ pub fn resolve_export_target_dir(override_dir: Option<&Path>) -> Result<PathBuf,
         && meta.is_dir()
         && !meta.file_type().is_symlink()
         && let Ok(canon) = std::fs::canonicalize(&downloads)
+        && let Ok(normalized) = NativePlatformAdapter::normalize_canonical_path(&canon)
     {
-        return Ok(canon);
+        return Ok(normalized);
     }
 
     let fallback = NativePlatformAdapter::resolve_app_data_dir().join("exports");
@@ -625,7 +627,11 @@ pub fn resolve_export_target_dir(override_dir: Option<&Path>) -> Result<PathBuf,
         code: "platform_error".to_owned(),
         message: format!("Failed to create fallback exports directory: {err}"),
     })?;
-    Ok(std::fs::canonicalize(&fallback).unwrap_or(fallback))
+    let resolved_fallback = std::fs::canonicalize(&fallback)
+        .ok()
+        .and_then(|c| NativePlatformAdapter::normalize_canonical_path(&c).ok())
+        .unwrap_or(fallback);
+    Ok(resolved_fallback)
 }
 
 /// Picks a non-clobbering `.md` file path inside `export_dir` (`<stem>.md`, `<stem>-2.md` .. `<stem>-999.md`)

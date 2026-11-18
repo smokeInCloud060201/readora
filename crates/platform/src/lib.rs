@@ -951,6 +951,33 @@ impl NativePlatformAdapter {
             download_url,
         })
     }
+
+    /// Normalizes an OS-canonicalized local path, stripping the Windows `\\?\` `VerbatimDisk`
+    /// prefix (`\\?\C:\...` -> `C:\...`) while rejecting UNC (`\\server\share`, `\\?\UNC\...`)
+    /// and DOS device (`\\.\...`) prefixes.
+    pub fn normalize_canonical_path(canonical: &Path) -> Result<PathBuf, ApplicationError> {
+        #[cfg(windows)]
+        {
+            use std::path::{Component, Prefix};
+            if let Some(Component::Prefix(prefix)) = canonical.components().next() {
+                match prefix.kind() {
+                    Prefix::VerbatimUNC(_, _) | Prefix::UNC(_, _) | Prefix::DeviceNS(_) => {
+                        return Err(ApplicationError::Platform(
+                            "refusing UNC or Windows DOS device path".to_owned(),
+                        ));
+                    }
+                    Prefix::VerbatimDisk(_) => {
+                        let s = canonical.to_string_lossy();
+                        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                            return Ok(PathBuf::from(stripped));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(canonical.to_path_buf())
+    }
 }
 
 impl PlatformPort for NativePlatformAdapter {
@@ -1349,28 +1376,8 @@ impl PlatformPort for NativePlatformAdapter {
 }
 
 fn normalize_canonical_path_string(canonical: &Path) -> Result<String, ApplicationError> {
-    #[cfg(windows)]
-    {
-        use std::path::Component;
-        use std::path::Prefix;
-        if let Some(Component::Prefix(prefix)) = canonical.components().next() {
-            match prefix.kind() {
-                Prefix::VerbatimUNC(_, _) | Prefix::UNC(_, _) | Prefix::DeviceNS(_) => {
-                    return Err(ApplicationError::Platform(
-                        "refusing UNC or Windows DOS device path".to_owned(),
-                    ));
-                }
-                Prefix::VerbatimDisk(_) => {
-                    let s = canonical.to_string_lossy();
-                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                        return Ok(stripped.to_owned());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(canonical.to_string_lossy().into_owned())
+    NativePlatformAdapter::normalize_canonical_path(canonical)
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 fn derive_document_id(canonical_path: &str) -> Result<DocumentId, ApplicationError> {
