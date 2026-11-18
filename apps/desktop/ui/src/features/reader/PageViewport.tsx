@@ -49,6 +49,45 @@ interface PageViewportProps {
 const VIRTUALIZATION_PAGE_THRESHOLD = 30;
 const VIRTUALIZATION_WINDOW_RADIUS = 6;
 
+interface PageDisplayMetrics {
+  displayWidthPx: number;
+  displayHeightPx: number;
+  sheetWidthPx: number;
+  basePageWidth: number;
+}
+
+function computePageDisplayMetrics(
+  aspect: number,
+  containerSize: { width: number; height: number },
+  fitMode: ViewStateDto["fit_mode"],
+  zoom: number,
+): PageDisplayMetrics {
+  const basePageWidth = aspect < 1 ? 760 : 608;
+  let displayWidthPx: number;
+  if (containerSize.width > 0 && fitMode !== "manual") {
+    const availableWidth = Math.max(180, containerSize.width - 156);
+    if (fitMode === "fit_page" && containerSize.height > 0) {
+      const availableHeight = Math.max(180, containerSize.height - 182);
+      const widthForHeight = Math.round(
+        availableHeight / Math.max(0.1, aspect),
+      );
+      displayWidthPx = Math.max(180, Math.min(availableWidth, widthForHeight));
+    } else {
+      displayWidthPx = availableWidth;
+    }
+  } else {
+    // Preserves 608px + 72px = 680px at 100% and 760px + 72px = 832px at 125% when containerWidth === 0 in jsdom
+    displayWidthPx = Math.max(180, Math.round(basePageWidth * zoom));
+  }
+  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
+  return {
+    displayWidthPx,
+    displayHeightPx,
+    sheetWidthPx: displayWidthPx + 72,
+    basePageWidth,
+  };
+}
+
 function rotateBoundingBox(
   box: SearchBoundingBoxDto,
   rotationDeg: number,
@@ -115,6 +154,15 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const lastPageTurnTimeRef = useRef<number>(0);
   const lastWheelZoomTimeRef = useRef<number>(0);
   const prevPageRef = useRef<number>(viewState.current_page);
+  const [scrollCenterPage, setScrollCenterPage] = useState<number>(
+    viewState.current_page,
+  );
+  const scrollCenterPageRef = useRef<number>(viewState.current_page);
+  const viewGenerationRef = useRef<number | null>(viewState.generation ?? null);
+  viewGenerationRef.current = viewState.generation ?? null;
+  const measuredRectsRef = useRef<
+    Record<number, { top: number; height: number }>
+  >({});
   const [pageTurnDirection, setPageTurnDirection] = useState<
     "next" | "prev" | null
   >(null);
@@ -219,30 +267,17 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       : rotationDeg === 90 || rotationDeg === 270
         ? 612 / 792
         : 792 / 612;
-  const basePageWidth = aspect < 1 ? 760 : 608;
-
-  let displayWidthPx: number;
-  if (containerSize.width > 0 && viewState.fit_mode !== "manual") {
-    const availableWidth = Math.max(180, containerSize.width - 156);
-    if (viewState.fit_mode === "fit_page" && containerSize.height > 0) {
-      const availableHeight = Math.max(180, containerSize.height - 182);
-      const widthForHeight = Math.round(
-        availableHeight / Math.max(0.1, aspect),
-      );
-      displayWidthPx = Math.max(180, Math.min(availableWidth, widthForHeight));
-    } else {
-      displayWidthPx = availableWidth;
-    }
-  } else {
-    // Preserves 608px + 72px = 680px at 100% and 760px + 72px = 832px at 125% when containerWidth === 0 in jsdom
-    displayWidthPx = Math.max(
-      180,
-      Math.round(basePageWidth * viewState.zoom),
-    );
-  }
-
-  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
-  const sheetWidthPx = displayWidthPx + 72;
+  const {
+    displayWidthPx,
+    displayHeightPx,
+    sheetWidthPx,
+    basePageWidth,
+  } = computePageDisplayMetrics(
+    aspect,
+    containerSize,
+    viewState.fit_mode,
+    viewState.zoom,
+  );
   const estimatedSheetHeightPx = displayHeightPx + 86;
   const effectiveRenderScale =
     containerSize.width > 0 && viewState.fit_mode !== "manual"
@@ -252,6 +287,21 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           ),
         )
       : viewState.zoom;
+
+  useEffect(() => {
+    scrollCenterPageRef.current = viewState.current_page;
+    setScrollCenterPage(viewState.current_page);
+  }, [viewState.current_page, viewState.document_id]);
+
+  useEffect(() => {
+    measuredRectsRef.current = {};
+  }, [
+    containerSize.height,
+    containerSize.width,
+    effectiveRenderScale,
+    viewState.document_id,
+    viewState.rotation,
+  ]);
 
   useEffect(() => {
     onEffectiveZoomChange?.(effectiveRenderScale);
@@ -296,15 +346,15 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     viewState.zoom,
   ]);
 
-  // Render neighbor pages in Continuous Scroll mode without duplicating App.tsx's current_page render
+  // Render neighbor pages in Continuous Scroll mode centered around scrollCenterPage
   useEffect(() => {
     if (!isContinuous) return;
     let cancelled = false;
     const radius = Math.max(1, prefetchWindow + 1);
-    const startPage = Math.max(0, viewState.current_page - radius);
+    const startPage = Math.max(0, scrollCenterPage - radius);
     const endPage = Math.min(
       viewState.page_count - 1,
-      viewState.current_page + radius,
+      scrollCenterPage + radius,
     );
     const parentRendersAtEffectiveScale =
       Boolean(onEffectiveZoomChange) ||
@@ -323,7 +373,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
             scale: effectiveRenderScale,
             rotation_degrees: rotationDeg,
             render_mode: activeRenderMode,
-            generation: null,
+            generation: viewGenerationRef.current,
           });
           if (!cancelled && result.document_id === viewState.document_id) {
             setRenderedPagesMap((prev) => {
@@ -333,7 +383,10 @@ export const PageViewport: React.FC<PageViewportProps> = ({
               };
               for (const key of Object.keys(next)) {
                 const pageNum = Number(key);
-                if (Math.abs(pageNum - viewState.current_page) > radius + 2) {
+                if (
+                  Math.abs(pageNum - scrollCenterPage) > radius + 2 &&
+                  pageNum !== viewState.current_page
+                ) {
                   delete next[pageNum];
                 }
               }
@@ -356,6 +409,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     onEffectiveZoomChange,
     prefetchWindow,
     rotationDeg,
+    scrollCenterPage,
     viewState.current_page,
     viewState.document_id,
     viewState.page_count,
@@ -445,7 +499,16 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     const startTop = container.scrollTop;
     const distance = targetTop - startTop;
 
-    if (Math.abs(distance) < 4 || container.clientHeight === 0) {
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (
+      prefersReducedMotion ||
+      Math.abs(distance) < 4 ||
+      container.clientHeight === 0
+    ) {
       container.scrollTop = targetTop;
       return;
     }
@@ -480,32 +543,107 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const handleViewportScroll = () => {
     if (!isContinuous || isProgrammaticScrollRef.current) return;
     const el = viewportRef.current;
-    if (!el || el.clientHeight === 0) return;
+    if (!el || el.clientHeight === 0 || viewState.page_count <= 0) return;
+
+    const getSheetMetrics = (
+      idx: number,
+    ): { top: number; height: number } | null => {
+      const sheetEl = pageSheetRefs.current[idx];
+      if (sheetEl && sheetEl.offsetHeight > 0) {
+        const rect = { top: sheetEl.offsetTop, height: sheetEl.offsetHeight };
+        measuredRectsRef.current[idx] = rect;
+        return rect;
+      }
+      return measuredRectsRef.current[idx] ?? null;
+    };
 
     const focusY = el.scrollTop + el.clientHeight * 0.38;
-    let bestPage = viewState.current_page;
+    const currentCenter = scrollCenterPageRef.current;
+    let bestPage: number | null = null;
     let bestDist = Number.POSITIVE_INFINITY;
 
-    for (let idx = 0; idx < viewState.page_count; idx += 1) {
-      const sheetEl = pageSheetRefs.current[idx];
-      if (!sheetEl) continue;
-      const top = sheetEl.offsetTop;
-      const height = sheetEl.offsetHeight;
-      const bottom = top + height;
-      if (focusY >= top && focusY <= bottom) {
+    const considerCandidate = (idx: number): boolean => {
+      const rect = getSheetMetrics(idx);
+      if (!rect) return false;
+      const bottom = rect.top + rect.height;
+      if (focusY >= rect.top && focusY <= bottom) {
         bestPage = idx;
-        break;
+        bestDist = 0;
+        return true;
       }
-      const center = top + height / 2;
-      const dist = Math.abs(focusY - center);
+      const dist = Math.abs(focusY - (rect.top + rect.height / 2));
       if (dist < bestDist) {
         bestDist = dist;
         bestPage = idx;
       }
+      return false;
+    };
+
+    const fastStart = Math.max(0, currentCenter - 2);
+    const fastEnd = Math.min(viewState.page_count - 1, currentCenter + 2);
+    let hitFast = false;
+    for (let idx = fastStart; idx <= fastEnd; idx += 1) {
+      if (considerCandidate(idx)) {
+        hitFast = true;
+        break;
+      }
     }
 
-    if (bestPage !== viewState.current_page && onVisiblePageChange) {
-      onVisiblePageChange(bestPage);
+    if (!hitFast) {
+      let lo = 0;
+      let hi = viewState.page_count - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const rect = getSheetMetrics(mid);
+        if (!rect) {
+          // Sparse unmeasured regions fall back safely without infinite loops
+          let probe = mid - 1;
+          while (probe >= lo && !getSheetMetrics(probe)) {
+            probe -= 1;
+          }
+          const probeRect = probe >= lo ? getSheetMetrics(probe) : null;
+          if (probeRect) {
+            considerCandidate(probe);
+            if (focusY < probeRect.top) {
+              hi = probe - 1;
+              continue;
+            }
+          }
+          lo = mid + 1;
+          continue;
+        }
+        if (considerCandidate(mid)) {
+          break;
+        }
+        if (focusY < rect.top) {
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+    }
+
+    const resolvedPage = bestPage ?? viewState.current_page;
+
+    // Cache layout metrics around the target before virtualization remounts spacers into sheets
+    const snapStart = Math.max(
+      0,
+      resolvedPage - VIRTUALIZATION_WINDOW_RADIUS - 2,
+    );
+    const snapEnd = Math.min(
+      viewState.page_count - 1,
+      resolvedPage + VIRTUALIZATION_WINDOW_RADIUS + 2,
+    );
+    for (let k = snapStart; k <= snapEnd; k += 1) {
+      getSheetMetrics(k);
+    }
+
+    if (resolvedPage !== scrollCenterPageRef.current) {
+      scrollCenterPageRef.current = resolvedPage;
+      setScrollCenterPage(resolvedPage);
+    }
+    if (resolvedPage !== viewState.current_page && onVisiblePageChange) {
+      onVisiblePageChange(resolvedPage);
     }
   };
 
@@ -625,8 +763,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           const isCurrentPage = pageIdx === viewState.current_page;
           if (
             shouldVirtualizeSheets &&
-            Math.abs(pageIdx - viewState.current_page) >
-              VIRTUALIZATION_WINDOW_RADIUS
+            !isCurrentPage &&
+            Math.abs(pageIdx - scrollCenterPage) > VIRTUALIZATION_WINDOW_RADIUS
           ) {
             return (
               <div
@@ -654,6 +792,20 @@ export const PageViewport: React.FC<PageViewportProps> = ({
               : null;
           const pageBitmap =
             renderedPagesMap[pageIdx] ?? matchingCurrentRendered;
+          const pageDims =
+            pageBitmap && pageBitmap.width_px > 0 && pageBitmap.height_px > 0
+              ? computePageDisplayMetrics(
+                  pageBitmap.height_px / pageBitmap.width_px,
+                  containerSize,
+                  viewState.fit_mode,
+                  viewState.zoom,
+                )
+              : {
+                  displayWidthPx,
+                  displayHeightPx,
+                  sheetWidthPx,
+                  basePageWidth,
+                };
           const pageSearchEntries = searchHits
             .map((hit, globalIdx) => ({ hit, globalIdx }))
             .filter((entry) => entry.hit.page_index === pageIdx);
@@ -677,7 +829,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                   ? "pdf-page-sheet"
                   : `pdf-page-sheet-${pageIdx + 1}`
               }
-              style={{ width: `${sheetWidthPx}px` }}
+              style={{ width: `${pageDims.sheetWidthPx}px` }}
             >
               <div className="page-image-frame">
                 {isCurrentPage && isLoading && (
@@ -689,18 +841,18 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                   <div
                     className="rendered-page-stage"
                     style={{
-                      width: `${displayWidthPx}px`,
-                      height: `${displayHeightPx}px`,
+                      width: `${pageDims.displayWidthPx}px`,
+                      height: `${pageDims.displayHeightPx}px`,
                     }}
                   >
                     <img
                       src={pageBitmap.data_url}
                       alt={`Rendered PDF page ${pageIdx + 1}`}
-                      width={displayWidthPx}
-                      height={displayHeightPx}
+                      width={pageDims.displayWidthPx}
+                      height={pageDims.displayHeightPx}
                       style={{
-                        width: `${displayWidthPx}px`,
-                        height: `${displayHeightPx}px`,
+                        width: `${pageDims.displayWidthPx}px`,
+                        height: `${pageDims.displayHeightPx}px`,
                       }}
                       className="rendered-page-img"
                     />
@@ -790,8 +942,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
                   <div
                     className="page-placeholder"
                     style={{
-                      width: `${displayWidthPx}px`,
-                      minHeight: `${displayHeightPx}px`,
+                      width: `${pageDims.displayWidthPx}px`,
+                      minHeight: `${pageDims.displayHeightPx}px`,
                     }}
                   >
                     Preparing page {pageIdx + 1}...

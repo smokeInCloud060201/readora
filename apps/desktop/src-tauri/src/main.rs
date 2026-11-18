@@ -29,6 +29,47 @@ use wry::WebViewBuilder;
 const HTTP_WORKER_COUNT: usize = 8;
 const HTTP_QUEUE_CAPACITY: usize = 64;
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(15);
+const OFFICIAL_RELEASE_REPO: &str = "smokeInCloud060201/readora";
+const MAX_SELF_UPDATE_BYTES: &str = "268435456"; // 256 MiB
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_tool(tool_name: &str, in_system32: bool) -> PathBuf {
+    let sys_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let base = PathBuf::from(sys_root);
+    if in_system32 {
+        base.join("System32").join(tool_name)
+    } else {
+        base.join(tool_name)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_current_bundle_team_id() -> Option<String> {
+    let current_app = std::env::current_exe().ok().and_then(|exe| {
+        let contents_dir = exe.parent()?.parent()?;
+        let app_dir = contents_dir.parent()?;
+        if app_dir.extension().and_then(|e| e.to_str()) == Some("app") {
+            Some(app_dir.to_path_buf())
+        } else {
+            None
+        }
+    })?;
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(&current_app)
+        .output()
+        .ok()?;
+    let info = String::from_utf8_lossy(&output.stderr);
+    for line in info.lines() {
+        if let Some(raw_team) = line.strip_prefix("TeamIdentifier=") {
+            let trimmed = raw_team.trim();
+            if trimmed.len() == 10 && trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, Copy)]
 enum DesktopUserEvent {
@@ -73,15 +114,7 @@ fn is_safe_semver(v: &str) -> bool {
 }
 
 fn is_safe_github_repo(repo: &str) -> bool {
-    let parts: Vec<&str> = repo.split('/').collect();
-    parts.len() == 2
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 64
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
-        })
+    app_domain::is_valid_github_repo_slug(repo)
 }
 
 fn perform_native_self_update(
@@ -94,10 +127,16 @@ fn perform_native_self_update(
         return r#"{"status":"invalid_parameters"}"#;
     }
 
-    let repo = handler
-        .settings_get()
-        .map(|s| s.github_release_repo)
-        .unwrap_or_else(|_| "smokeInCloud060201/readora".to_owned());
+    // Release binaries always pin binary self-update downloads to the official upstream repository
+    // so settings tampering cannot steer executable updates to an untrusted repository (`[CRIT-03]`).
+    let repo = if cfg!(not(debug_assertions)) {
+        OFFICIAL_RELEASE_REPO.to_owned()
+    } else {
+        handler
+            .settings_get()
+            .map(|s| s.github_release_repo)
+            .unwrap_or_else(|_| OFFICIAL_RELEASE_REPO.to_owned())
+    };
     if !is_safe_github_repo(&repo) {
         return r#"{"status":"invalid_parameters"}"#;
     }
@@ -132,13 +171,39 @@ fn perform_native_self_update(
 
                 if staged_url != Some(dmg_url.as_str()) {
                     let tar_path = staging_dir.join("Readora.app.tar.gz");
-                    let curl_ok = Command::new("/usr/bin/curl")
-                        .args(["-fSL", "--retry", "2", "-o"])
+                    let curl_output = Command::new("/usr/bin/curl")
+                        .args([
+                            "--proto",
+                            "=https",
+                            "--tlsv1.2",
+                            "-fSL",
+                            "--retry",
+                            "2",
+                            "--max-redirs",
+                            "5",
+                            "--connect-timeout",
+                            "10",
+                            "--max-time",
+                            "120",
+                            "--max-filesize",
+                            MAX_SELF_UPDATE_BYTES,
+                            "-w",
+                            "%{url_effective}",
+                            "-o",
+                        ])
                         .arg(&tar_path)
                         .arg(&tar_url)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false);
+                        .output()
+                        .ok();
+
+                    let curl_ok = curl_output.as_ref().is_some_and(|out| {
+                        let eff = String::from_utf8_lossy(&out.stdout);
+                        out.status.success()
+                            && (eff.trim().is_empty()
+                                || readora_desktop_lib::server::is_allowed_github_https_url(
+                                    eff.trim(),
+                                ))
+                    });
 
                     if curl_ok {
                         if !verify_downloaded_asset_staged(
@@ -161,19 +226,35 @@ fn perform_native_self_update(
 
                         let extracted_app = staging_dir.join("Readora.app");
                         if untar_ok && extracted_app.is_dir() && !extracted_app.is_symlink() {
+                            // Verify code signature BEFORE clearing quarantine (`[CRIT-03]`)
+                            // and enforce TeamIdentifier continuity when signed.
+                            let verified_sig = match inspect_current_bundle_team_id() {
+                                Some(team_id) => {
+                                    let req = format!(
+                                        "identifier \"com.readora.desktop\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\""
+                                    );
+                                    Command::new("/usr/bin/codesign")
+                                        .args(["--verify", "--deep", "--strict", "-R"])
+                                        .arg(&req)
+                                        .arg(&extracted_app)
+                                        .status()
+                                        .map(|s| s.success())
+                                        .unwrap_or(false)
+                                }
+                                None => Command::new("/usr/bin/codesign")
+                                    .args(["--verify", "--deep", "--strict"])
+                                    .arg(&extracted_app)
+                                    .status()
+                                    .map(|s| s.success())
+                                    .unwrap_or(false),
+                            };
+                            if !verified_sig {
+                                return r#"{"status":"signature_verification_failed"}"#;
+                            }
                             let _ = Command::new("/usr/bin/xattr")
                                 .args(["-cr"])
                                 .arg(&extracted_app)
                                 .status();
-                            let verified_sig = Command::new("/usr/bin/codesign")
-                                .args(["--verify", "--deep", "--strict"])
-                                .arg(&extracted_app)
-                                .status()
-                                .map(|s| s.success())
-                                .unwrap_or(false);
-                            if !verified_sig {
-                                return r#"{"status":"signature_verification_failed"}"#;
-                            }
 
                             let current_bundle = std::env::current_exe().ok().and_then(|exe| {
                                 let contents_dir = exe.parent()?.parent()?;
@@ -256,13 +337,38 @@ fn perform_native_self_update(
                 if staged_url == Some(dmg_url.as_str()) {
                     let staged_dmg =
                         staging_dir.join(format!("Readora_{version}_{arch_label}.dmg"));
-                    let dmg_ok = Command::new("/usr/bin/curl")
-                        .args(["-fSL", "--retry", "2", "-o"])
+                    let dmg_output = Command::new("/usr/bin/curl")
+                        .args([
+                            "--proto",
+                            "=https",
+                            "--tlsv1.2",
+                            "-fSL",
+                            "--retry",
+                            "2",
+                            "--max-redirs",
+                            "5",
+                            "--connect-timeout",
+                            "10",
+                            "--max-time",
+                            "120",
+                            "--max-filesize",
+                            MAX_SELF_UPDATE_BYTES,
+                            "-w",
+                            "%{url_effective}",
+                            "-o",
+                        ])
                         .arg(&staged_dmg)
                         .arg(&dmg_url)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false);
+                        .output()
+                        .ok();
+                    let dmg_ok = dmg_output.as_ref().is_some_and(|out| {
+                        let eff = String::from_utf8_lossy(&out.stdout);
+                        out.status.success()
+                            && (eff.trim().is_empty()
+                                || readora_desktop_lib::server::is_allowed_github_https_url(
+                                    eff.trim(),
+                                ))
+                    });
                     if dmg_ok {
                         if !verify_downloaded_asset_staged(
                             &staged_dmg,
@@ -303,6 +409,9 @@ fn perform_native_self_update(
         let zip_url = format!("https://github.com/{repo}/releases/download/v{version}/{zip_name}");
         let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
 
+        let curl_exe = resolve_windows_tool("curl.exe", true);
+        let explorer_exe = resolve_windows_tool("explorer.exe", false);
+
         let updates_dir = NativePlatformAdapter::resolve_app_data_dir().join("updates");
         if std::fs::create_dir_all(&updates_dir).is_ok()
             && let Ok(stage_temp) = tempfile::Builder::new()
@@ -310,13 +419,36 @@ fn perform_native_self_update(
                 .tempdir_in(&updates_dir)
         {
             let temp_zip = stage_temp.path().join(&zip_name);
-            let curl_ok = Command::new("curl.exe")
-                .args(["-fSL", "--retry", "2", "-o"])
+            let curl_output = Command::new(&curl_exe)
+                .args([
+                    "--proto",
+                    "=https",
+                    "--tlsv1.2",
+                    "-fSL",
+                    "--retry",
+                    "2",
+                    "--max-redirs",
+                    "5",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    "120",
+                    "--max-filesize",
+                    MAX_SELF_UPDATE_BYTES,
+                    "-w",
+                    "%{url_effective}",
+                    "-o",
+                ])
                 .arg(&temp_zip)
                 .arg(&zip_url)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .output()
+                .ok();
+            let curl_ok = curl_output.as_ref().is_some_and(|out| {
+                let eff = String::from_utf8_lossy(&out.stdout);
+                out.status.success()
+                    && (eff.trim().is_empty()
+                        || readora_desktop_lib::server::is_allowed_github_https_url(eff.trim()))
+            });
             if curl_ok {
                 if !verify_downloaded_asset_staged(&temp_zip, &zip_url, staged.as_ref(), version) {
                     return r#"{"status":"checksum_verification_failed"}"#;
@@ -329,7 +461,7 @@ fn perform_native_self_update(
                             || std::fs::copy(&temp_zip, &dest_zip).is_ok();
                         if placed {
                             drop(stage_temp);
-                            let _ = Command::new("explorer.exe")
+                            let _ = Command::new(&explorer_exe)
                                 .arg(format!("/select,{}", dest_zip.display()))
                                 .spawn();
                             return r#"{"status":"downloaded_installer"}"#;
@@ -339,7 +471,7 @@ fn perform_native_self_update(
             }
         }
 
-        let _ = Command::new("explorer.exe").arg(&release_url).spawn();
+        let _ = Command::new(&explorer_exe).arg(&release_url).spawn();
         r#"{"status":"opened_release"}"#
     }
 
@@ -545,7 +677,6 @@ fn main() {
                 drop(webview.take());
                 drop(window.take());
                 *control_flow = ControlFlow::Exit;
-                std::process::exit(0);
             }
             _ => {}
         }

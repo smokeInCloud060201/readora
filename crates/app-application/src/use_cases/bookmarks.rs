@@ -209,7 +209,19 @@ pub fn execute_export_annotations_bundle(
                 ann.color_hex
             ));
             if !ann.quote_text.is_empty() {
-                md.push_str(&format!("> “{}”\n\n", ann.quote_text));
+                let quote_lines: Vec<&str> = ann.quote_text.lines().collect();
+                for (idx, line) in quote_lines.iter().enumerate() {
+                    if idx == 0 && quote_lines.len() == 1 {
+                        md.push_str(&format!("> “{line}”\n"));
+                    } else if idx == 0 {
+                        md.push_str(&format!("> “{line}\n"));
+                    } else if idx + 1 == quote_lines.len() {
+                        md.push_str(&format!("> {line}”\n"));
+                    } else {
+                        md.push_str(&format!("> {line}\n"));
+                    }
+                }
+                md.push('\n');
             }
             if !ann.note_text.is_empty() {
                 md.push_str(&format!("{}\n\n", ann.note_text));

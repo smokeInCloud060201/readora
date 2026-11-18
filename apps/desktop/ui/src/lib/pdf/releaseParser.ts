@@ -15,6 +15,26 @@ const ALLOWED_GITHUB_HOSTS = new Set([
   "release-assets.githubusercontent.com",
 ]);
 
+const GITHUB_REPO_SEGMENT_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+export function isValidGithubRepoSlug(slug: string): boolean {
+  const trimmed = slug.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0 || trimmed.indexOf("/", slashIndex + 1) !== -1) {
+    return false;
+  }
+  const owner = trimmed.slice(0, slashIndex);
+  const repo = trimmed.slice(slashIndex + 1);
+  return (
+    GITHUB_REPO_SEGMENT_RE.test(owner) &&
+    GITHUB_REPO_SEGMENT_RE.test(repo) &&
+    owner !== "." &&
+    owner !== ".." &&
+    repo !== "." &&
+    repo !== ".."
+  );
+}
+
 export function isAllowedGithubHttpsUrl(
   rawUrl: string | null | undefined,
 ): boolean {
@@ -79,7 +99,11 @@ export function parseGithubReleasePayload(
   rawJson: string,
   targetOs = "macos",
 ): ReleaseManifestDto {
-  const parsed = JSON.parse(rawJson) as GithubReleasePayload;
+  const rawParsed: unknown = JSON.parse(rawJson);
+  if (!rawParsed || typeof rawParsed !== "object" || Array.isArray(rawParsed)) {
+    throw new Error("Invalid GitHub release payload: expected a JSON object.");
+  }
+  const parsed = rawParsed as GithubReleasePayload;
   if (parsed.draft === true || parsed.prerelease === true) {
     throw new Error(
       "Draft and prerelease GitHub releases are not eligible for updates",

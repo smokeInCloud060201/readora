@@ -18,7 +18,7 @@ interface BookmarksPanelProps {
   requestedTab?: "notes" | "details";
   requestedTabTrigger?: number;
   onAddBookmark: (label: string) => void;
-  onAddComment?: (noteText: string) => void;
+  onAddComment?: (noteText: string) => Promise<boolean> | boolean | void;
   onDeleteBookmark: (bookmarkId: string) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
   onSelectPage: (zeroBasedPage: number) => void;
@@ -72,7 +72,7 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
     setBookmarkLabel("");
   };
 
-  const handleCommentSubmit = (e: React.FormEvent) => {
+  const handleCommentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = sliceByUnicodeCodePoints(
       commentText.trim(),
@@ -81,16 +81,24 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
     if (!trimmed || !onAddComment) {
       return;
     }
-    onAddComment(trimmed);
-    setCommentText("");
+    const result = await onAddComment(trimmed);
+    if (result !== false) {
+      setCommentText("");
+    }
   };
 
   return (
     <aside className="notes-details-panel" aria-label="User Bookmarks">
       <div className="notes-panel-header">
-        <div className="sidebar-tabs-header">
+        <div
+          className="sidebar-tabs-header"
+          role="tablist"
+          aria-label="Notes and Document Details"
+        >
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "notes"}
             className={`sidebar-tab-btn ${
               activeTab === "notes" ? "active" : ""
             }`}
@@ -100,6 +108,8 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "details"}
             className={`sidebar-tab-btn ${
               activeTab === "details" ? "active" : ""
             }`}
@@ -124,7 +134,9 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
         <div className="notes-tab-body">
           {onAddComment && (
             <form
-              onSubmit={handleCommentSubmit}
+              onSubmit={(e) => {
+                void handleCommentSubmit(e);
+              }}
               className="comment-composer-card"
               aria-label="Add Comment Composer"
             >
@@ -152,7 +164,7 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    handleCommentSubmit(e);
+                    void handleCommentSubmit(e);
                   }
                 }}
                 placeholder={`Write a comment on page ${currentPage + 1}…`}

@@ -12,6 +12,7 @@ interface PrintDialogProps {
   viewState: ViewStateDto;
   renderedPage: RenderedPageResultDto | null;
   onClose: () => void;
+  onCancelPrepare?: () => void;
   onExecutePrint?: (
     pageIndices: number[],
     summary: string,
@@ -86,6 +87,7 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
   viewState,
   renderedPage,
   onClose,
+  onCancelPrepare,
   onExecutePrint,
   onConfirmPrint,
 }) => {
@@ -349,8 +351,13 @@ export const PrintDialog: React.FC<PrintDialogProps> = ({
               <button
                 type="button"
                 className="focus-btn secondary"
-                disabled={isPreparingPrint}
-                onClick={onClose}
+                onClick={() => {
+                  if (isPreparingPrint) {
+                    onCancelPrepare?.();
+                    setIsPreparingPrint(false);
+                  }
+                  onClose();
+                }}
               >
                 Cancel
               </button>

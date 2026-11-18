@@ -9,6 +9,3 @@ rust-version.workspace = true
 app-application = { workspace = true }
 app-domain = { workspace = true }
 base64 = { workspace = true }
-pdf-engine = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }

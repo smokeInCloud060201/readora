@@ -12,7 +12,6 @@ crc32fast = { workspace = true }
 flate2 = { workspace = true }
 pdf-engine = { workspace = true }
 pdfium-render = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

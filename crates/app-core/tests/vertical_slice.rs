@@ -7,7 +7,7 @@ use app_application::{
     SettingsPatchDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
 };
 use app_core::AppCore;
-use app_domain::{AnnotationKind, RenderMode, ThemePreference};
+use app_domain::{AnnotationKind, FitMode, LayoutMode, RenderMode, ThemePreference};
 use pdfium_adapter::build_synthetic_pdf_bytes;
 
 #[test]
@@ -229,7 +229,7 @@ fn in_memory_isolation_delete_cascade_and_verified_update_workflow() {
     assert_eq!(installed.current_version, "9.9.9");
 
     let diag = core.system_diagnostics().unwrap();
-    assert_eq!(diag.sqlite_schema_version, 4);
+    assert_eq!(diag.sqlite_schema_version, 5);
     assert_eq!(diag.app_version, "9.9.9");
     assert!(
         diag.third_party_notices
@@ -245,4 +245,86 @@ fn in_memory_isolation_delete_cascade_and_verified_update_workflow() {
     // 3. cleanup_application_data only cleans the isolated ephemeral dirs
     let cleanup = core.cleanup_application_data().unwrap();
     assert!(!cleanup.redacted_data_dir.is_empty());
+}
+
+#[test]
+fn vertical_slice_persists_fit_layout_favorites_beyond_limit_and_syncs_page_count() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let core = AppCore::new_in_memory().unwrap();
+
+    // 1. Open sample, apply FitPage + SinglePage + sync page count, close & reopen
+    let sample_path = core.create_sample_pdf(temp_dir.path()).unwrap();
+    let opened = core
+        .open_document(OpenDocumentRequest {
+            path: sample_path.clone(),
+            password: None,
+        })
+        .unwrap();
+    let doc_id = opened.descriptor.id.as_str().to_owned();
+
+    core.navigate(&doc_id, NavigationAction::SetFitMode(FitMode::FitPage))
+        .unwrap();
+    core.navigate(
+        &doc_id,
+        NavigationAction::SetLayoutMode(LayoutMode::SinglePage),
+    )
+    .unwrap();
+    core.sync_document_page_count(&doc_id, 12).unwrap();
+    assert_eq!(
+        core.get_document_session(&doc_id)
+            .unwrap()
+            .descriptor
+            .page_count,
+        12
+    );
+    assert_eq!(
+        core.list_recent_documents(5)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.document_id.as_str() == doc_id)
+            .unwrap()
+            .page_count,
+        12
+    );
+    let jumped = core
+        .navigate(&doc_id, NavigationAction::GoToPage(9))
+        .unwrap();
+    assert_eq!(jumped.current_page.zero_based(), 9);
+
+    core.close_document(&doc_id).unwrap();
+
+    let reopened = core
+        .open_document(OpenDocumentRequest {
+            path: sample_path,
+            password: None,
+        })
+        .unwrap();
+    assert_eq!(reopened.view_state.fit_mode, FitMode::FitPage);
+    assert_eq!(reopened.view_state.layout_mode, LayoutMode::SinglePage);
+
+    // 2. Favorited doc remains returned even after >5 newer non-favorite recents are opened
+    core.set_favorite_document(&doc_id, true).unwrap();
+    core.close_document(&doc_id).unwrap();
+
+    for idx in 0..6 {
+        let extra_path = temp_dir.path().join(format!("extra-{idx}.pdf"));
+        let bytes = build_synthetic_pdf_bytes(&format!("Extra {idx}"), &["Hello"], None);
+        std::fs::write(&extra_path, bytes).unwrap();
+        let extra_session = core
+            .open_document(OpenDocumentRequest {
+                path: extra_path.to_string_lossy().into_owned(),
+                password: None,
+            })
+            .unwrap();
+        core.close_document(extra_session.descriptor.id.as_str())
+            .unwrap();
+    }
+
+    let library = core.list_recent_documents(5).unwrap();
+    assert!(
+        library
+            .iter()
+            .any(|r| r.document_id.as_str() == doc_id && r.is_favorite),
+        "favorite document must remain visible beyond standard recent limit"
+    );
 }

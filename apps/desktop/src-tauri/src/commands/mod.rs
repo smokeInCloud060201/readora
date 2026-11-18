@@ -89,18 +89,22 @@ impl DesktopCommandHandler {
     /// Handles `document_open_sample` (generates and opens the built-in welcome guide PDF).
     pub fn document_open_sample(&self) -> Result<DocumentSessionDto, CommandErrorDto> {
         static SAMPLE_PDF_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let sample_dir = std::env::temp_dir().join("readora-samples");
-        let path = {
-            let _guard = SAMPLE_PDF_LOCK.lock().map_err(|_| CommandErrorDto {
-                code: "platform_error".to_owned(),
-                message: "sample PDF generation lock poisoned".to_owned(),
-            })?;
-            self.core.create_sample_pdf(&sample_dir)?
-        };
-        Ok(self.core.open_document(OpenDocumentRequest {
-            path,
-            password: None,
-        })?)
+        let _guard = SAMPLE_PDF_LOCK.lock().map_err(|_| CommandErrorDto {
+            code: "platform_error".to_owned(),
+            message: "sample PDF generation lock poisoned".to_owned(),
+        })?;
+        Ok(self.core.open_sample_document()?)
+    }
+
+    /// Synchronizes a higher fallback page count reported by WebView `pdfjs-dist`.
+    pub fn document_sync_page_count(
+        &self,
+        document_id: &str,
+        page_count: u32,
+    ) -> Result<ViewState, CommandErrorDto> {
+        Ok(self
+            .core
+            .sync_document_page_count(document_id, page_count)?)
     }
 
     /// Handles `document_close`.
@@ -303,6 +307,11 @@ impl DesktopCommandHandler {
                 to_json_value(self.document_open(request)?)
             }
             "document_open_sample" => to_json_value(self.document_open_sample()?),
+            "document_sync_page_count" => {
+                let document_id: String = parse_arg(&args, "documentId")?;
+                let page_count: u32 = parse_arg(&args, "pageCount")?;
+                to_json_value(self.document_sync_page_count(&document_id, page_count)?)
+            }
             "document_close" => {
                 let document_id: String = parse_arg(&args, "documentId")?;
                 self.document_close(&document_id)?;

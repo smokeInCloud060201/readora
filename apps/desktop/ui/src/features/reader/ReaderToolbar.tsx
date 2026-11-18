@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { handleMenuKeyDown } from "../../shared/hooks/menuKeyNavigation";
 import {
   type FitMode,
   type LayoutMode,
@@ -509,6 +510,7 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
                   className="zoom-dropdown-menu toolbar-dropdown-menu"
                   role="menu"
                   aria-label="Zoom Menu"
+                  onKeyDown={handleMenuKeyDown}
                   data-node-id="6:1223"
                 >
                   <button

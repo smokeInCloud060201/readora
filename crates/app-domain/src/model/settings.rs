@@ -50,6 +50,7 @@ pub fn is_valid_github_repo_slug(repo: &str) -> bool {
 
 /// User-configurable application preferences and performance budgets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawAppSettings")]
 pub struct AppSettings {
     /// UI theme preference.
     pub theme: ThemePreference,
@@ -90,6 +91,60 @@ pub struct AppSettings {
     /// Semantic version of an update the user chose to defer with "Later".
     #[serde(default)]
     pub dismissed_update_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawAppSettings {
+    theme: ThemePreference,
+    default_layout: LayoutMode,
+    default_fit_mode: FitMode,
+    default_zoom: ZoomLevel,
+    render_cache_budget_bytes: usize,
+    prefetch_window: u32,
+    #[serde(default)]
+    show_extracted_text_layer: bool,
+    #[serde(default = "default_auto_check_updates")]
+    auto_check_updates: bool,
+    #[serde(default = "default_true")]
+    reopen_last_document: bool,
+    #[serde(default = "default_true")]
+    remember_page_position: bool,
+    #[serde(default)]
+    confirm_before_delete: bool,
+    #[serde(default = "default_github_release_repo")]
+    github_release_repo: String,
+    #[serde(default)]
+    installed_version: Option<String>,
+    #[serde(default)]
+    staged_update_version: Option<String>,
+    #[serde(default)]
+    dismissed_update_version: Option<String>,
+}
+
+impl TryFrom<RawAppSettings> for AppSettings {
+    type Error = DomainError;
+
+    fn try_from(raw: RawAppSettings) -> Result<Self, Self::Error> {
+        let settings = Self {
+            theme: raw.theme,
+            default_layout: raw.default_layout,
+            default_fit_mode: raw.default_fit_mode,
+            default_zoom: raw.default_zoom,
+            render_cache_budget_bytes: raw.render_cache_budget_bytes,
+            prefetch_window: raw.prefetch_window,
+            show_extracted_text_layer: raw.show_extracted_text_layer,
+            auto_check_updates: raw.auto_check_updates,
+            reopen_last_document: raw.reopen_last_document,
+            remember_page_position: raw.remember_page_position,
+            confirm_before_delete: raw.confirm_before_delete,
+            github_release_repo: raw.github_release_repo,
+            installed_version: raw.installed_version,
+            staged_update_version: raw.staged_update_version,
+            dismissed_update_version: raw.dismissed_update_version,
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
 }
 
 /// Validated Semantic Version 2.0.0 value object (`major.minor.patch[-prerelease][+build]`).
@@ -151,6 +206,14 @@ impl SemVer {
                             "invalid SemVer prerelease identifier in '{trimmed}'"
                         )));
                     }
+                    if seg.bytes().all(|b| b.is_ascii_digit())
+                        && seg.len() > 1
+                        && seg.starts_with('0')
+                    {
+                        return Err(DomainError::InvalidSettings(format!(
+                            "leading zero in numeric SemVer prerelease identifier in '{trimmed}'"
+                        )));
+                    }
                     segs.push(seg.to_owned());
                 }
                 (c, segs)
@@ -174,6 +237,11 @@ impl SemVer {
             if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(DomainError::InvalidSettings(format!(
                     "non-numeric SemVer component in '{trimmed}'"
+                )));
+            }
+            if s.len() > 1 && s.starts_with('0') {
+                return Err(DomainError::InvalidSettings(format!(
+                    "leading zero in SemVer component in '{trimmed}'"
                 )));
             }
             s.parse::<u64>().map_err(|_| {
@@ -309,6 +377,17 @@ impl AppSettings {
                 "invalid GitHub repository slug '{}'",
                 self.github_release_repo
             )));
+        }
+        for ver in [
+            self.installed_version.as_deref(),
+            self.staged_update_version.as_deref(),
+            self.dismissed_update_version.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let normalized = ver.trim().trim_start_matches(['v', 'V']).trim();
+            let _ = SemVer::parse(normalized)?;
         }
         Ok(())
     }

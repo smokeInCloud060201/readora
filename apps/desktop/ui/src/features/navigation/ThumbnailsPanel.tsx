@@ -1,12 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
 import { readoraApi } from "../../lib/tauri/client";
-import { type RenderMode } from "../../types/ipc";
+import {
+  rotationToDegrees,
+  type RenderMode,
+  type Rotation,
+} from "../../types/ipc";
 
 interface ThumbnailsPanelProps {
   documentId?: string;
   documentTitle?: string;
   pageCount: number;
   currentPage: number;
+  rotation?: Rotation;
   renderMode?: RenderMode;
   onSelectPage: (zeroBasedPage: number) => void;
   onSwitchToOutline?: () => void;
@@ -21,6 +26,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   documentTitle,
   pageCount,
   currentPage,
+  rotation = "deg0",
   renderMode = "standard",
   onSelectPage,
   onSwitchToOutline,
@@ -32,6 +38,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   const prevCurrentPageRef = useRef<number>(currentPage);
   const prevDocumentIdRef = useRef<string | undefined>(documentId);
   const prevRenderModeRef = useRef<RenderMode>(renderMode);
+  const prevRotationRef = useRef<Rotation>(rotation);
   const isProgrammaticScrollRef = useRef<boolean>(false);
   const activeRendersRef = useRef<number>(0);
   const slotWaitersRef = useRef<Array<() => void>>([]);
@@ -72,11 +79,13 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   useEffect(() => {
     const docChanged = prevDocumentIdRef.current !== documentId;
     const modeChanged = prevRenderModeRef.current !== renderMode;
+    const rotationChanged = prevRotationRef.current !== rotation;
     const pageChanged = prevCurrentPageRef.current !== currentPage;
 
-    if (docChanged || modeChanged) {
+    if (docChanged || modeChanged || rotationChanged) {
       prevDocumentIdRef.current = documentId;
       prevRenderModeRef.current = renderMode;
+      prevRotationRef.current = rotation;
       prevCurrentPageRef.current = currentPage;
       thumbnailsRef.current = {};
       setThumbnails({});
@@ -92,7 +101,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
       setScrollCenterPage(currentPage);
       syncPanelScrollToPage(currentPage, false);
     }
-  }, [currentPage, documentId, renderMode]);
+  }, [currentPage, documentId, renderMode, rotation]);
 
   useEffect(() => {
     if (!documentId || pageCount <= 0) {
@@ -160,7 +169,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
             document_id: documentId,
             page_index: idx,
             scale: 0.35,
-            rotation_degrees: 0,
+            rotation_degrees: rotationToDegrees(rotation),
             render_mode: renderMode,
             generation: null,
           });
@@ -208,7 +217,7 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
         wake();
       }
     };
-  }, [documentId, pageCount, renderMode, scrollCenterPage]);
+  }, [documentId, pageCount, renderMode, rotation, scrollCenterPage]);
 
   const handlePanelScroll = () => {
     if (isProgrammaticScrollRef.current) return;

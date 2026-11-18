@@ -30,6 +30,10 @@ pub enum DomainError {
     #[error("zoom factor {0} is outside the allowed range [0.25, 5.0]")]
     InvalidZoomLevel(f32),
 
+    /// Effective render scale is outside the supported `[0.25, 10.0]` range or non-finite.
+    #[error("render scale {0} is outside the allowed range [0.25, 10.0]")]
+    InvalidRenderScale(f32),
+
     /// Rotation angle in degrees is not a multiple of 90 in `{0, 90, 180, 270}`.
     #[error("unsupported rotation degrees {0}; expected 0, 90, 180, or 270")]
     InvalidRotationDegrees(u16),

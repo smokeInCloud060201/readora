@@ -33,6 +33,8 @@ pub const MAX_IMPORT_PDF_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_RELEASE_MANIFEST_BYTES: usize = 64 * 1024;
 /// Maximum GitHub Releases `/releases/latest` API JSON size (`512 KiB`).
 pub const MAX_GITHUB_RELEASE_API_BYTES: usize = 512 * 1024;
+/// Maximum duration allowed to finish receiving HTTP request headers (`3s`).
+pub const MAX_HEADER_DURATION: Duration = Duration::from_secs(3);
 /// Maximum total wall-clock duration allowed to read an HTTP request (`20s`).
 pub const MAX_REQUEST_DURATION: Duration = Duration::from_secs(20);
 
@@ -347,8 +349,9 @@ fn select_platform_installer_asset(
 
         let matches_arch =
             arch_tokens.is_empty() || arch_tokens.iter().any(|tok| lower_name.contains(tok));
-        let is_preferred_updater_bundle =
-            target_os == "macos" && lower_name.ends_with(".app.tar.gz");
+        let is_preferred_updater_bundle = (target_os == "macos"
+            && lower_name.ends_with(".app.tar.gz"))
+            || (target_os == "linux" && lower_name.ends_with(".deb"));
         let score: u8 = match (matches_arch, is_preferred_updater_bundle) {
             (true, true) => 4,
             (true, false) => 3,
@@ -431,11 +434,12 @@ fn fetch_github_https_bounded(
     let temp_out = tempfile::NamedTempFile::new()
         .map_err(|err| format!("failed to allocate temporary download buffer: {err}"))?;
     let curl_bin = if cfg!(target_os = "macos") {
-        "/usr/bin/curl"
+        PathBuf::from("/usr/bin/curl")
     } else if cfg!(target_os = "windows") {
-        "curl.exe"
+        let sys_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(sys_root).join("System32").join("curl.exe")
     } else {
-        "curl"
+        PathBuf::from("curl")
     };
 
     let max_size_str = max_bytes.to_string();
@@ -447,6 +451,8 @@ fn fetch_github_https_bounded(
             "-fsSL",
             "--max-redirs",
             "5",
+            "--connect-timeout",
+            "10",
             "--max-time",
             "10",
             "--max-filesize",
@@ -495,15 +501,7 @@ pub fn fetch_allowed_github_manifest_bytes(url: &str) -> Result<Vec<u8>, String>
 }
 
 fn is_valid_github_repo_slug(repo: &str) -> bool {
-    let parts: Vec<&str> = repo.split('/').collect();
-    parts.len() == 2
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 64
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
-        })
+    app_domain::is_valid_github_repo_slug(repo)
 }
 
 /// Fetches `/repos/{owner}/{repo}/releases/latest` over HTTPS and resolves a verified
@@ -660,22 +658,15 @@ pub fn execute_annotation_export_rpc(
         code: "validation_error".to_owned(),
         message: format!("invalid IPC argument 'includeAnnotations': {err}"),
     })?;
-    let raw_destination_path: Option<String> = args
-        .get("destinationPath")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
     let save_to_downloads = args
         .get("saveToDownloads")
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let effective_dest = if save_to_downloads {
-        raw_destination_path.filter(|p| !p.trim().is_empty())
-    } else {
-        raw_destination_path
-    };
-
-    if effective_dest.is_none() && save_to_downloads {
+    // Security invariant (`[HIGH-04]`): untrusted HTTP RPC callers may never pick arbitrary
+    // filesystem destination paths. When saving to disk is requested, always allocate a
+    // non-clobbering path inside the resolved user Downloads / fallback exports directory.
+    if save_to_downloads {
         let preview = handler.annotation_export(&document_id, include_annotations, None)?;
         let export_dir = resolve_export_target_dir(downloads_dir_override)?;
         let target_path = select_non_clobbering_markdown_path(&export_dir, &preview.file_name)?;
@@ -688,7 +679,7 @@ pub fn execute_annotation_export_rpc(
         return Ok(exported);
     }
 
-    handler.annotation_export(&document_id, include_annotations, effective_dest.as_deref())
+    handler.annotation_export(&document_id, include_annotations, None)
 }
 
 /// Builds the WebView document-creation initialization script with subframe and origin guards
@@ -843,8 +834,23 @@ pub fn build_init_script(bound_port: u16, session_token: &str) -> String {
     )
 }
 
+fn wipe_string(secret: &mut String) {
+    if secret.is_empty() && secret.capacity() == 0 {
+        return;
+    }
+    let taken = std::mem::take(secret);
+    let mut bytes = taken.into_bytes();
+    let cap = bytes.capacity();
+    if cap > 0 {
+        bytes.resize(cap, 0_u8);
+        bytes.fill(0_u8);
+        let _ = std::hint::black_box(bytes.as_mut_slice());
+        bytes.clear();
+    }
+}
+
 /// Parsed HTTP request metadata and body.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ParsedHttpRequest {
     /// Uppercase HTTP method (`GET`, `POST`, etc.).
     pub method: String,
@@ -854,6 +860,27 @@ pub struct ParsedHttpRequest {
     pub headers: Vec<(String, String)>,
     /// Validated request body bytes.
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for ParsedHttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParsedHttpRequest")
+            .field("method", &self.method)
+            .field("target", &self.target)
+            .field("header_count", &self.headers.len())
+            .field("body_len", &self.body.len())
+            .finish()
+    }
+}
+
+impl Drop for ParsedHttpRequest {
+    fn drop(&mut self) {
+        for (k, v) in &mut self.headers {
+            if k == "x-readora-token" || k == "x-readora-password" {
+                wipe_string(v);
+            }
+        }
+    }
 }
 
 impl ParsedHttpRequest {
@@ -1021,7 +1048,8 @@ pub fn read_and_authorize_http_request<R: Read>(
     let mut header_buf = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 4096];
     let (header_end, body_offset) = loop {
-        if started_at.elapsed() > MAX_REQUEST_DURATION {
+        if started_at.elapsed() > MAX_HEADER_DURATION {
+            header_buf.fill(0_u8);
             return Err(timeout_error());
         }
         match reader.read(&mut chunk) {
@@ -1029,13 +1057,15 @@ pub fn read_and_authorize_http_request<R: Read>(
                 if header_buf.is_empty() {
                     return Ok(None);
                 }
+                header_buf.fill(0_u8);
                 return Err(HttpResponse::json(
                     "400 Bad Request",
                     &json!({ "ok": false, "error": { "code": "incomplete_headers", "message": "Incomplete HTTP request headers" } }),
                 ));
             }
             Ok(n) => {
-                if started_at.elapsed() > MAX_REQUEST_DURATION {
+                if started_at.elapsed() > MAX_HEADER_DURATION {
+                    header_buf.fill(0_u8);
                     return Err(timeout_error());
                 }
                 header_buf.extend_from_slice(&chunk[..n]);
@@ -1043,6 +1073,7 @@ pub fn read_and_authorize_http_request<R: Read>(
                     break (pos, pos + 4);
                 }
                 if header_buf.len() > MAX_HEADER_BYTES {
+                    header_buf.fill(0_u8);
                     return Err(HttpResponse::json(
                         "431 Request Header Fields Too Large",
                         &json!({ "ok": false, "error": { "code": "headers_too_large", "message": "Request headers exceed limit" } }),
@@ -1050,17 +1081,19 @@ pub fn read_and_authorize_http_request<R: Read>(
                 }
             }
             Err(err) => {
-                if started_at.elapsed() > MAX_REQUEST_DURATION
+                if started_at.elapsed() > MAX_HEADER_DURATION
                     || matches!(err.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
                 {
-                    if header_buf.is_empty() && started_at.elapsed() <= MAX_REQUEST_DURATION {
+                    if header_buf.is_empty() && started_at.elapsed() <= MAX_HEADER_DURATION {
                         return Ok(None);
                     }
+                    header_buf.fill(0_u8);
                     return Err(timeout_error());
                 }
                 if header_buf.is_empty() {
                     return Ok(None);
                 }
+                header_buf.fill(0_u8);
                 return Err(HttpResponse::json(
                     "400 Bad Request",
                     &json!({ "ok": false, "error": { "code": "bad_request", "message": "Failed reading HTTP headers" } }),
@@ -1069,13 +1102,17 @@ pub fn read_and_authorize_http_request<R: Read>(
         }
     };
 
-    let Ok(header_str) = std::str::from_utf8(&header_buf[..header_end]) else {
-        return Err(HttpResponse::json(
-            "400 Bad Request",
-            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Invalid UTF-8 in HTTP headers" } }),
-        ));
+    let header_owned = match std::str::from_utf8(&header_buf[..header_end]) {
+        Ok(s) => s.to_owned(),
+        Err(_) => {
+            header_buf.fill(0_u8);
+            return Err(HttpResponse::json(
+                "400 Bad Request",
+                &json!({ "ok": false, "error": { "code": "bad_request", "message": "Invalid UTF-8 in HTTP headers" } }),
+            ));
+        }
     };
-    let mut lines = header_str.split("\r\n");
+    let mut lines = header_owned.split("\r\n");
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let (Some(raw_method), Some(raw_target), Some(_http_version)) =
@@ -1101,6 +1138,8 @@ pub fn read_and_authorize_http_request<R: Read>(
     let mut seen_origin = false;
     let mut seen_sec_fetch_site = false;
     let mut seen_token = false;
+    let mut seen_filename = false;
+    let mut seen_password = false;
     let mut seen_content_length = false;
 
     for line in lines {
@@ -1108,6 +1147,7 @@ pub fn read_and_authorize_http_request<R: Read>(
             continue;
         }
         let Some((k, v)) = line.split_once(':') else {
+            header_buf.fill(0_u8);
             return Err(HttpResponse::json(
                 "400 Bad Request",
                 &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP header line" } }),
@@ -1118,6 +1158,7 @@ pub fn read_and_authorize_http_request<R: Read>(
 
         match key.as_str() {
             "transfer-encoding" => {
+                header_buf.fill(0_u8);
                 return Err(HttpResponse::json(
                     "501 Not Implemented",
                     &json!({ "ok": false, "error": { "code": "unsupported_transfer_encoding", "message": "Transfer-Encoding is not supported" } }),
@@ -1125,40 +1166,61 @@ pub fn read_and_authorize_http_request<R: Read>(
             }
             "host" => {
                 if seen_host {
+                    header_buf.fill(0_u8);
                     return Err(duplicate_header_error());
                 }
                 seen_host = true;
             }
             "origin" => {
                 if seen_origin {
+                    header_buf.fill(0_u8);
                     return Err(duplicate_header_error());
                 }
                 seen_origin = true;
             }
             "sec-fetch-site" => {
                 if seen_sec_fetch_site {
+                    header_buf.fill(0_u8);
                     return Err(duplicate_header_error());
                 }
                 seen_sec_fetch_site = true;
             }
             "x-readora-token" => {
                 if seen_token {
+                    header_buf.fill(0_u8);
                     return Err(duplicate_header_error());
                 }
                 seen_token = true;
             }
+            "x-readora-filename" => {
+                if seen_filename {
+                    header_buf.fill(0_u8);
+                    return Err(duplicate_header_error());
+                }
+                seen_filename = true;
+            }
+            "x-readora-password" => {
+                if seen_password {
+                    header_buf.fill(0_u8);
+                    return Err(duplicate_header_error());
+                }
+                seen_password = true;
+            }
             "content-length" => {
                 if seen_content_length {
+                    header_buf.fill(0_u8);
                     return Err(duplicate_header_error());
                 }
                 seen_content_length = true;
                 if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
+                    header_buf.fill(0_u8);
                     return Err(HttpResponse::json(
                         "400 Bad Request",
                         &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
                     ));
                 }
                 let Ok(parsed) = val.parse::<usize>() else {
+                    header_buf.fill(0_u8);
                     return Err(HttpResponse::json(
                         "400 Bad Request",
                         &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
@@ -1175,8 +1237,12 @@ pub fn read_and_authorize_http_request<R: Read>(
     let path_only = target.split('?').next().unwrap_or("/");
     let is_api_route = path_only.starts_with("/__readora_");
     if is_api_route {
-        validate_api_headers(&method, &headers, bound_port, expected_token)?;
+        if let Err(err_resp) = validate_api_headers(&method, &headers, bound_port, expected_token) {
+            header_buf.fill(0_u8);
+            return Err(err_resp);
+        }
     } else if !is_allowed_host(&headers, bound_port) {
+        header_buf.fill(0_u8);
         return Err(HttpResponse::json(
             "403 Forbidden",
             &json!({ "ok": false, "error": { "code": "forbidden_host", "message": "Invalid Host header" } }),
@@ -1192,6 +1258,7 @@ pub fn read_and_authorize_http_request<R: Read>(
     };
 
     if content_length > max_body {
+        header_buf.fill(0_u8);
         return Err(HttpResponse::json(
             "413 Payload Too Large",
             &json!({ "ok": false, "error": { "code": "payload_too_large", "message": "Request payload exceeds maximum allowed size" } }),
@@ -1204,6 +1271,8 @@ pub fn read_and_authorize_http_request<R: Read>(
         let to_copy = already.len().min(content_length);
         body.extend_from_slice(&already[..to_copy]);
     }
+    header_buf.fill(0_u8);
+    let _ = std::hint::black_box(header_buf.as_mut_slice());
     while body.len() < content_length {
         if started_at.elapsed() > MAX_REQUEST_DURATION {
             return Err(timeout_error());
@@ -1385,10 +1454,39 @@ fn error_response(status: &'static str, err: CommandErrorDto) -> HttpResponse {
 fn serve_static_ui_asset(ui_root: &Path, raw_path: &str, head_only: bool) -> HttpResponse {
     let rel_path = sanitize_relative_path(raw_path);
     let full_path = ui_root.join(&rel_path);
-    let resolved_path = if full_path.is_file() {
+    let candidate = if std::fs::symlink_metadata(&full_path)
+        .is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
+    {
         full_path
     } else {
         ui_root.join("index.html")
+    };
+
+    let verified_path = (|| -> Option<PathBuf> {
+        let meta = std::fs::symlink_metadata(&candidate).ok()?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return None;
+        }
+        let canon_root = std::fs::canonicalize(ui_root).ok()?;
+        let canon_file = std::fs::canonicalize(&candidate).ok()?;
+        if canon_file.starts_with(&canon_root) {
+            Some(canon_file)
+        } else {
+            None
+        }
+    })();
+
+    let Some(resolved_path) = verified_path else {
+        return HttpResponse {
+            status: "404 Not Found",
+            content_type: "text/plain; charset=utf-8",
+            include_csp: true,
+            body: if head_only {
+                Vec::new()
+            } else {
+                b"404 Not Found".to_vec()
+            },
+        };
     };
 
     match std::fs::read(&resolved_path) {

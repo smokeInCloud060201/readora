@@ -46,6 +46,7 @@ import {
   compareSemver,
   DEFAULT_APP_VERSION,
   isAllowedGithubHttpsUrl,
+  isValidGithubRepoSlug,
   isValidSha256Hex,
   parseGithubReleasePayload,
 } from "../pdf/releaseParser";
@@ -139,16 +140,34 @@ export class BrowserFallbackBridge {
     if (Array.isArray(parsed.recents)) {
       this.recents = parsed.recents;
     }
-    if (parsed.bookmarks && typeof parsed.bookmarks === "object") {
+    if (
+      parsed.bookmarks &&
+      typeof parsed.bookmarks === "object" &&
+      !Array.isArray(parsed.bookmarks)
+    ) {
       this.bookmarks = new Map(Object.entries(parsed.bookmarks));
     }
-    if (parsed.annotations && typeof parsed.annotations === "object") {
+    if (
+      parsed.annotations &&
+      typeof parsed.annotations === "object" &&
+      !Array.isArray(parsed.annotations)
+    ) {
       this.annotations = new Map(Object.entries(parsed.annotations));
     }
-    if (parsed.settings && typeof parsed.settings === "object") {
+    if (
+      parsed.settings &&
+      typeof parsed.settings === "object" &&
+      !Array.isArray(parsed.settings)
+    ) {
+      const nextRepo =
+        typeof parsed.settings.github_release_repo === "string" &&
+        isValidGithubRepoSlug(parsed.settings.github_release_repo)
+          ? parsed.settings.github_release_repo.trim()
+          : this.settings.github_release_repo;
       this.settings = {
         ...this.settings,
         ...parsed.settings,
+        github_release_repo: nextRepo,
         installed_version: DEFAULT_APP_VERSION,
       };
     }
@@ -158,10 +177,10 @@ export class BrowserFallbackBridge {
     if (typeof window === "undefined" || !window.localStorage) return;
     try {
       const raw = window.localStorage.getItem(LIBRARY_STATE_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as PersistedLibraryState;
-      if (parsed && typeof parsed === "object") {
-        this.applyPersistedState(parsed);
+      if (!raw || raw.length > 2_000_000) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        this.applyPersistedState(parsed as PersistedLibraryState);
       }
     } catch {
       // Ignore malformed localStorage state
@@ -369,6 +388,7 @@ export class BrowserFallbackBridge {
       rotation: existingRecent ? existingRecent.last_rotation : "deg0",
       layout_mode: this.settings.default_layout,
       render_mode: "standard",
+      generation: this.generation,
     };
 
     const existingSession = this.sessions.get(docId);
@@ -386,6 +406,7 @@ export class BrowserFallbackBridge {
       view_state: viewState,
       outline,
       bookmarks: structuredClone(savedBookmarks),
+      generation: this.generation,
     };
 
     this.bookmarks.set(docId, structuredClone(session.bookmarks));
@@ -471,6 +492,7 @@ export class BrowserFallbackBridge {
     }
 
     this.generation += 1;
+    vs.generation = this.generation;
     const recent = this.recents.find((r) => r.document_id === documentId);
     if (recent) {
       recent.last_page =
@@ -495,6 +517,7 @@ export class BrowserFallbackBridge {
         command,
         this.renderCache,
         this.generation,
+        this.settings.render_cache_budget_bytes,
       );
       if (rendered) {
         return rendered;
@@ -775,6 +798,7 @@ export class BrowserFallbackBridge {
   }
 
   deleteRecentDocument(documentId: string): void {
+    this.searchGeneration += 1;
     const record = this.storedPdfsByDocId.get(documentId);
     if (record?.parsedPdf) {
       destroyParsedPdf(record.parsedPdf);
@@ -795,6 +819,7 @@ export class BrowserFallbackBridge {
   }
 
   closeDocument(documentId: string): void {
+    this.searchGeneration += 1;
     const record = this.storedPdfsByDocId.get(documentId);
     if (record?.parsedPdf) {
       destroyParsedPdf(record.parsedPdf);
@@ -802,6 +827,15 @@ export class BrowserFallbackBridge {
     }
     purgeDocumentRenderCache(this.renderCache, documentId);
     this.sessions.delete(documentId);
+  }
+
+  cancelRenders(documentId: string): void {
+    this.generation += 1;
+    const session = this.sessions.get(documentId);
+    if (session) {
+      session.view_state.generation = this.generation;
+      session.generation = this.generation;
+    }
   }
 
   getSettings(): AppSettingsDto {
@@ -842,7 +876,7 @@ export class BrowserFallbackBridge {
     }
     if (
       patch.github_release_repo !== undefined &&
-      patch.github_release_repo.trim().includes("/")
+      isValidGithubRepoSlug(patch.github_release_repo)
     ) {
       this.settings.github_release_repo = patch.github_release_repo.trim();
     }
@@ -959,7 +993,7 @@ export class BrowserFallbackBridge {
       target_os: "macos",
       target_arch: "aarch64",
       pdf_engine_kind: "pure_rust_fallback",
-      sqlite_schema_version: 4,
+      sqlite_schema_version: 5,
       redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
       render_cache_usage_bytes: 0,
       third_party_notices: [
@@ -1120,6 +1154,7 @@ export class BrowserFallbackBridge {
   }
 
   cleanupApplicationData(): AppCleanupReportDto {
+    this.searchGeneration += 1;
     const removedCacheItems =
       this.renderCache.size +
       this.storedPdfsByDocId.size +

@@ -1,5 +1,7 @@
 //! Use case for rendering a PDF page with LRU byte-budget caching and stale-request cancellation.
 
+use std::sync::Arc;
+
 use app_domain::{DocumentId, MAX_RENDER_DIMENSION_PX, PageIndex, Rotation, ScaleBucket};
 use pdf_engine::{PdfDocument, RenderPageRequest};
 
@@ -16,6 +18,58 @@ pub fn execute_render_page<F>(
     document: &dyn PdfDocument,
     cache: &dyn RenderCachePort,
     cancellation: &dyn RenderCancellationPort,
+    encode_png_data_url: F,
+) -> Result<RenderedPageResultDto, ApplicationError>
+where
+    F: Fn(&[u8]) -> String,
+{
+    execute_render_page_inner(
+        command,
+        document,
+        cache,
+        cancellation,
+        None,
+        encode_png_data_url,
+    )
+}
+
+/// Renders a single page using a shared cancellation handle so underlying multi-threaded PDF
+/// workers can abort queued renders before rasterizing/encoding.
+pub fn execute_render_page_cancellable<F>(
+    command: &RenderPageCommand,
+    document: &dyn PdfDocument,
+    cache: &dyn RenderCachePort,
+    cancellation: Arc<dyn RenderCancellationPort>,
+    encode_png_data_url: F,
+) -> Result<RenderedPageResultDto, ApplicationError>
+where
+    F: Fn(&[u8]) -> String,
+{
+    let doc_id = DocumentId::new(&command.document_id)?;
+    let effective_gen = command
+        .generation
+        .unwrap_or_else(|| cancellation.current_generation(&doc_id));
+    let cancel_port = Arc::clone(&cancellation);
+    let cancel_doc_id = doc_id;
+    let is_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || !cancel_port.is_current(&cancel_doc_id, effective_gen));
+
+    execute_render_page_inner(
+        command,
+        document,
+        cache,
+        cancellation.as_ref(),
+        Some(is_cancelled),
+        encode_png_data_url,
+    )
+}
+
+fn execute_render_page_inner<F>(
+    command: &RenderPageCommand,
+    document: &dyn PdfDocument,
+    cache: &dyn RenderCachePort,
+    cancellation: &dyn RenderCancellationPort,
+    worker_cancel_hook: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     encode_png_data_url: F,
 ) -> Result<RenderedPageResultDto, ApplicationError>
 where
@@ -63,7 +117,10 @@ where
         max_pixel_dimension: MAX_RENDER_DIMENSION_PX,
     };
 
-    let rendered = document.render_page(&render_req)?;
+    let rendered = match worker_cancel_hook {
+        Some(hook) => document.render_page_cancellable(&render_req, hook)?,
+        None => document.render_page(&render_req)?,
+    };
 
     // Check if the user navigated away or zoomed again while rendering was in flight.
     if !cancellation.is_current(&doc_id, effective_gen) {

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { handleMenuKeyDown } from "../../shared/hooks/menuKeyNavigation";
 import {
   type FitMode,
   type LayoutMode,
@@ -122,6 +123,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
             <div
               className="desktop-dropdown-menu"
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label="File Menu"
             >
               <button
@@ -247,6 +249,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
             <div
               className="desktop-dropdown-menu"
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label="Edit Menu"
             >
               <button
@@ -322,6 +325,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
             <div
               className="desktop-dropdown-menu"
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label="View Menu"
             >
               <button
@@ -507,6 +511,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
             <div
               className="desktop-dropdown-menu"
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label="Window Menu"
             >
               <button
@@ -577,6 +582,7 @@ export const ApplicationMenuBar: React.FC<ApplicationMenuBarProps> = ({
             <div
               className="desktop-dropdown-menu"
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label="Help Menu"
             >
               <button

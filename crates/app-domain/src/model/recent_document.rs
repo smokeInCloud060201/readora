@@ -1,5 +1,7 @@
 //! Recent document record for session restore and quick reopen.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::model::document::sanitize_display_name;
@@ -7,10 +9,11 @@ use crate::model::view_state::ViewState;
 use crate::value_objects::document_id::DocumentId;
 use crate::value_objects::page_index::PageIndex;
 use crate::value_objects::rotation::Rotation;
-use crate::value_objects::zoom::ZoomLevel;
+use crate::value_objects::theme::LayoutMode;
+use crate::value_objects::zoom::{FitMode, ZoomLevel};
 
 /// Persisted metadata about a recently opened document and its last reading state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecentDocument {
     /// Stable document identifier derived from its canonical path.
     pub document_id: DocumentId,
@@ -34,6 +37,31 @@ pub struct RecentDocument {
     /// Whether the user has moved this document to the Archive.
     #[serde(default)]
     pub is_archived: bool,
+    /// Last viewport fit mode (`manual`, `fit_width`, `fit_page`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fit_mode: Option<FitMode>,
+    /// Last viewport layout mode (`single_page`, `continuous`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_layout_mode: Option<LayoutMode>,
+}
+
+impl fmt::Debug for RecentDocument {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecentDocument")
+            .field("document_id", &self.document_id)
+            .field("file_path", &"<redacted>")
+            .field("display_name", &self.display_name)
+            .field("last_page", &self.last_page)
+            .field("page_count", &self.page_count)
+            .field("last_zoom", &self.last_zoom)
+            .field("last_rotation", &self.last_rotation)
+            .field("last_opened_unix_ms", &self.last_opened_unix_ms)
+            .field("is_favorite", &self.is_favorite)
+            .field("is_archived", &self.is_archived)
+            .field("last_fit_mode", &self.last_fit_mode)
+            .field("last_layout_mode", &self.last_layout_mode)
+            .finish()
+    }
 }
 
 impl RecentDocument {
@@ -62,6 +90,8 @@ impl RecentDocument {
             last_opened_unix_ms,
             is_favorite: false,
             is_archived: false,
+            last_fit_mode: Some(view_state.fit_mode),
+            last_layout_mode: Some(view_state.layout_mode),
         }
     }
 }

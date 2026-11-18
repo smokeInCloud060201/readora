@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use app_domain::{AppSettings, DocumentDescriptor, FitMode, PageIndex, RecentDocument, ViewState};
+use app_domain::{
+    AppSettings, DocumentDescriptor, FitMode, PageIndex, RecentDocument, ViewState,
+    sanitize_outline_tree,
+};
 use pdf_engine::{DEFAULT_MAX_PDF_FILE_SIZE_BYTES, OpenDocumentOptions, PdfDocument, PdfEngine};
 
 use crate::dto::{DocumentSessionDto, OpenDocumentRequest};
@@ -63,7 +66,7 @@ pub fn execute_open_document(
     view_state.fit_mode = settings.default_fit_mode;
     view_state.zoom = settings.default_zoom;
 
-    // Restore last reading position, zoom, and rotation if previously opened and enabled in settings.
+    // Restore last reading position, zoom, fit mode, layout mode, and rotation if previously opened and enabled in settings.
     let previous = recent_repo.get(&file_info.document_id)?;
     if let Some(ref prev) = previous
         && settings.remember_page_position
@@ -74,8 +77,15 @@ pub fn execute_open_document(
             .min(descriptor.page_count.saturating_sub(1));
         let _ = view_state.go_to_page(PageIndex::new(clamped_page));
         view_state.zoom = prev.last_zoom;
-        if (prev.last_zoom.factor() - 1.0).abs() > f32::EPSILON {
-            view_state.fit_mode = FitMode::Manual;
+        view_state.fit_mode = prev.last_fit_mode.unwrap_or_else(|| {
+            if (prev.last_zoom.factor() - settings.default_zoom.factor()).abs() > f32::EPSILON {
+                FitMode::Manual
+            } else {
+                settings.default_fit_mode
+            }
+        });
+        if let Some(layout_mode) = prev.last_layout_mode {
+            view_state.layout_mode = layout_mode;
         }
         view_state.rotation = prev.last_rotation;
     }
@@ -93,7 +103,14 @@ pub fn execute_open_document(
     }
     recent_repo.upsert(&recent_entry)?;
 
-    let outline = document.outline().unwrap_or_default();
+    let raw_outline = match document.outline() {
+        Ok(nodes) => nodes,
+        Err(err) => {
+            tracing::debug!("failed to extract PDF outline; falling back to empty: {err}");
+            Vec::new()
+        }
+    };
+    let outline = sanitize_outline_tree(raw_outline);
     let bookmarks = bookmark_repo.list_for_document(&file_info.document_id)?;
 
     Ok(OpenedDocumentSession {
@@ -103,6 +120,7 @@ pub fn execute_open_document(
             view_state,
             outline,
             bookmarks,
+            generation: 0,
         },
         document,
     })

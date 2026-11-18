@@ -16,7 +16,7 @@ Build native artifacts on native operating-system runners (`.github/workflows/re
 
 ## Build prerequisites
 
-- **All platforms**: Pinned stable Rust toolchain (`1.85+`, Edition `2024` via [`rust-toolchain.toml`](../rust-toolchain.toml)), Node.js `22+`, `pnpm` (`12.5.1`), committed `Cargo.lock` and `apps/desktop/ui/pnpm-lock.yaml`.
+- **All platforms**: Pinned stable Rust toolchain (`1.85+`, Edition `2024` via [`rust-toolchain.toml`](../rust-toolchain.toml)), Node.js `22+`, `pnpm` (`10.22.0`), committed `Cargo.lock` and workspace [`pnpm-lock.yaml`](../pnpm-lock.yaml).
 - **macOS**: Xcode Command Line Tools (`sips`, `iconutil`, `hdiutil`, `codesign`, `notarytool`).
 - **Windows**: MSVC Build Tools, Edge WebView2 runtime (preinstalled on Windows 10/11), Authenticode `signtool.exe` when signing secrets are configured.
 - **Linux**: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `rpm`, `dpkg-dev`.
@@ -67,7 +67,7 @@ Do not commit machine-specific build outputs, local PDFs, or signing secrets.
 | Windows | `%APPDATA%\Readora` | `%LOCALAPPDATA%\Readora\Cache` | Portable `.zip` builds use in-app **Clean up app data** or `.\Readora.exe --uninstall-cleanup` (NSIS [`nsis-hooks.nsh`](../apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh) retained for NSIS packaging) |
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/readora` | `${XDG_CACHE_HOME:-~/.cache}/readora` | Debian [`postrm`](../apps/desktop/src-tauri/installer/linux/postrm) **only on `purge`** (never `remove`/`upgrade`), enforcing fail-closed privilege drop via `runuser`/`su` (never `uid 0`) and refusing symlinks |
 
-- **Database upgrades**: `SqliteStorage::open` applies append-only schema migrations (`0001` → `0002` → `0003` → `0004`) transactionally.
+- **Database upgrades**: `SqliteStorage::open` applies append-only schema migrations (`0001` → `0002` → `0003` → `0004` → `0005`) transactionally.
 - **Self-update safety**: Downloads stage inside a mode-`0700` CSPRNG directory under `<data_dir>/updates/.stage-*`, verify 64-hex SHA-256 digests fail-closed against the staged manifest, verify macOS `codesign --verify --deep --strict`, and atomically back up & roll back `Readora.app` on move failure.
 
 ## Release checklist

@@ -17,9 +17,11 @@ const MIGRATION_0002: &str =
     include_str!("../migrations/0002_library_collections_and_annotations.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_annotations.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_cascade_indexes.sql");
+const MIGRATION_0005: &str =
+    include_str!("../migrations/0005_fit_layout_and_collection_indexes.sql");
 
 /// Current append-only SQLite schema version shipped with this release.
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// Thread-safe SQLite storage adapter implementing `RecentDocumentRepository`,
 /// `BookmarkRepository`, and `SettingsRepository`.
@@ -52,6 +54,10 @@ impl SqliteStorage {
     }
 
     fn initialize_connection(mut conn: Connection) -> Result<Self, ApplicationError> {
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to set SQLite busy_timeout: {e}"))
+            })?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| ApplicationError::Storage(format!("failed to enable WAL mode: {e}")))?;
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -139,6 +145,28 @@ impl SqliteStorage {
             })?;
         }
 
+        let has_m5: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 5",
+                params![],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ApplicationError::Storage(format!("failed to query migration 5: {e}")))?;
+
+        if has_m5.is_none() {
+            tx.execute_batch(MIGRATION_0005).map_err(|e| {
+                ApplicationError::Storage(format!("failed to apply migration 0005: {e}"))
+            })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_unix_ms) VALUES (5, 0)",
+                params![],
+            )
+            .map_err(|e| {
+                ApplicationError::Storage(format!("failed to record schema migration 5: {e}"))
+            })?;
+        }
+
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit migration transaction: {e}"))
         })?;
@@ -174,8 +202,8 @@ impl SqliteStorage {
     /// Wipes all Readora-persisted rows (`annotations`, `bookmarks`, `recent_documents`,
     /// `app_settings`) atomically inside a transaction and checkpoints/vacuums SQLite for clean reset.
     pub fn reset_all_application_tables(&self) -> Result<(), ApplicationError> {
-        let conn = self.lock_connection()?;
-        let tx = conn.unchecked_transaction().map_err(|e| {
+        let mut conn = self.lock_connection()?;
+        let tx = conn.transaction().map_err(|e| {
             ApplicationError::Storage(format!("failed to begin reset transaction: {e}"))
         })?;
         tx.execute_batch(
@@ -190,7 +218,9 @@ impl SqliteStorage {
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit reset transaction: {e}"))
         })?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        if let Err(err) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") {
+            tracing::warn!("SQLite checkpoint/VACUUM after reset returned non-fatal error: {err}");
+        }
         Ok(())
     }
 }
@@ -325,7 +355,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(storage.schema_version().unwrap(), 4);
+        assert_eq!(storage.schema_version().unwrap(), 5);
         assert_eq!(storage.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     }
 

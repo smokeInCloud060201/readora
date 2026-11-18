@@ -8,8 +8,11 @@ use crate::SqliteStorage;
 
 impl AnnotationRepository for SqliteStorage {
     fn upsert(&self, annotation: &Annotation) -> Result<Annotation, ApplicationError> {
-        let conn = self.lock_connection()?;
-        let rows_affected = conn
+        let mut conn = self.lock_connection()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| ApplicationError::Storage(format!("annotation tx begin failed: {e}")))?;
+        let rows_affected = tx
             .execute(
                 "INSERT INTO annotations (
                      id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
@@ -40,29 +43,36 @@ impl AnnotationRepository for SqliteStorage {
             ));
         }
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
-                 FROM annotations
-                 WHERE id = ?1 AND document_id = ?2",
-            )
-            .map_err(|e| {
-                ApplicationError::Storage(format!("prepare annotation read failed: {e}"))
-            })?;
+        let saved = {
+            let mut stmt = tx
+                .prepare_cached(
+                    "SELECT id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
+                     FROM annotations
+                     WHERE id = ?1 AND document_id = ?2",
+                )
+                .map_err(|e| {
+                    ApplicationError::Storage(format!("prepare annotation read failed: {e}"))
+                })?;
 
-        let mut rows = stmt
-            .query(params![
-                annotation.id.as_str(),
-                annotation.document_id.as_str()
-            ])
-            .map_err(|e| ApplicationError::Storage(format!("query annotation failed: {e}")))?;
+            let mut rows = stmt
+                .query(params![
+                    annotation.id.as_str(),
+                    annotation.document_id.as_str()
+                ])
+                .map_err(|e| ApplicationError::Storage(format!("query annotation failed: {e}")))?;
 
-        let row = rows
-            .next()
-            .map_err(|e| ApplicationError::Storage(format!("annotation fetch failed: {e}")))?
-            .ok_or_else(|| ApplicationError::Storage("upserted annotation not found".to_owned()))?;
+            let row = rows
+                .next()
+                .map_err(|e| ApplicationError::Storage(format!("annotation fetch failed: {e}")))?
+                .ok_or_else(|| {
+                    ApplicationError::Storage("upserted annotation not found".to_owned())
+                })?;
 
-        map_annotation_row(row)
+            map_annotation_row(row)?
+        };
+        tx.commit()
+            .map_err(|e| ApplicationError::Storage(format!("annotation tx commit failed: {e}")))?;
+        Ok(saved)
     }
 
     fn list_for_document(
@@ -71,7 +81,7 @@ impl AnnotationRepository for SqliteStorage {
     ) -> Result<Vec<Annotation>, ApplicationError> {
         let conn = self.lock_connection()?;
         let mut stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
                  FROM annotations
                  WHERE document_id = ?1
@@ -134,11 +144,12 @@ fn map_annotation_row(row: &rusqlite::Row<'_>) -> Result<Annotation, Application
 
     let doc_id = DocumentId::new(raw_doc_id)?;
     let ann_id = AnnotationId::try_new(raw_id)?;
+    let kind = AnnotationKind::from_storage(&raw_kind)?;
     Ok(Annotation::new(
         ann_id,
         doc_id,
         PageIndex::new(page_u32),
-        AnnotationKind::from_storage(&raw_kind),
+        kind,
         color_hex,
         quote_text,
         note_text,

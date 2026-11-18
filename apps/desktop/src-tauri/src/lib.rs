@@ -136,7 +136,7 @@ mod tests {
         assert!(arch.is_archived);
 
         let diag = handler.system_diagnostics().unwrap();
-        assert_eq!(diag.sqlite_schema_version, 4);
+        assert_eq!(diag.sqlite_schema_version, 5);
         assert!(!diag.third_party_notices.is_empty());
 
         let staged = handler
@@ -624,6 +624,59 @@ mod tests {
         assert!(second_saved.ends_with("-annotations-3.md"));
         assert_ne!(first_saved, second_saved);
         assert!(std::path::Path::new(&second_saved).is_file());
+
+        // Malicious caller `destinationPath` must be ignored for both saveToDownloads=false and true
+        let outside_dir = tempfile::tempdir().unwrap();
+        let attacker_target = outside_dir.path().join("pwned-notes.md");
+        for save_to_downloads in [false, true] {
+            let malicious_body = serde_json::to_vec(&json!({
+                "cmd": "annotation_export",
+                "args": {
+                    "documentId": doc_id,
+                    "includeAnnotations": true,
+                    "destinationPath": attacker_target.to_string_lossy(),
+                    "saveToDownloads": save_to_downloads
+                }
+            }))
+            .unwrap();
+            let req_wire = format!(
+                "POST /__readora_rpc HTTP/1.1\r\n\
+                 Host: 127.0.0.1:{port}\r\n\
+                 Origin: http://127.0.0.1:{port}\r\n\
+                 Sec-Fetch-Site: same-origin\r\n\
+                 X-Readora-Token: {token}\r\n\
+                 Content-Length: {}\r\n\r\n",
+                malicious_body.len()
+            );
+            let mut raw = req_wire.into_bytes();
+            raw.extend_from_slice(&malicious_body);
+            let mut cursor = Cursor::new(raw);
+            let parsed = read_and_authorize_http_request(&mut cursor, port, &token)
+                .unwrap()
+                .unwrap();
+            let resp = route_http_request_with_export_dir(
+                parsed,
+                ui_dir.path(),
+                &handler,
+                Some(downloads_dir.path()),
+                |_, _| r#"{"status":"noop"}"#,
+            );
+            assert_eq!(resp.status, "200 OK");
+            let json_resp: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+            assert!(
+                !attacker_target.exists(),
+                "caller destinationPath must never be written"
+            );
+            if save_to_downloads {
+                let saved = std::path::Path::new(json_resp["data"]["saved_path"].as_str().unwrap())
+                    .canonicalize()
+                    .unwrap();
+                let canonical_downloads = downloads_dir.path().canonicalize().unwrap();
+                assert!(saved.starts_with(&canonical_downloads));
+            } else {
+                assert!(json_resp["data"]["saved_path"].is_null());
+            }
+        }
     }
 
     #[test]

@@ -20,6 +20,22 @@ pub enum PdfEngineKind {
     PureRustFallback,
 }
 
+/// Securely wipes the buffer and spare capacity of a secret string without using `unsafe`.
+pub fn zeroize_string(secret: &mut String) {
+    if secret.is_empty() && secret.capacity() == 0 {
+        return;
+    }
+    let taken = std::mem::take(secret);
+    let mut bytes = taken.into_bytes();
+    let cap = bytes.capacity();
+    if cap > 0 {
+        bytes.resize(cap, 0_u8);
+        bytes.fill(0_u8);
+        let _ = std::hint::black_box(bytes.as_mut_slice());
+        bytes.clear();
+    }
+}
+
 /// Options supplied when opening a PDF document.
 #[derive(Clone, Default)]
 pub struct OpenDocumentOptions {
@@ -27,6 +43,14 @@ pub struct OpenDocumentOptions {
     pub password: Option<String>,
     /// Maximum allowed file size in bytes (`0` uses `DEFAULT_MAX_PDF_FILE_SIZE_BYTES`).
     pub max_file_size_bytes: u64,
+}
+
+impl Drop for OpenDocumentOptions {
+    fn drop(&mut self) {
+        if let Some(ref mut pw) = self.password {
+            zeroize_string(pw);
+        }
+    }
 }
 
 impl OpenDocumentOptions {

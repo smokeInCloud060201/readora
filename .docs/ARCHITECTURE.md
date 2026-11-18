@@ -58,7 +58,7 @@ The Cargo workspace in [`Cargo.toml`](../Cargo.toml) contains **9 Rust members**
 | `crates/pdf-engine` | Engine-neutral `PdfEngine` / `PdfDocument` traits, geometry, zeroizing password options | PDFium implementation, SQLite, UI |
 | `crates/app-application` | Use cases, orchestration, port traits, boundary DTOs | Concrete adapters (`rusqlite`, `pdfium-render`, `wry`) |
 | `crates/pdfium-adapter` | Dynamic `pdfium-render` bindings (`chromium/8165`) + pure-Rust fallback engine & PNG encoder | UI, desktop shell |
-| `crates/storage` | `rusqlite` (`WAL` mode) repositories and append-only migrations (`0001`–`0004`) | UI, PDFium |
+| `crates/storage` | `rusqlite` (`WAL` mode) repositories and append-only migrations (`0001`–`0005`) | UI, PDFium |
 | `crates/platform` | Canonical path validation, SHA-256 verification, atomic writes, release JSON parsing, scoped cleanup | Domain internals, UI |
 | `crates/app-infrastructure` | Byte-bounded LRU rendered-page cache and generation cancellation registry | UI, SQLite |
 | `crates/app-core` | Dependency wiring, session management, and command-facing facade | Frontend, `tao`/`wry` |
@@ -95,7 +95,7 @@ Never hold a mutex across PDF rendering or disk I/O.
 ## 5. Typed RPC contract (`/__readora_rpc`, `/__readora_import`, `/__readora_pdf_read`, `/__readora_update`)
 
 `DesktopCommandHandler::dispatch_rpc` exposes coarse, typed commands:
-- `document_open`, `document_open_sample`, `document_close`, `document_get_info`, `document_navigate`
+- `document_open`, `document_open_sample`, `document_sync_page_count`, `document_close`, `document_get_info`, `document_navigate`
 - `page_render`, `page_cancel_renders`, `page_extract_text`, `document_search`
 - `recent_documents_list`, `recent_document_set_favorite`, `recent_document_set_archived`, `recent_document_delete`
 - `bookmark_upsert`, `bookmark_list`, `bookmark_delete`
@@ -111,7 +111,7 @@ SQLite (`readora.sqlite` in OS application data directory) stores application me
 - recent documents, favorite/archive flags, and last reading position/zoom/rotation
 - bookmarks and user annotations (highlights, underlines, comments)
 - reading preferences and application settings (including user-configurable `auto_check_updates`, enabled by default and toggleable in `Preferences → General`)
-- append-only schema migrations (`0001` → `0002` → `0003` → `0004`)
+- append-only schema migrations (`0001` → `0002` → `0003` → `0004` → `0005`)
 
 External user PDF files remain untouched at their original paths; browser/drag-and-drop imports are staged inside `<app_data_dir>/library/pdfs/` and cleaned up cleanly on `--uninstall-cleanup` or package purge.
 

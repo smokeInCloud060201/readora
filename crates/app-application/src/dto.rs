@@ -19,6 +19,14 @@ pub struct OpenDocumentRequest {
     pub password: Option<String>,
 }
 
+impl Drop for OpenDocumentRequest {
+    fn drop(&mut self) {
+        if let Some(ref mut pw) = self.password {
+            pdf_engine::zeroize_string(pw);
+        }
+    }
+}
+
 impl fmt::Debug for OpenDocumentRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpenDocumentRequest")
@@ -39,6 +47,9 @@ pub struct DocumentSessionDto {
     pub outline: Vec<OutlineNode>,
     /// User bookmarks saved for this document.
     pub bookmarks: Vec<Bookmark>,
+    /// Monotonic render generation active when this session snapshot was captured.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 /// Command to render a single page at a target scale and rotation.
@@ -237,19 +248,44 @@ impl ReleaseManifestDto {
             ));
         }
         if let Some(ref url) = self.download_url {
-            let trimmed_url = url.trim();
-            if !trimmed_url.starts_with("https://")
-                || trimmed_url
-                    .chars()
-                    .any(|c| c.is_control() || c.is_whitespace())
-            {
+            if !is_allowed_github_download_url(url) {
                 return Err(ApplicationError::Platform(
-                    "release manifest download_url must be a valid https:// URL".to_owned(),
+                    "release manifest download_url must be a valid https:// GitHub URL".to_owned(),
                 ));
             }
         }
         Ok(())
     }
+}
+
+/// Validates that `raw_url` uses `https://`, contains no whitespace/control/userinfo (`@`),
+/// and targets an allowlisted official GitHub host.
+#[must_use]
+pub fn is_allowed_github_download_url(raw_url: &str) -> bool {
+    let trimmed = raw_url.trim();
+    if !trimmed.starts_with("https://")
+        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return false;
+    }
+    let after_scheme = &trimmed["https://".len()..];
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = authority
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        host.as_str(),
+        "github.com"
+            | "api.github.com"
+            | "objects.githubusercontent.com"
+            | "release-assets.githubusercontent.com"
+            | "codeload.github.com"
+    )
 }
 
 /// Live application update status evaluated against the installed version and release manifest.

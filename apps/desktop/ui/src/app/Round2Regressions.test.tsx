@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { ThumbnailsPanel } from "../features/navigation/ThumbnailsPanel";
+import { BookmarksPanel } from "../features/bookmarks/BookmarksPanel";
+import { DocumentActionsMenu } from "../features/reader/DocumentActionsMenu";
 import {
   getWindowSelectedText,
   sliceByUnicodeCodePoints,
@@ -17,6 +19,7 @@ import * as pdfCanvasRenderer from "../lib/pdf/pdfCanvasRenderer";
 import * as indexedDbStore from "../lib/pdf/indexedDbStore";
 import { buildPdfJsDocumentInitParams } from "../lib/pdf/pdfCanvasRenderer";
 import {
+  isValidGithubRepoSlug,
   parseGithubReleasePayload,
   readoraApi,
 } from "../lib/tauri/client";
@@ -27,6 +30,7 @@ import type {
   SearchHitDto,
 } from "../types/ipc";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 interface MockWindowBridges {
   __TAURI_INTERNALS__?: {
@@ -383,7 +387,7 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
             target_os: "macos",
             target_arch: "aarch64",
             pdf_engine_kind: "pdfium_dynamic",
-            sqlite_schema_version: 4,
+            sqlite_schema_version: 5,
             redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
             render_cache_usage_bytes: 0,
             third_party_notices: [],
@@ -942,7 +946,7 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
 
     // 5. PreferencesDialog preserves custom default_zoom (1.35), clamps cache on blur, and has updated diagnostic constants
     const diag = await readoraApi.getSystemDiagnostics();
-    expect(diag.sqlite_schema_version).toBe(4);
+    expect(diag.sqlite_schema_version).toBe(5);
     expect(
       diag.third_party_notices.some(
         (n) => n.name === "React + TypeScript" && n.version.includes("5.9"),
@@ -1110,7 +1114,7 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
             target_os: "macos",
             target_arch: "aarch64",
             pdf_engine_kind: "pure_rust_fallback",
-            sqlite_schema_version: 4,
+            sqlite_schema_version: 5,
             redacted_data_dir: "~/Library/Application Support/com.readora.desktop",
             render_cache_usage_bytes: 0,
             third_party_notices: [],
@@ -1372,6 +1376,133 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
       });
     } finally {
       delete win.__TAURI_INTERNALS__;
+    }
+  });
+
+  it("[DEEP-REVIEW] validates GitHub repo slugs, preserves failed comment drafts, supports menu arrow/Home/End navigation, and recovers via ErrorBoundary", async () => {
+    // 1. Strict GitHub owner/repo slug validation + PreferencesDialog validation feedback
+    expect(isValidGithubRepoSlug("smokeInCloud060201/readora")).toBe(true);
+    expect(isValidGithubRepoSlug("owner/../repo")).toBe(false);
+    expect(isValidGithubRepoSlug("../repo")).toBe(false);
+    expect(isValidGithubRepoSlug("owner/repo/extra")).toBe(false);
+    expect(isValidGithubRepoSlug("owner/repo?foo=1")).toBe(false);
+
+    const onSavePrefs = vi.fn();
+    const { unmount: unmountPrefs } = render(
+      <PreferencesDialog
+        settings={{
+          theme: "light",
+          default_layout: "continuous",
+          default_fit_mode: "fit_width",
+          default_zoom: 1.0,
+          render_cache_budget_bytes: 64 * 1024 * 1024,
+          prefetch_window: 1,
+          github_release_repo: "smokeInCloud060201/readora",
+        }}
+        initialSection="general"
+        onSave={onSavePrefs}
+        onClose={vi.fn()}
+      />,
+    );
+    const repoInput = screen.getByLabelText("GitHub Release Repository");
+    fireEvent.change(repoInput, { target: { value: "owner/repo/extra" } });
+    fireEvent.click(screen.getByText("Save Preferences"));
+    expect(onSavePrefs).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /owner\/repo/i,
+    );
+    unmountPrefs();
+
+    // 2. BookmarksPanel preserves draft on failed comment save, clears on success, and exposes ARIA tablist semantics
+    let nextCommentResult = false;
+    const onAddComment = vi.fn(async () => nextCommentResult);
+    const { unmount: unmountBookmarks } = render(
+      <BookmarksPanel
+        bookmarks={[]}
+        annotations={[]}
+        currentPage={0}
+        onAddBookmark={vi.fn()}
+        onAddComment={onAddComment}
+        onDeleteBookmark={vi.fn()}
+        onSelectPage={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Notes" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    const commentInput = screen.getByLabelText("New comment") as HTMLTextAreaElement;
+    fireEvent.change(commentInput, { target: { value: "Preserve my draft" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add Comment on Page 1/i }));
+    await waitFor(() => {
+      expect(onAddComment).toHaveBeenCalledTimes(1);
+    });
+    expect(commentInput.value).toBe("Preserve my draft");
+
+    nextCommentResult = true;
+    fireEvent.click(screen.getByRole("button", { name: /Add Comment on Page 1/i }));
+    await waitFor(() => {
+      expect(commentInput.value).toBe("");
+    });
+    unmountBookmarks();
+
+    // 3. Menu roving keyboard focus (ArrowDown / ArrowUp / Home / End)
+    const { unmount: unmountMenu } = render(
+      <DocumentActionsMenu
+        menuRef={{ current: null }}
+        isOpen={true}
+        onToggleOpen={vi.fn()}
+        onClose={vi.fn()}
+        isFavorite={false}
+        onOpenDocumentDetails={vi.fn()}
+        onOpenPrint={vi.fn()}
+        onRotateCw={vi.fn()}
+        onRotateCcw={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onArchiveDocument={vi.fn()}
+      />,
+    );
+    const menuEl = screen.getByRole("menu", { name: "Document Actions Menu" });
+    const menuItems = screen.getAllByRole("menuitem");
+    expect(menuItems.length).toBeGreaterThanOrEqual(4);
+    menuItems[0]?.focus();
+    fireEvent.keyDown(menuEl, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(menuItems[1]);
+    fireEvent.keyDown(menuEl, { key: "End" });
+    expect(document.activeElement).toBe(menuItems[menuItems.length - 1]);
+    fireEvent.keyDown(menuEl, { key: "Home" });
+    expect(document.activeElement).toBe(menuItems[0]);
+    fireEvent.keyDown(menuEl, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(menuItems[menuItems.length - 1]);
+    unmountMenu();
+
+    // 4. ErrorBoundary catches render error and resets cleanly
+    const consoleErrSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    let shouldThrow = true;
+    const MaybeThrow: React.FC = () => {
+      if (shouldThrow) {
+        throw new Error("Simulated render crash");
+      }
+      return <div>Recovered View</div>;
+    };
+    try {
+      render(
+        <ErrorBoundary>
+          <MaybeThrow />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Something went wrong in the reader view/i,
+      );
+      shouldThrow = false;
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(screen.getByText("Recovered View")).toBeInTheDocument();
+    } finally {
+      consoleErrSpy.mockRestore();
     }
   });
 });

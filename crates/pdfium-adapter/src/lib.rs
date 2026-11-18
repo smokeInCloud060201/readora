@@ -19,6 +19,14 @@ pub mod png_encoder;
 use fallback_engine::FallbackPdfDocument;
 use pdfium_dynamic::{DynamicPdfiumDocument, has_native_pdfium_worker};
 
+/// Matches only small synthetic encrypted test fixtures produced by `build_synthetic_pdf_bytes`
+/// so real-world PDFs whose body streams mention `/UserPassword` never bypass native PDFium (`[MED-03]`).
+#[must_use]
+pub(crate) fn is_synthetic_encrypted_test_fixture(bytes: &[u8]) -> bool {
+    const MARKER: &[u8] = b"<< /Filter /Standard /Encrypt true /UserPassword (";
+    bytes.len() <= 65_536 && bytes.windows(MARKER.len()).any(|w| w == MARKER)
+}
+
 /// Adapter implementing `PdfEngine` using PDFium dynamic loading with a pure-Rust fallback.
 #[derive(Debug, Clone, Default)]
 pub struct PdfiumEngineAdapter {
@@ -96,7 +104,7 @@ impl PdfEngine for PdfiumEngineAdapter {
 
         let shared = Bytes::from(bytes);
         let is_synthetic_pw_fixture =
-            self.allow_fallback && shared.windows(14).any(|w| w == b"/UserPassword ");
+            self.allow_fallback && is_synthetic_encrypted_test_fixture(&shared);
         if self.has_native_pdfium() && !is_synthetic_pw_fixture {
             let doc = DynamicPdfiumDocument::open(shared, options, self.library_dir.clone())?;
             return Ok(Box::new(doc));
@@ -125,7 +133,7 @@ impl PdfEngine for PdfiumEngineAdapter {
             });
         }
         let is_synthetic_pw_fixture =
-            self.allow_fallback && bytes.windows(14).any(|w| w == b"/UserPassword ");
+            self.allow_fallback && is_synthetic_encrypted_test_fixture(bytes);
         if self.has_native_pdfium() && !is_synthetic_pw_fixture {
             let doc = DynamicPdfiumDocument::open(
                 Bytes::copy_from_slice(bytes),
@@ -702,5 +710,61 @@ mod tests {
             too_large,
             Err(PdfEngineError::FileTooLarge { max_bytes: 32, .. })
         ));
+    }
+
+    #[test]
+    fn fallback_handles_outline_count_page_cap_body_encrypt_tokens_and_nul_passwords() {
+        // 1. Outlines `/Count` must not override `/Pages /Count`, and absurd `/Pages /Count` clamps safely
+        let outlines_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 2 >>\nendobj\n3 0 obj\n<< /Type /Outlines /Count 4294967295 >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let adapter = PdfiumEngineAdapter::new_with_fallback(None);
+        let doc = adapter
+            .open_bytes(outlines_pdf, &OpenDocumentOptions::default())
+            .unwrap();
+        assert_eq!(doc.info().page_count, 2);
+
+        let huge_pages_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 4294967295 >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let clamped_doc = adapter
+            .open_bytes(huge_pages_pdf, &OpenDocumentOptions::default())
+            .unwrap();
+        assert_eq!(
+            clamped_doc.info().page_count,
+            fallback_engine::MAX_FALLBACK_PAGES
+        );
+
+        // 2. Body stream text containing `/Encrypt` / `/UserPassword` does not bypass or trigger encryption
+        let body_tokens_pdf = build_synthetic_pdf_bytes(
+            "PDF Internals Talk",
+            &["Discuss /Filter /Standard /Encrypt true /UserPassword (secret)"],
+            None,
+        );
+        let unencrypted = adapter
+            .open_bytes(&body_tokens_pdf, &OpenDocumentOptions::default())
+            .unwrap();
+        assert!(!unencrypted.info().metadata.is_encrypted);
+
+        // 3. Synthetic encrypted fixture opens with exact secret and rejects interior NUL passwords cleanly
+        let encrypted_pdf = build_synthetic_pdf_bytes("Locked", &["Secret page"], Some("secret"));
+        let res = adapter.open_bytes(
+            &encrypted_pdf,
+            &OpenDocumentOptions {
+                password: Some("abc\0def".to_owned()),
+                ..OpenDocumentOptions::default()
+            },
+        );
+        assert!(matches!(
+            res,
+            Err(PdfEngineError::IncorrectPassword | PdfEngineError::PasswordRequired)
+        ));
+        assert!(
+            adapter
+                .open_bytes(
+                    &encrypted_pdf,
+                    &OpenDocumentOptions {
+                        password: Some("secret".to_owned()),
+                        ..OpenDocumentOptions::default()
+                    },
+                )
+                .is_ok()
+        );
     }
 }

@@ -17,6 +17,12 @@ pub trait RecentDocumentRepository: Send + Sync {
     /// Lists up to `limit` recent documents ordered by `last_opened_unix_ms` descending.
     fn list(&self, limit: usize) -> Result<Vec<RecentDocument>, ApplicationError>;
 
+    /// Lists up to `recent_limit` recent documents alongside all favorited and archived library
+    /// entries, deduplicated and ordered by `last_opened_unix_ms` descending.
+    fn list_library(&self, recent_limit: usize) -> Result<Vec<RecentDocument>, ApplicationError> {
+        self.list(recent_limit)
+    }
+
     /// Updates the favorite status of a recent document entry.
     fn set_favorite(
         &self,
@@ -72,4 +78,16 @@ pub trait SettingsRepository: Send + Sync {
 
     /// Persists validated application settings.
     fn save(&self, settings: &AppSettings) -> Result<(), ApplicationError>;
+
+    /// Atomically loads, mutates, validates, and saves application settings.
+    fn update(
+        &self,
+        mutator: &mut dyn FnMut(&mut AppSettings) -> Result<(), ApplicationError>,
+    ) -> Result<AppSettings, ApplicationError> {
+        let mut settings = self.load()?;
+        mutator(&mut settings)?;
+        settings.validate()?;
+        self.save(&settings)?;
+        Ok(settings)
+    }
 }

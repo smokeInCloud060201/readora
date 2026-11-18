@@ -52,6 +52,18 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Verify release tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CARGO_VER=$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)
+          if [[ "${TAG_VER}" != "${CARGO_VER}" ]]; then
+            echo "Release tag v${TAG_VER} does not match Cargo.toml workspace version ${CARGO_VER}" >&2
+            exit 1
+          fi
+
       - name: Install frontend dependencies & build UI dist
         shell: bash
         run: |
@@ -106,6 +118,8 @@ jobs:
 
             curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-mac-arm64.tgz"
+            test -s "${RUNNER_TEMP}/pdfium-mac-arm64.tgz"
+            tar -tzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" >/dev/null
             tar -xzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" -C "${RUNNER_TEMP}"
             test -f "${RUNNER_TEMP}/lib/libpdfium.dylib"
             cp "${RUNNER_TEMP}/lib/libpdfium.dylib" "dist/Readora.app/Contents/Frameworks/libpdfium.dylib"
@@ -179,7 +193,7 @@ jobs:
                 "dist/Readora.app"
             else
               codesign --force --sign - "dist/Readora.app/Contents/Frameworks/libpdfium.dylib"
-              codesign --force --options runtime --sign - \
+              codesign --force --sign - \
                 --entitlements apps/desktop/src-tauri/Entitlements.plist \
                 "dist/Readora.app"
             fi
@@ -228,6 +242,8 @@ jobs:
 
             curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-linux-x64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-linux-x64.tgz"
+            test -s "${RUNNER_TEMP}/pdfium-linux-x64.tgz"
+            tar -tzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" >/dev/null
             tar -xzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" -C "${RUNNER_TEMP}"
             test -f "${RUNNER_TEMP}/lib/libpdfium.so"
             cp "${RUNNER_TEMP}/lib/libpdfium.so" "${DEB_ROOT}/usr/lib/readora/libpdfium.so"
@@ -272,16 +288,18 @@ jobs:
 
             curl -fSL --retry 3 -o "${WIN_TMP}/pdfium-win-x64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-win-x64.tgz"
+            test -s "${WIN_TMP}/pdfium-win-x64.tgz"
+            tar -tzf "${WIN_TMP}/pdfium-win-x64.tgz" >/dev/null
             tar -xzf "${WIN_TMP}/pdfium-win-x64.tgz" -C "${WIN_TMP}"
             test -f "${WIN_TMP}/bin/pdfium.dll"
             cp "${WIN_TMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
 
+            cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
             if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
               echo "${WINDOWS_CERTIFICATE}" | base64 --decode > "${WIN_TMP}/win_cert.pfx"
-              MSYS_NO_PATHCONV=1 signtool.exe sign /f "${WIN_TMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target/release/readora-desktop.exe
+              MSYS_NO_PATHCONV=1 signtool.exe sign /f "${WIN_TMP}/win_cert.pfx" /p "${WINDOWS_CERTIFICATE_PASSWORD:-}" /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 "${WIN_STAGE}/Readora.exe" "${WIN_STAGE}/pdfium/pdfium.dll"
             fi
             rm -rf "${WIN_TMP}"
-            cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
             cp -R apps/desktop/ui/dist/* "${WIN_STAGE}/ui/"
             cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
             cp apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh "${WIN_STAGE}/installer/"
@@ -311,6 +329,16 @@ jobs:
             "download_url": "https://github.com/${REPO_SLUG}/releases/download/${RAW_TAG}/${ASSET_BASENAME}"
           }
           EOF
+
+      - name: Cleanup temporary signing materials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "${RUNNER_TEMP}/build_cert.p12" || true
+          rm -rf "dist-windows/_tmp" || true
+          if command -v security >/dev/null 2>&1 && [[ -f "${RUNNER_TEMP}/build.keychain-db" || -f "${RUNNER_TEMP}/build.keychain" ]]; then
+            security delete-keychain "${RUNNER_TEMP}/build.keychain" || true
+          fi
 
       - name: Attest Cryptographic Build Provenance (Free GitHub Sigstore SLSA)
         uses: actions/attest-build-provenance@v2

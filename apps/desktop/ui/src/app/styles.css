@@ -270,15 +270,15 @@ textarea:focus-visible,
 }
 
 .page-field-pill {
-  height: 32px;
-  min-width: 72px;
-  padding: 0 12px;
-  border-radius: 7px;
+  height: 28px;
+  min-width: 76px;
+  padding: 0 10px;
+  border-radius: 6px;
   border: 1px solid var(--border-color);
   background: var(--bg-surface);
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -397,21 +397,6 @@ textarea:focus-visible,
   color: var(--text-button-active);
 }
 
-.page-field-pill {
-  height: 28px;
-  min-width: 76px;
-  padding: 0 10px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
 /* Zoom Pill & Popover Menu (Figma Frame 17) */
 .zoom-menu-wrapper {
   position: relative;
@@ -428,6 +413,10 @@ textarea:focus-visible,
   font-weight: 500;
   color: var(--text-primary);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
 
 .zoom-dropdown-menu {
@@ -901,7 +890,6 @@ textarea:focus-visible,
     width 160ms cubic-bezier(0.22, 1, 0.36, 1),
     background-color 180ms ease,
     box-shadow 180ms ease-out;
-  will-change: transform, opacity, width;
 }
 
 .pdf-page-sheet.active-page-sheet {
@@ -2544,19 +2532,6 @@ textarea:focus-visible,
   gap: 6px;
 }
 
-.saved-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.zoom-pill-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-}
-
 /* ============================================================================
    Phase 5 Figma Screens: Menu Bar (11-15), Import PDF Dialog (07),
    Preferences General & Shortcuts (18-19), and Share Dialog (20)
@@ -3177,7 +3152,57 @@ textarea:focus-visible,
 
 .theme-dark .selectable-text-layer {
   border-top-color: var(--border-color);
+  border-bottom-color: var(--border-color);
   color: var(--text-primary);
+}
+
+.theme-dark .focus-outline-btn.active {
+  background: #36402f;
+  color: #c4d5b0;
+}
+
+.theme-dark .note-quote-box {
+  background: #38362a;
+  color: #d5d2c4;
+}
+
+.theme-dark .error-banner {
+  background: #3f1d1d;
+  color: #fecaca;
+  border-bottom-color: #7f1d1d;
+}
+
+.theme-dark .archive-pdf-badge {
+  background: #2f332b;
+  color: #b5c79e;
+}
+
+.theme-dark .archive-info-banner {
+  background: #2a3225;
+  border-color: #414e39;
+  color: #c7d6b9;
+}
+
+.theme-dark .dropzone-badge {
+  background: #32402b;
+  color: #cde0b8;
+}
+
+.theme-dark .focus-thumbnail-preview:not(.cover-sheet) {
+  background: #30332d;
+  border-color: #44483e;
+}
+
+.theme-dark .focus-thumbnail-preview.current-sheet {
+  background: #383e32;
+}
+
+.theme-dark .thumb-sheet-line {
+  background: #4a4e43;
+}
+
+.theme-dark .thumb-sheet-caption {
+  color: var(--text-secondary);
 }
 
 .theme-dark .pdf-annotation-pill {
@@ -3357,6 +3382,22 @@ textarea:focus-visible,
     margin: 0 auto !important;
     page-break-after: always;
     break-after: page;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-page-sheet,
+  .pdf-page-sheet.page-turn-next,
+  .pdf-page-sheet.page-turn-prev,
+  .rendered-page-img,
+  .recent-doc-card,
+  .focus-btn {
+    animation: none;
+    transition: none;
+  }
+
+  .recent-doc-card:hover {
+    transform: none;
   }
 }
 

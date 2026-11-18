@@ -15,6 +15,7 @@ pub use dto::{
     NavigationAction, OpenDocumentRequest, ReleaseManifestDto, RenderPageCommand,
     RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SystemDiagnosticsDto,
     ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
+    is_allowed_github_download_url,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};
@@ -29,9 +30,11 @@ pub use use_cases::bookmarks::{
     execute_list_annotations, execute_list_bookmarks, execute_upsert_annotation,
     execute_upsert_bookmark,
 };
-pub use use_cases::navigate_view::{apply_navigation_action, execute_navigation_action};
+pub use use_cases::navigate_view::{
+    apply_navigation_action, build_recent_snapshot_for_navigation, execute_navigation_action,
+};
 pub use use_cases::open_document::{OpenedDocumentSession, execute_open_document};
-pub use use_cases::render_page::execute_render_page;
+pub use use_cases::render_page::{execute_render_page, execute_render_page_cancellable};
 pub use use_cases::search::{DEFAULT_MAX_SEARCH_HITS, execute_search_document};
 pub use use_cases::settings::{execute_get_settings, execute_update_settings};
 
@@ -245,13 +248,30 @@ mod tests {
 
         fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError> {
             self.recents.lock().unwrap().remove(document_id);
+            self.bookmarks
+                .lock()
+                .unwrap()
+                .retain(|b| &b.document_id != document_id);
+            self.annotations
+                .lock()
+                .unwrap()
+                .retain(|a| &a.document_id != document_id);
             Ok(())
         }
     }
 
     impl BookmarkRepository for FakeStorage {
         fn upsert(&self, bookmark: &Bookmark) -> Result<Bookmark, ApplicationError> {
-            self.bookmarks.lock().unwrap().push(bookmark.clone());
+            let mut guard = self.bookmarks.lock().unwrap();
+            if let Some(existing) = guard.iter_mut().find(|b| {
+                b.document_id == bookmark.document_id && b.page_index == bookmark.page_index
+            }) {
+                let preserved_id = existing.id.clone();
+                *existing = bookmark.clone();
+                existing.id = preserved_id;
+                return Ok(existing.clone());
+            }
+            guard.push(bookmark.clone());
             Ok(bookmark.clone())
         }
 
@@ -421,6 +441,7 @@ mod tests {
             NavigationAction::GoToPage(4),
             &infra,
             &storage,
+            &storage,
             &platform,
         )
         .unwrap();
@@ -566,6 +587,7 @@ mod tests {
             NavigationAction::PreviousPage,
             &infra,
             &storage,
+            &storage,
             &platform,
         )
         .unwrap();
@@ -578,6 +600,7 @@ mod tests {
             "guide.pdf",
             NavigationAction::SetZoom(1.5),
             &infra,
+            &storage,
             &storage,
             &platform,
         )

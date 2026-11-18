@@ -5,9 +5,12 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_application::{
@@ -15,6 +18,18 @@ use app_application::{
 };
 use app_domain::{DocumentId, sanitize_display_name};
 use sha2::{Digest, Sha256};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[inline]
+fn is_regular_non_symlink_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
+}
+
+#[inline]
+fn is_non_symlink_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+}
 
 const ALLOWED_APP_DIR_NAMES: &[&str] = &[
     "com.readora.desktop",
@@ -245,8 +260,8 @@ impl NativePlatformAdapter {
             ..AppCleanupReportDto::default()
         };
 
-        if data_dir.exists() {
-            if !Self::is_safe_readora_directory(data_dir) {
+        if fs::symlink_metadata(data_dir).is_ok() {
+            if !is_non_symlink_dir(data_dir) || !Self::is_safe_readora_directory(data_dir) {
                 return Err(ApplicationError::Platform(
                     "refusing to clean directory that is not a dedicated Readora application folder"
                         .to_owned(),
@@ -256,7 +271,7 @@ impl NativePlatformAdapter {
             // 1. Remove known SQLite database files created by Readora
             for file_name in KNOWN_SQLITE_FILES {
                 let candidate = data_dir.join(file_name);
-                if candidate.is_file() {
+                if is_regular_non_symlink_file(&candidate) {
                     match fs::remove_file(&candidate) {
                         Ok(()) => {
                             report.removed_database_files += 1;
@@ -279,7 +294,7 @@ impl NativePlatformAdapter {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if let Some(fname) = path.file_name().and_then(|n| n.to_str())
-                        && path.is_file()
+                        && is_regular_non_symlink_file(&path)
                         && fname.starts_with('.')
                         && fname.contains(".tmp-")
                         && fs::remove_file(&path).is_ok()
@@ -289,18 +304,29 @@ impl NativePlatformAdapter {
                 }
             }
 
-            // 3. Clean dedicated `cache`, `updates`, and internal `library` staging subdirectories inside data_dir if present
+            // 3. Clean dedicated `cache`, `updates`, `samples`, and internal `library` subdirectories inside data_dir
             for subdir in ["cache", "updates"] {
                 let nested_dir = data_dir.join(subdir);
-                if nested_dir.is_dir() {
+                if is_non_symlink_dir(&nested_dir) {
                     report.removed_cache_entries +=
                         Self::clean_known_cache_files_in_dir(&nested_dir);
                     let _ = fs::remove_dir(&nested_dir);
                 }
             }
 
+            let samples_dir = data_dir.join("samples");
+            if is_non_symlink_dir(&samples_dir) {
+                let sample_file = samples_dir.join("Readora-Welcome-Guide.pdf");
+                if is_regular_non_symlink_file(&sample_file)
+                    && fs::remove_file(&sample_file).is_ok()
+                {
+                    report.removed_temp_entries += 1;
+                }
+                let _ = fs::remove_dir(&samples_dir);
+            }
+
             let library_dir = data_dir.join("library");
-            if library_dir.is_dir() {
+            if is_non_symlink_dir(&library_dir) {
                 report.removed_cache_entries += Self::clean_internal_library_dir(&library_dir);
                 let _ = fs::remove_dir(&library_dir);
             }
@@ -311,8 +337,8 @@ impl NativePlatformAdapter {
             }
         }
 
-        if cache_dir.exists() {
-            if !Self::is_safe_readora_directory(cache_dir) {
+        if fs::symlink_metadata(cache_dir).is_ok() {
+            if !is_non_symlink_dir(cache_dir) || !Self::is_safe_readora_directory(cache_dir) {
                 return Err(ApplicationError::Platform(
                     "refusing to clean cache path that is not a dedicated Readora cache folder"
                         .to_owned(),
@@ -325,11 +351,13 @@ impl NativePlatformAdapter {
         }
 
         if clean_shared_sample_dir {
-            // Also clean Readora's temporary sample directory (`$TMPDIR/readora-samples`) if present
+            // Also clean legacy shared temporary sample directory (`$TMPDIR/readora-samples`) if present
             let sample_dir = std::env::temp_dir().join("readora-samples");
-            if sample_dir.is_dir() {
+            if is_non_symlink_dir(&sample_dir) {
                 let sample_file = sample_dir.join("Readora-Welcome-Guide.pdf");
-                if sample_file.is_file() && fs::remove_file(&sample_file).is_ok() {
+                if is_regular_non_symlink_file(&sample_file)
+                    && fs::remove_file(&sample_file).is_ok()
+                {
                     report.removed_temp_entries += 1;
                 }
                 let _ = fs::remove_dir(&sample_dir);
@@ -354,7 +382,7 @@ impl NativePlatformAdapter {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            if is_regular_non_symlink_file(&path) {
                 let is_known_lib_file =
                     path.file_name()
                         .and_then(|n| n.to_str())
@@ -366,7 +394,7 @@ impl NativePlatformAdapter {
                 if is_known_lib_file && fs::remove_file(&path).is_ok() {
                     removed += 1;
                 }
-            } else if path.is_dir()
+            } else if is_non_symlink_dir(&path)
                 && path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -375,11 +403,11 @@ impl NativePlatformAdapter {
                 if let Ok(pdf_entries) = fs::read_dir(&path) {
                     for pdf_entry in pdf_entries.flatten() {
                         let pdf_path = pdf_entry.path();
-                        if pdf_path.is_dir() {
+                        if is_non_symlink_dir(&pdf_path) {
                             if let Ok(sub_entries) = fs::read_dir(&pdf_path) {
                                 for sub_entry in sub_entries.flatten() {
                                     let sub_path = sub_entry.path();
-                                    let is_staged_sub_pdf = sub_path.is_file()
+                                    let is_staged_sub_pdf = is_regular_non_symlink_file(&sub_path)
                                         && sub_path
                                             .file_name()
                                             .and_then(|n| n.to_str())
@@ -397,7 +425,7 @@ impl NativePlatformAdapter {
                             let _ = fs::remove_dir(&pdf_path);
                             continue;
                         }
-                        let is_staged_pdf = pdf_path.is_file()
+                        let is_staged_pdf = is_regular_non_symlink_file(&pdf_path)
                             && pdf_path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -424,7 +452,7 @@ impl NativePlatformAdapter {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            if is_regular_non_symlink_file(&path) {
                 let is_known_cache_file = path
                     .extension()
                     .and_then(|ext| ext.to_str())
@@ -444,15 +472,46 @@ impl NativePlatformAdapter {
                 if is_known_cache_file && fs::remove_file(&path).is_ok() {
                     removed += 1;
                 }
-            } else if path.is_dir()
+            } else if is_non_symlink_dir(&path)
                 && let Some(sub_name) = path.file_name().and_then(|n| n.to_str())
-                && matches!(
+                && (matches!(
                     sub_name,
                     "render-cache" | "thumbnails" | "pages" | "temp" | "updates"
-                )
+                ) || sub_name.starts_with(".stage-"))
             {
-                removed += Self::clean_known_cache_files_in_dir(&path);
+                if sub_name.starts_with(".stage-") {
+                    removed += Self::clean_stage_subdir_safely(&path, 0);
+                } else {
+                    removed += Self::clean_known_cache_files_in_dir(&path);
+                }
                 let _ = fs::remove_dir(&path);
+            }
+        }
+        removed
+    }
+
+    fn clean_stage_subdir_safely(dir: &Path, depth: usize) -> usize {
+        if depth > 8 {
+            return 0;
+        }
+        let mut removed = 0;
+        let Ok(entries) = fs::read_dir(dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                if fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            } else if meta.is_dir() {
+                removed += Self::clean_stage_subdir_safely(&path, depth + 1);
+                let _ = fs::remove_dir(&path);
+            } else if meta.is_file() && fs::remove_file(&path).is_ok() {
+                removed += 1;
             }
         }
         removed
@@ -568,15 +627,41 @@ impl NativePlatformAdapter {
         diff == 0
     }
 
-    /// Reads `file_path` and verifies its SHA-256 digest against `expected_hex`.
+    /// Streams `file_path` in bounded chunks and verifies its SHA-256 digest against `expected_hex`.
     pub fn verify_sha256_file(
         file_path: &Path,
         expected_hex: &str,
     ) -> Result<bool, ApplicationError> {
-        let bytes = fs::read(file_path).map_err(|e| {
-            ApplicationError::Platform(format!("failed to read file for SHA-256 check: {e}"))
+        let cleaned = expected_hex.trim().trim_start_matches("sha256:");
+        if !Self::is_hex_sha256(cleaned) {
+            return Ok(false);
+        }
+        let mut file = File::open(file_path).map_err(|e| {
+            ApplicationError::Platform(format!("failed to open file for SHA-256 check: {e}"))
         })?;
-        Ok(Self::verify_sha256_bytes(&bytes, expected_hex))
+        let mut hasher = Sha256::new();
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| {
+                ApplicationError::Platform(format!("failed to read file for SHA-256 check: {e}"))
+            })?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let actual = format!("{:x}", hasher.finalize());
+        let expected_lower = cleaned.to_ascii_lowercase();
+        let a = actual.as_bytes();
+        let b = expected_lower.as_bytes();
+        if a.len() != b.len() {
+            return Ok(false);
+        }
+        let mut diff = 0_u8;
+        for (x, y) in a.iter().zip(b.iter()) {
+            diff |= x ^ y;
+        }
+        Ok(diff == 0)
     }
 
     /// Parses a GitHub Releases `/repos/{owner}/{repo}/releases/latest` JSON payload into a
@@ -700,8 +785,9 @@ impl NativePlatformAdapter {
                 }
                 let matches_arch = arch_tokens.is_empty()
                     || arch_tokens.iter().any(|tok| asset_name.contains(tok));
-                let is_preferred_updater_bundle =
-                    target_os == "macos" && asset_name.ends_with(".app.tar.gz");
+                let is_preferred_updater_bundle = (target_os == "macos"
+                    && asset_name.ends_with(".app.tar.gz"))
+                    || (target_os == "linux" && asset_name.ends_with(".deb"));
                 let score: u8 = match (matches_arch, is_preferred_updater_bundle) {
                     (true, true) => 4,
                     (true, false) => 3,
@@ -770,9 +856,10 @@ impl PlatformPort for NativePlatformAdapter {
             return Err(ApplicationError::Platform("PDF file is empty".to_owned()));
         }
         if max_size_bytes > 0 && file_size_bytes > max_size_bytes {
-            return Err(ApplicationError::Platform(format!(
-                "file size ({file_size_bytes} bytes) exceeds maximum allowed ({max_size_bytes} bytes)"
-            )));
+            return Err(ApplicationError::FileTooLarge {
+                size_bytes: file_size_bytes,
+                max_bytes: max_size_bytes,
+            });
         }
 
         let canonical_str = canonical.to_string_lossy().into_owned();
@@ -814,30 +901,78 @@ impl PlatformPort for NativePlatformAdapter {
             })?;
         }
 
+        if let Ok(meta) = fs::symlink_metadata(target)
+            && meta.file_type().is_symlink()
+        {
+            return Err(ApplicationError::Platform(
+                "refusing to write atomically over a symbolic link".to_owned(),
+            ));
+        }
+
         let pid = std::process::id();
         let now_nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let temp_name = format!(
-            ".{}.tmp-{pid}-{now_nanos}",
-            target
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "export".to_owned())
-        );
-        let temp_path = parent.join(temp_name);
+        let safe_base = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "export".to_owned());
+
+        let (mut file, temp_path) = {
+            let mut opened = None;
+            let mut last_err = None;
+            for _attempt in 0..8 {
+                let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let temp_name = format!(".{safe_base}.tmp-{pid}-{now_nanos}-{seq}");
+                let candidate = parent.join(temp_name);
+                let mut opts = OpenOptions::new();
+                opts.write(true).create_new(true);
+                #[cfg(unix)]
+                opts.mode(0o600);
+                match opts.open(&candidate) {
+                    Ok(f) => {
+                        opened = Some((f, candidate));
+                        break;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        last_err = Some(err);
+                    }
+                    Err(err) => {
+                        return Err(ApplicationError::Platform(format!(
+                            "failed to create temporary export file: {err}"
+                        )));
+                    }
+                }
+            }
+            match opened {
+                Some(pair) => pair,
+                None => {
+                    return Err(ApplicationError::Platform(format!(
+                        "failed to allocate unique temporary file: {}",
+                        last_err
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "file exists".to_owned())
+                    )));
+                }
+            }
+        };
 
         let write_result = (|| -> Result<(), ApplicationError> {
-            let mut file = File::create(&temp_path).map_err(|e| {
-                ApplicationError::Platform(format!("failed to create temporary export file: {e}"))
-            })?;
             file.write_all(bytes).map_err(|e| {
                 ApplicationError::Platform(format!("failed to write export bytes: {e}"))
             })?;
             file.sync_all().map_err(|e| {
                 ApplicationError::Platform(format!("failed to flush export file: {e}"))
             })?;
+            drop(file);
+            if let Ok(meta) = fs::symlink_metadata(target)
+                && meta.file_type().is_symlink()
+            {
+                return Err(ApplicationError::Platform(
+                    "refusing to replace symbolic link target".to_owned(),
+                ));
+            }
             fs::rename(&temp_path, target).map_err(|e| {
                 ApplicationError::Platform(format!("failed to finalize atomic export write: {e}"))
             })?;
@@ -888,10 +1023,10 @@ impl PlatformPort for NativePlatformAdapter {
             ));
         }
         if max_size_bytes > 0 && meta.len() > max_size_bytes {
-            return Err(ApplicationError::Platform(format!(
-                "file size ({} bytes) exceeds maximum allowed ({max_size_bytes} bytes)",
-                meta.len()
-            )));
+            return Err(ApplicationError::FileTooLarge {
+                size_bytes: meta.len(),
+                max_bytes: max_size_bytes,
+            });
         }
         let file = File::open(target).map_err(|_| {
             ApplicationError::Platform("failed to open file for reading".to_owned())
@@ -903,9 +1038,10 @@ impl PlatformPort for NativePlatformAdapter {
                 .read_to_end(&mut buf)
                 .map_err(|_| ApplicationError::Platform("failed to read file bytes".to_owned()))?;
             if (buf.len() as u64) > max_size_bytes {
-                return Err(ApplicationError::Platform(format!(
-                    "file size exceeds maximum allowed ({max_size_bytes} bytes)"
-                )));
+                return Err(ApplicationError::FileTooLarge {
+                    size_bytes: buf.len() as u64,
+                    max_bytes: max_size_bytes,
+                });
             }
         } else {
             let mut f = file;

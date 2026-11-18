@@ -9,7 +9,15 @@ CACHE_DIR="${READORA_CACHE_DIR:-$HOME/Library/Caches/com.readora.desktop}"
 TMP_SAMPLES="${TMPDIR:-/tmp}/readora-samples"
 
 is_safe_dir() {
-  [ -d "$1" ] && [ ! -L "$1" ]
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  case "$(basename "$1")" in
+    com.readora.desktop|Readora|readora|readora-data|readora-cache|readora-samples|readora-mem-*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 if is_safe_dir "$DATA_DIR"; then
@@ -26,8 +34,8 @@ if is_safe_dir "$DATA_DIR"; then
     rmdir "$DATA_DIR/updates" 2>/dev/null || true
   fi
 
-  if is_safe_dir "$DATA_DIR/library"; then
-    if is_safe_dir "$DATA_DIR/library/pdfs"; then
+  if [ -d "$DATA_DIR/library" ] && [ ! -L "$DATA_DIR/library" ]; then
+    if [ -d "$DATA_DIR/library/pdfs" ] && [ ! -L "$DATA_DIR/library/pdfs" ]; then
       find -P "$DATA_DIR/library/pdfs" -maxdepth 2 -type f \( \
         -name "*.pdf" \
         -o -name "*.pdf.tmp" \
@@ -45,7 +53,7 @@ if is_safe_dir "$DATA_DIR"; then
     rmdir "$DATA_DIR/library" 2>/dev/null || true
   fi
 
-  if is_safe_dir "$DATA_DIR/cache"; then
+  if is_safe_dir "$DATA_DIR/cache" || { [ -d "$DATA_DIR/cache" ] && [ ! -L "$DATA_DIR/cache" ]; }; then
     find -P "$DATA_DIR/cache" -maxdepth 1 -type f \( \
       -name "*.png" \
       -o -name "*.cache" \
@@ -56,11 +64,16 @@ if is_safe_dir "$DATA_DIR"; then
     rmdir "$DATA_DIR/cache" 2>/dev/null || true
   fi
 
+  if [ -d "$DATA_DIR/samples" ] && [ ! -L "$DATA_DIR/samples" ]; then
+    find -P "$DATA_DIR/samples" -maxdepth 1 -type f -name "Readora-Welcome-Guide.pdf" -delete 2>/dev/null || true
+    rmdir "$DATA_DIR/samples" 2>/dev/null || true
+  fi
+
   rmdir "$DATA_DIR" 2>/dev/null || true
 fi
 
 if is_safe_dir "$CACHE_DIR"; then
-  if is_safe_dir "$CACHE_DIR/render-cache"; then
+  if [ -d "$CACHE_DIR/render-cache" ] && [ ! -L "$CACHE_DIR/render-cache" ]; then
     find -P "$CACHE_DIR/render-cache" -maxdepth 1 -type f \( \
       -name "*.png" \
       -o -name "*.cache" \

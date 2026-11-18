@@ -20,8 +20,39 @@ import {
   type PageTextSpan,
 } from "./textSearch";
 
+const MAX_OUTLINE_DEPTH = 16;
+const MAX_OUTLINE_NODES = 4096;
+const MAX_RENDER_CANVAS_DIM = 4096;
+
+function resolvePdfWorkerSrc(): string {
+  if (
+    typeof window === "undefined" ||
+    typeof Worker === "undefined" ||
+    typeof Blob === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function" ||
+    import.meta.env?.VITEST ||
+    import.meta.env?.MODE === "test" ||
+    pdfWorkerUrl.startsWith("blob:") ||
+    pdfWorkerUrl.startsWith("data:")
+  ) {
+    return pdfWorkerUrl;
+  }
+
+  try {
+    const absoluteWorkerUrl = new URL(pdfWorkerUrl, window.location.href).href;
+    const bootstrapSource = `import(${JSON.stringify(absoluteWorkerUrl)});`;
+    const blob = new Blob([bootstrapSource], {
+      type: "application/javascript",
+    });
+    return URL.createObjectURL(blob);
+  } catch {
+    return pdfWorkerUrl;
+  }
+}
+
 if (typeof window !== "undefined" && pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = resolvePdfWorkerSrc();
 }
 
 export interface ParsedPdfJsDocument {
@@ -141,54 +172,89 @@ function lerpChannel(a: number, b: number, t: number): number {
   return Math.min(255, Math.max(0, Math.round(a + (b - a) * clamped)));
 }
 
+const STD_R_LUT = new Uint8Array(256);
+const STD_G_LUT = new Uint8Array(256);
+const STD_B_LUT = new Uint8Array(256);
+const GRAY_R_LUT = new Uint8Array(256);
+const GRAY_G_LUT = new Uint8Array(256);
+const GRAY_B_LUT = new Uint8Array(256);
+const DARK_R_LUT = new Uint8Array(256);
+const DARK_G_LUT = new Uint8Array(256);
+const DARK_B_LUT = new Uint8Array(256);
+
+for (let i = 0; i < 256; i += 1) {
+  const luma = i / 255;
+  const tLight = Math.pow(luma, 1.12);
+  STD_R_LUT[i] = lerpChannel(INK_LIGHT_RGB[0], PAPER_LIGHT_RGB[0], tLight);
+  STD_G_LUT[i] = lerpChannel(INK_LIGHT_RGB[1], PAPER_LIGHT_RGB[1], tLight);
+  STD_B_LUT[i] = lerpChannel(INK_LIGHT_RGB[2], PAPER_LIGHT_RGB[2], tLight);
+
+  GRAY_R_LUT[i] = lerpChannel(INK_GRAY_RGB[0], PAPER_GRAY_RGB[0], tLight);
+  GRAY_G_LUT[i] = lerpChannel(INK_GRAY_RGB[1], PAPER_GRAY_RGB[1], tLight);
+  GRAY_B_LUT[i] = lerpChannel(INK_GRAY_RGB[2], PAPER_GRAY_RGB[2], tLight);
+
+  const invT = Math.pow(1 - luma, 0.92);
+  DARK_R_LUT[i] = lerpChannel(PAPER_DARK_RGB[0], INK_DARK_RGB[0], invT);
+  DARK_G_LUT[i] = lerpChannel(PAPER_DARK_RGB[1], INK_DARK_RGB[1], invT);
+  DARK_B_LUT[i] = lerpChannel(PAPER_DARK_RGB[2], INK_DARK_RGB[2], invT);
+}
+
 export function harmonizePixelBufferWithTheme(
   data: Uint8ClampedArray,
   renderMode: RenderMode,
 ): void {
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i] ?? 0;
-    const g = data[i + 1] ?? 0;
-    const b = data[i + 2] ?? 0;
-    const maxC = Math.max(r, g, b);
-    const minC = Math.min(r, g, b);
-    const chroma = maxC - minC;
-    const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-
-    if (renderMode === "standard") {
-      const t = Math.pow(Math.min(1, Math.max(0, luma)), 1.12);
-      const nr = INK_LIGHT_RGB[0] + (PAPER_LIGHT_RGB[0] - INK_LIGHT_RGB[0]) * t;
-      const ng = INK_LIGHT_RGB[1] + (PAPER_LIGHT_RGB[1] - INK_LIGHT_RGB[1]) * t;
-      const nb = INK_LIGHT_RGB[2] + (PAPER_LIGHT_RGB[2] - INK_LIGHT_RGB[2]) * t;
+  if (renderMode === "standard") {
+    const scaleR = PAPER_LIGHT_RGB[0] / 255;
+    const scaleG = PAPER_LIGHT_RGB[1] / 255;
+    const scaleB = PAPER_LIGHT_RGB[2] / 255;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      const maxC = r > g ? (r > b ? r : b) : g > b ? g : b;
+      const minC = r < g ? (r < b ? r : b) : g < b ? g : b;
+      const chroma = maxC - minC;
+      const lumaIdx = (77 * r + 150 * g + 29 * b + 128) >> 8;
+      const nr = STD_R_LUT[lumaIdx] ?? 0;
+      const ng = STD_G_LUT[lumaIdx] ?? 0;
+      const nb = STD_B_LUT[lumaIdx] ?? 0;
       if (chroma <= 12) {
-        data[i] = Math.round(nr);
-        data[i + 1] = Math.round(ng);
-        data[i + 2] = Math.round(nb);
+        data[i] = nr;
+        data[i + 1] = ng;
+        data[i + 2] = nb;
       } else {
-        const cr = r * (PAPER_LIGHT_RGB[0] / 255);
-        const cg = g * (PAPER_LIGHT_RGB[1] / 255);
-        const cb = b * (PAPER_LIGHT_RGB[2] / 255);
         const w = (chroma - 12) / 24;
-        data[i] = lerpChannel(nr, cr, w);
-        data[i + 1] = lerpChannel(ng, cg, w);
-        data[i + 2] = lerpChannel(nb, cb, w);
+        data[i] = lerpChannel(nr, r * scaleR, w);
+        data[i + 1] = lerpChannel(ng, g * scaleG, w);
+        data[i + 2] = lerpChannel(nb, b * scaleB, w);
       }
-    } else if (renderMode === "grayscale") {
-      const t = Math.pow(Math.min(1, Math.max(0, luma)), 1.12);
-      data[i] = lerpChannel(INK_GRAY_RGB[0], PAPER_GRAY_RGB[0], t);
-      data[i + 1] = lerpChannel(INK_GRAY_RGB[1], PAPER_GRAY_RGB[1], t);
-      data[i + 2] = lerpChannel(INK_GRAY_RGB[2], PAPER_GRAY_RGB[2], t);
-    } else if (renderMode === "dark_inversion") {
-      const invT = Math.pow(1 - Math.min(1, Math.max(0, luma)), 0.92);
-      const nr =
-        PAPER_DARK_RGB[0] + (INK_DARK_RGB[0] - PAPER_DARK_RGB[0]) * invT;
-      const ng =
-        PAPER_DARK_RGB[1] + (INK_DARK_RGB[1] - PAPER_DARK_RGB[1]) * invT;
-      const nb =
-        PAPER_DARK_RGB[2] + (INK_DARK_RGB[2] - PAPER_DARK_RGB[2]) * invT;
+    }
+  } else if (renderMode === "grayscale") {
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      const lumaIdx = (77 * r + 150 * g + 29 * b + 128) >> 8;
+      data[i] = GRAY_R_LUT[lumaIdx] ?? 0;
+      data[i + 1] = GRAY_G_LUT[lumaIdx] ?? 0;
+      data[i + 2] = GRAY_B_LUT[lumaIdx] ?? 0;
+    }
+  } else if (renderMode === "dark_inversion") {
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      const maxC = r > g ? (r > b ? r : b) : g > b ? g : b;
+      const minC = r < g ? (r < b ? r : b) : g < b ? g : b;
+      const chroma = maxC - minC;
+      const lumaIdx = (77 * r + 150 * g + 29 * b + 128) >> 8;
+      const nr = DARK_R_LUT[lumaIdx] ?? 0;
+      const ng = DARK_G_LUT[lumaIdx] ?? 0;
+      const nb = DARK_B_LUT[lumaIdx] ?? 0;
       if (chroma <= 12) {
-        data[i] = Math.round(nr);
-        data[i + 1] = Math.round(ng);
-        data[i + 2] = Math.round(nb);
+        data[i] = nr;
+        data[i + 1] = ng;
+        data[i + 2] = nb;
       } else {
         const srcLuma = Math.max(1, 0.299 * r + 0.587 * g + 0.114 * b);
         const targetLuma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
@@ -228,9 +294,18 @@ function applyRenderModeToCanvas(
 async function resolveOutlineNodes(
   pdfDoc: pdfjsLib.PDFDocumentProxy,
   items: Awaited<ReturnType<pdfjsLib.PDFDocumentProxy["getOutline"]>>,
+  depth = 0,
+  counter = { count: 0 },
 ): Promise<OutlineNodeDto[]> {
+  if (!items || depth >= MAX_OUTLINE_DEPTH || counter.count >= MAX_OUTLINE_NODES) {
+    return [];
+  }
   const result: OutlineNodeDto[] = [];
   for (const item of items) {
+    if (counter.count >= MAX_OUTLINE_NODES) {
+      break;
+    }
+    counter.count += 1;
     let pageIndex: number | null = null;
     try {
       let dest = item.dest;
@@ -244,8 +319,11 @@ async function resolveOutlineNodes(
       pageIndex = 0;
     }
     const children =
-      Array.isArray(item.items) && item.items.length > 0
-        ? await resolveOutlineNodes(pdfDoc, item.items)
+      Array.isArray(item.items) &&
+      item.items.length > 0 &&
+      depth + 1 < MAX_OUTLINE_DEPTH &&
+      counter.count < MAX_OUTLINE_NODES
+        ? await resolveOutlineNodes(pdfDoc, item.items, depth + 1, counter)
         : [];
     result.push({
       title: item.title || "Untitled Section",
@@ -542,11 +620,39 @@ export async function extractPdfJsPageLayout(
   }
 }
 
+function evictRenderCache(
+  renderCache: Map<string, string>,
+  incomingBytes: number,
+  maxCacheBytes: number,
+): void {
+  let currentBytes = 0;
+  for (const existing of renderCache.values()) {
+    currentBytes += existing.length * 2;
+  }
+  while (
+    renderCache.size >= 48 ||
+    (maxCacheBytes > 0 &&
+      renderCache.size > 0 &&
+      currentBytes + incomingBytes > maxCacheBytes)
+  ) {
+    const oldestKey = renderCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    const oldestVal = renderCache.get(oldestKey);
+    renderCache.delete(oldestKey);
+    if (oldestVal) {
+      currentBytes = Math.max(0, currentBytes - oldestVal.length * 2);
+    }
+  }
+}
+
 export async function renderPdfJsPageToDataUrl(
   parsed: ParsedPdfJsDocument,
   command: RenderPageCommandDto,
   renderCache: Map<string, string>,
   fallbackGeneration: number,
+  maxCacheBytes = 64 * 1024 * 1024,
 ): Promise<RenderedPageResultDto | null> {
   if (!hasUsableCanvas2D()) {
     return null;
@@ -569,6 +675,8 @@ export async function renderPdfJsPageToDataUrl(
   const heightPx = Math.max(120, Math.round(widthPx * aspect));
 
   if (cachedUrl) {
+    renderCache.delete(cacheKey);
+    renderCache.set(cacheKey, cachedUrl);
     return {
       document_id: command.document_id,
       page_index: command.page_index,
@@ -586,35 +694,53 @@ export async function renderPdfJsPageToDataUrl(
       : 1.5;
   const effectivePdfScale =
     (widthPx * dpr) / Math.max(1, unscaledViewport.width);
-  const renderViewport = page.getViewport({
+  let renderViewport = page.getViewport({
     scale: effectivePdfScale,
     rotation: totalRotation,
   });
 
+  let canvasWidth = Math.max(1, Math.round(renderViewport.width));
+  let canvasHeight = Math.max(1, Math.round(renderViewport.height));
+  const maxCanvasDim = Math.max(canvasWidth, canvasHeight);
+  if (maxCanvasDim > MAX_RENDER_CANVAS_DIM) {
+    const downscale = MAX_RENDER_CANVAS_DIM / maxCanvasDim;
+    renderViewport = page.getViewport({
+      scale: effectivePdfScale * downscale,
+      rotation: totalRotation,
+    });
+    canvasWidth = Math.max(1, Math.round(renderViewport.width));
+    canvasHeight = Math.max(1, Math.round(renderViewport.height));
+  }
+
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(renderViewport.width));
-  canvas.height = Math.max(1, Math.round(renderViewport.height));
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
+    canvas.width = 0;
+    canvas.height = 0;
     return null;
   }
 
-  await page.render({
-    canvasContext: ctx,
-    viewport: renderViewport,
-    canvas,
-  }).promise;
-  applyRenderModeToCanvas(
-    ctx,
-    canvas.width,
-    canvas.height,
-    command.render_mode,
-  );
-  const dataUrl = canvas.toDataURL("image/png");
-  if (renderCache.size >= 48) {
-    const oldestKey = renderCache.keys().next().value;
-    if (oldestKey) renderCache.delete(oldestKey);
+  let dataUrl: string;
+  try {
+    await page.render({
+      canvasContext: ctx,
+      viewport: renderViewport,
+      canvas,
+    }).promise;
+    applyRenderModeToCanvas(
+      ctx,
+      canvas.width,
+      canvas.height,
+      command.render_mode,
+    );
+    dataUrl = canvas.toDataURL("image/png");
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
   }
+  evictRenderCache(renderCache, dataUrl.length * 2, maxCacheBytes);
   renderCache.set(cacheKey, dataUrl);
 
   return {

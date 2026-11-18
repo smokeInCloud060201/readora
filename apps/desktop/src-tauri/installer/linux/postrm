@@ -149,18 +149,6 @@ case "${1:-}" in
         continue
       fi
 
-      if [ -x /usr/bin/readora-desktop ] && [ ! -L /usr/bin/readora-desktop ]; then
-        if [ "$(id -u)" -eq 0 ]; then
-          if [ -n "$RUNUSER_BIN" ]; then
-            "$RUNUSER_BIN" -u "$user" -- env HOME="$home" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
-          elif [ -n "$SU_BIN" ]; then
-            "$SU_BIN" -s /bin/sh "$user" -c 'HOME="$1" exec /usr/bin/readora-desktop --uninstall-cleanup' -- "$home" >/dev/null 2>&1 || true
-          fi
-        else
-          HOME="$home" /usr/bin/readora-desktop --uninstall-cleanup >/dev/null 2>&1 || true
-        fi
-      fi
-
       if [ "$(id -u)" -eq 0 ]; then
         if [ -n "$RUNUSER_BIN" ]; then
           "$RUNUSER_BIN" -u "$user" -- /bin/sh -c "$CLEANUP_SCRIPT" -- "$home" || true

@@ -66,13 +66,16 @@ interface PreparedPrintPage {
 }
 
 const SCROLL_NAV_DEBOUNCE_MS = 100;
+const MAX_PRINT_CACHE_ENTRIES = 64;
 
 function isCommandError(err: unknown): err is CommandErrorDto {
+  if (typeof err !== "object" || err === null) {
+    return false;
+  }
+  const candidate = err as Record<string, unknown>;
   return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    "message" in err
+    typeof candidate.code === "string" &&
+    typeof candidate.message === "string"
   );
 }
 
@@ -178,6 +181,7 @@ export const App: React.FC = () => {
   const [searchHits, setSearchHits] = useState<SearchHitDto[]>([]);
   const [activeSearchHitIndex, setActiveSearchHitIndex] = useState<number>(0);
   const searchRequestGenRef = useRef<number>(0);
+  const openRequestSeqRef = useRef<number>(0);
   const renderSeqRef = useRef<number>(0);
   const scrollNavTimerRef = useRef<number | null>(null);
   const scrollNavSeqRef = useRef<number>(0);
@@ -188,6 +192,9 @@ export const App: React.FC = () => {
   const isMountedRef = useRef<boolean>(true);
   const printRootRef = useRef<HTMLDivElement | null>(null);
   const printCacheRef = useRef<Map<string, string>>(new Map());
+  const printJobSeqRef = useRef<number>(0);
+  const printCleanupTimerRef = useRef<number | null>(null);
+  const printAfterHandlerRef = useRef<(() => void) | null>(null);
 
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -268,16 +275,31 @@ export const App: React.FC = () => {
     setShowShareDialog(true);
   }, [closeAllModals]);
 
+  const clearPendingPrintCleanup = useCallback(() => {
+    if (printCleanupTimerRef.current !== null) {
+      window.clearTimeout(printCleanupTimerRef.current);
+      printCleanupTimerRef.current = null;
+    }
+    if (
+      typeof window !== "undefined" &&
+      printAfterHandlerRef.current !== null
+    ) {
+      window.removeEventListener("afterprint", printAfterHandlerRef.current);
+      printAfterHandlerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      clearPendingPrintCleanup();
       if (scrollNavTimerRef.current !== null) {
         window.clearTimeout(scrollNavTimerRef.current);
         scrollNavTimerRef.current = null;
       }
     };
-  }, []);
+  }, [clearPendingPrintCleanup]);
 
   useEffect(() => {
     if (
@@ -320,6 +342,7 @@ export const App: React.FC = () => {
       }
       try {
         const rotationDegrees = rotationToDegrees(viewState.rotation);
+        const renderGeneration = viewState.generation ?? null;
         const [renderResult, extractedText] = await Promise.all([
           readoraApi.renderPage({
             document_id: docId,
@@ -327,11 +350,15 @@ export const App: React.FC = () => {
             scale: renderScale,
             rotation_degrees: rotationDegrees,
             render_mode: effectiveMode,
-            generation: null,
+            generation: renderGeneration,
           }),
           readoraApi.extractPageText(docId, viewState.current_page),
         ]);
-        if (seq !== renderSeqRef.current || !isMountedRef.current) {
+        if (
+          seq !== renderSeqRef.current ||
+          !isMountedRef.current ||
+          sessionRef.current?.descriptor.id !== docId
+        ) {
           return;
         }
         setRenderedState({
@@ -355,7 +382,7 @@ export const App: React.FC = () => {
                   scale: renderScale,
                   rotation_degrees: rotationDegrees,
                   render_mode: effectiveMode,
-                  generation: null,
+                  generation: renderGeneration,
                 })
                 .catch(() => {});
             }
@@ -368,7 +395,7 @@ export const App: React.FC = () => {
                   scale: renderScale,
                   rotation_degrees: rotationDegrees,
                   render_mode: effectiveMode,
-                  generation: null,
+                  generation: renderGeneration,
                 })
                 .catch(() => {});
             }
@@ -403,15 +430,28 @@ export const App: React.FC = () => {
       silentStartup = false,
     ) => {
       cancelPendingScrollNav();
+      const openSeq = ++openRequestSeqRef.current;
+      searchRequestGenRef.current += 1;
+      printJobSeqRef.current += 1;
+      clearPendingPrintCleanup();
       if (!silentStartup) {
         setErrorBanner(null);
       }
       try {
         const opened = await readoraApi.openDocument({ path, password });
-        if (!isMountedRef.current) return;
-        if (silentStartup && sessionRef.current !== null) {
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          void readoraApi.closeDocument(opened.descriptor.id).catch(() => {});
           return;
         }
+        if (silentStartup && sessionRef.current !== null) {
+          void readoraApi.closeDocument(opened.descriptor.id).catch(() => {});
+          return;
+        }
+        const prevDocId = sessionRef.current?.descriptor.id;
+        if (prevDocId && prevDocId !== opened.descriptor.id) {
+          void readoraApi.closeDocument(prevDocId).catch(() => {});
+        }
+        sessionRef.current = opened;
         effectiveZoomRef.current = opened.view_state.zoom;
         setEffectiveZoom(opened.view_state.zoom);
         setSession(opened);
@@ -422,6 +462,7 @@ export const App: React.FC = () => {
         setIsSearchOpen(false);
         setSearchHits([]);
         setActiveSearchHitIndex(0);
+        setPrintPages(null);
         printCacheRef.current.clear();
         await loadVisiblePageAndPrefetch(
           opened.descriptor.id,
@@ -433,7 +474,9 @@ export const App: React.FC = () => {
           readoraApi.listRecentDocuments(20),
           readoraApi.listAnnotations(opened.descriptor.id),
         ]);
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          return;
+        }
         setRecentDocs(recents);
         setAnnotations(loadedAnnotations);
       } catch (err) {
@@ -470,7 +513,12 @@ export const App: React.FC = () => {
         }
       }
     },
-    [cancelPendingScrollNav, closeAllModals, loadVisiblePageAndPrefetch],
+    [
+      cancelPendingScrollNav,
+      clearPendingPrintCleanup,
+      closeAllModals,
+      loadVisiblePageAndPrefetch,
+    ],
   );
 
   useEffect(() => {
@@ -518,10 +566,22 @@ export const App: React.FC = () => {
   const handleOpenFile = useCallback(
     async (file: File, password: string | null = null) => {
       cancelPendingScrollNav();
+      const openSeq = ++openRequestSeqRef.current;
+      searchRequestGenRef.current += 1;
+      printJobSeqRef.current += 1;
+      clearPendingPrintCleanup();
       setErrorBanner(null);
       try {
         const opened = await readoraApi.openDocumentFile(file, password);
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          void readoraApi.closeDocument(opened.descriptor.id).catch(() => {});
+          return;
+        }
+        const prevDocId = sessionRef.current?.descriptor.id;
+        if (prevDocId && prevDocId !== opened.descriptor.id) {
+          void readoraApi.closeDocument(prevDocId).catch(() => {});
+        }
+        sessionRef.current = opened;
         effectiveZoomRef.current = opened.view_state.zoom;
         setEffectiveZoom(opened.view_state.zoom);
         setSession(opened);
@@ -532,6 +592,7 @@ export const App: React.FC = () => {
         setIsSearchOpen(false);
         setSearchHits([]);
         setActiveSearchHitIndex(0);
+        setPrintPages(null);
         printCacheRef.current.clear();
         await loadVisiblePageAndPrefetch(
           opened.descriptor.id,
@@ -543,7 +604,9 @@ export const App: React.FC = () => {
           readoraApi.listRecentDocuments(20),
           readoraApi.listAnnotations(opened.descriptor.id),
         ]);
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          return;
+        }
         setRecentDocs(recents);
         setAnnotations(loadedAnnotations);
       } catch (err) {
@@ -570,15 +633,26 @@ export const App: React.FC = () => {
         }
       }
     },
-    [cancelPendingScrollNav, closeAllModals, loadVisiblePageAndPrefetch],
+    [
+      cancelPendingScrollNav,
+      clearPendingPrintCleanup,
+      closeAllModals,
+      loadVisiblePageAndPrefetch,
+    ],
   );
 
   const handleCloseDocument = useCallback(async () => {
     if (!session) return;
     cancelPendingScrollNav();
+    openRequestSeqRef.current += 1;
+    searchRequestGenRef.current += 1;
+    printJobSeqRef.current += 1;
+    clearPendingPrintCleanup();
     renderSeqRef.current += 1;
     setIsRendering(false);
     await readoraApi.closeDocument(session.descriptor.id);
+    if (!isMountedRef.current) return;
+    sessionRef.current = null;
     setSession(null);
     effectiveZoomRef.current = 1.0;
     setEffectiveZoom(1.0);
@@ -592,8 +666,10 @@ export const App: React.FC = () => {
     setPrintPages(null);
     printCacheRef.current.clear();
     const recents = await readoraApi.listRecentDocuments(20);
-    setRecentDocs(recents);
-  }, [cancelPendingScrollNav, session]);
+    if (isMountedRef.current) {
+      setRecentDocs(recents);
+    }
+  }, [cancelPendingScrollNav, clearPendingPrintCleanup, session]);
 
   const handleShowLibrary = useCallback(() => {
     setLibraryCollection("all");
@@ -626,6 +702,17 @@ export const App: React.FC = () => {
     async (action: NavigationActionDto) => {
       if (!session) return;
       cancelPendingScrollNav();
+      if (
+        action.kind === "set_zoom" ||
+        action.kind === "step_zoom_in" ||
+        action.kind === "step_zoom_out" ||
+        action.kind === "set_fit_mode" ||
+        action.kind === "rotate_clockwise" ||
+        action.kind === "rotate_counter_clockwise" ||
+        action.kind === "set_render_mode"
+      ) {
+        void readoraApi.cancelRenders(session.descriptor.id);
+      }
       try {
         const updatedView = await readoraApi.navigate(
           session.descriptor.id,
@@ -835,14 +922,16 @@ export const App: React.FC = () => {
 
   const handleAddBookmark = async (label: string) => {
     if (!session) return;
+    const targetDocId = session.descriptor.id;
     try {
       const created = await readoraApi.upsertBookmark({
-        document_id: session.descriptor.id,
+        document_id: targetDocId,
         page_index: session.view_state.current_page,
         label,
       });
+      if (!isMountedRef.current) return;
       setSession((prev) => {
-        if (!prev) return null;
+        if (!prev || prev.descriptor.id !== targetDocId) return prev;
         const filtered = prev.bookmarks.filter(
           (b) => b.page_index !== created.page_index,
         );
@@ -851,7 +940,9 @@ export const App: React.FC = () => {
         );
         return { ...prev, bookmarks: nextBookmarks };
       });
-      setStatusMessage(`Saved bookmark "${created.label}"`);
+      if (sessionRef.current?.descriptor.id === targetDocId) {
+        setStatusMessage(`Saved bookmark "${created.label}"`);
+      }
     } catch (err) {
       setErrorBanner(
         isCommandError(err) ? err.message : "Failed to save bookmark",
@@ -861,15 +952,23 @@ export const App: React.FC = () => {
 
   const handleDeleteBookmark = async (bookmarkId: string) => {
     if (!session) return;
-    await readoraApi.deleteBookmark(bookmarkId);
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            bookmarks: prev.bookmarks.filter((b) => b.id !== bookmarkId),
-          }
-        : null,
-    );
+    const targetDocId = session.descriptor.id;
+    try {
+      await readoraApi.deleteBookmark(bookmarkId);
+      if (!isMountedRef.current) return;
+      setSession((prev) =>
+        prev && prev.descriptor.id === targetDocId
+          ? {
+              ...prev,
+              bookmarks: prev.bookmarks.filter((b) => b.id !== bookmarkId),
+            }
+          : prev,
+      );
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to delete bookmark",
+      );
+    }
   };
 
   const handleCreateAnnotation = async (
@@ -877,8 +976,9 @@ export const App: React.FC = () => {
     colorHex: string,
     quoteText: string,
     noteText: string,
-  ) => {
-    if (!session) return;
+  ): Promise<boolean> => {
+    if (!session) return false;
+    const targetDocId = session.descriptor.id;
     try {
       const safeQuote = sliceByUnicodeCodePoints(
         quoteText.trim(),
@@ -889,43 +989,62 @@ export const App: React.FC = () => {
         MAX_ANNOTATION_NOTE_LEN,
       );
       const created = await readoraApi.upsertAnnotation({
-        document_id: session.descriptor.id,
+        document_id: targetDocId,
         page_index: session.view_state.current_page,
         kind,
         color_hex: colorHex,
         quote_text: safeQuote,
         note_text: safeNote,
       });
+      if (!isMountedRef.current || sessionRef.current?.descriptor.id !== targetDocId) {
+        return false;
+      }
       setAnnotations((prev) =>
         [...prev, created].sort((a, b) => a.page_index - b.page_index),
       );
       setStatusMessage(
         kind === "comment" ? "Saved comment" : "Saved page highlight",
       );
+      return true;
     } catch (err) {
       setErrorBanner(
         isCommandError(err) ? err.message : "Failed to save annotation",
       );
+      return false;
     }
   };
 
-  const handleAddComment = (noteText: string) => {
-    if (!session) return;
+  const handleAddComment = (noteText: string): Promise<boolean> => {
+    if (!session) return Promise.resolve(false);
     const excerpt = buildSafeQuoteExcerpt(
       pageText,
       session.view_state.current_page,
     );
-    void handleCreateAnnotation("comment", "#9bc8e0", excerpt, noteText);
+    return handleCreateAnnotation("comment", "#9bc8e0", excerpt, noteText);
   };
 
   const handleDeleteAnnotation = async (annotationId: string) => {
     if (!session) return;
-    await readoraApi.deleteAnnotation(annotationId);
-    setAnnotations((prev) => prev.filter((a) => a.id !== annotationId));
+    const targetDocId = session.descriptor.id;
+    try {
+      await readoraApi.deleteAnnotation(annotationId);
+      if (
+        !isMountedRef.current ||
+        sessionRef.current?.descriptor.id !== targetDocId
+      ) {
+        return;
+      }
+      setAnnotations((prev) => prev.filter((a) => a.id !== annotationId));
+    } catch (err) {
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to delete annotation",
+      );
+    }
   };
 
   const handleSearch = async (query: string, caseSensitive: boolean) => {
     if (!session) return;
+    const targetDocId = session.descriptor.id;
     const requestGen = ++searchRequestGenRef.current;
     const trimmed = query.trim();
     if (!trimmed) {
@@ -934,12 +1053,16 @@ export const App: React.FC = () => {
       return;
     }
     const hits = await readoraApi.searchDocument({
-      document_id: session.descriptor.id,
+      document_id: targetDocId,
       query,
       case_sensitive: caseSensitive,
       max_hits: 100,
     });
-    if (requestGen !== searchRequestGenRef.current) {
+    if (
+      !isMountedRef.current ||
+      requestGen !== searchRequestGenRef.current ||
+      sessionRef.current?.descriptor.id !== targetDocId
+    ) {
       return;
     }
     setSearchHits(hits);
@@ -1010,6 +1133,10 @@ export const App: React.FC = () => {
 
   const handleCleanupAppData = async () => {
     cancelPendingScrollNav();
+    openRequestSeqRef.current += 1;
+    searchRequestGenRef.current += 1;
+    printJobSeqRef.current += 1;
+    clearPendingPrintCleanup();
     renderSeqRef.current += 1;
     setIsRendering(false);
     const report = await readoraApi.cleanupApplicationData();
@@ -1018,6 +1145,8 @@ export const App: React.FC = () => {
       freshSettings.auto_check_updates !== false
         ? await readoraApi.checkForUpdates(false)
         : null;
+    if (!isMountedRef.current) return;
+    sessionRef.current = null;
     setSession(null);
     effectiveZoomRef.current = 1.0;
     setEffectiveZoom(1.0);
@@ -1048,14 +1177,26 @@ export const App: React.FC = () => {
       if (!session) return;
       const docId = session.descriptor.id;
       const rotationDegrees = rotationToDegrees(session.view_state.rotation);
+      const printGen = session.view_state.generation ?? null;
+      const jobSeq = ++printJobSeqRef.current;
+      clearPendingPrintCleanup();
       setErrorBanner(null);
 
       try {
         const prepared: PreparedPrintPage[] = [];
         for (const pageIndex of pageIndices) {
+          if (
+            !isMountedRef.current ||
+            jobSeq !== printJobSeqRef.current ||
+            sessionRef.current?.descriptor.id !== docId
+          ) {
+            return;
+          }
           const cacheKey = `${docId}:${pageIndex}:${rotationDegrees}:1.50:standard`;
           const cachedUrl = printCacheRef.current.get(cacheKey);
           if (cachedUrl) {
+            printCacheRef.current.delete(cacheKey);
+            printCacheRef.current.set(cacheKey, cachedUrl);
             prepared.push({ pageIndex, dataUrl: cachedUrl });
             continue;
           }
@@ -1065,13 +1206,32 @@ export const App: React.FC = () => {
             scale: 1.5,
             rotation_degrees: rotationDegrees,
             render_mode: "standard",
-            generation: null,
+            generation: printGen,
           });
+          if (
+            !isMountedRef.current ||
+            jobSeq !== printJobSeqRef.current ||
+            sessionRef.current?.descriptor.id !== docId
+          ) {
+            return;
+          }
+          if (printCacheRef.current.size >= MAX_PRINT_CACHE_ENTRIES) {
+            const oldestKey = printCacheRef.current.keys().next().value;
+            if (oldestKey) {
+              printCacheRef.current.delete(oldestKey);
+            }
+          }
           printCacheRef.current.set(cacheKey, rendered.data_url);
           prepared.push({ pageIndex, dataUrl: rendered.data_url });
         }
 
-        if (!isMountedRef.current) return;
+        if (
+          !isMountedRef.current ||
+          jobSeq !== printJobSeqRef.current ||
+          sessionRef.current?.descriptor.id !== docId
+        ) {
+          return;
+        }
         setPrintIncludeAnnotations(includeAnn);
         setPrintPages(prepared);
 
@@ -1079,6 +1239,10 @@ export const App: React.FC = () => {
         await new Promise<void>((resolve) => {
           requestAnimationFrame(() => resolve());
         });
+
+        if (!isMountedRef.current || jobSeq !== printJobSeqRef.current) {
+          return;
+        }
 
         const rootEl = printRootRef.current;
         if (rootEl) {
@@ -1099,9 +1263,18 @@ export const App: React.FC = () => {
           requestAnimationFrame(() => resolve());
         });
 
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || jobSeq !== printJobSeqRef.current) {
+          return;
+        }
         setShowPrintDialog(false);
         setStatusMessage(summary);
+
+        const finishPrintCleanup = () => {
+          clearPendingPrintCleanup();
+          if (isMountedRef.current) {
+            setPrintPages(null);
+          }
+        };
 
         const isMockedPrint =
           typeof window !== "undefined" &&
@@ -1112,21 +1285,32 @@ export const App: React.FC = () => {
           typeof window.print === "function" &&
           (!isJsdomEnvironment() || isMockedPrint)
         ) {
+          const handleAfterPrint = () => {
+            finishPrintCleanup();
+          };
+          printAfterHandlerRef.current = handleAfterPrint;
+          window.addEventListener("afterprint", handleAfterPrint, {
+            once: true,
+          });
+          printCleanupTimerRef.current = window.setTimeout(
+            finishPrintCleanup,
+            isJsdomEnvironment() ? 120 : 2500,
+          );
           window.print();
+        } else {
+          finishPrintCleanup();
         }
       } catch (err) {
+        clearPendingPrintCleanup();
         if (isMountedRef.current) {
+          setPrintPages(null);
           setErrorBanner(
             isCommandError(err) ? err.message : "Failed to prepare pages for printing",
           );
         }
-      } finally {
-        if (isMountedRef.current) {
-          setPrintPages(null);
-        }
       }
     },
-    [session],
+    [clearPendingPrintCleanup, session],
   );
 
   const prevThemeForRenderRef = useRef<"light" | "dark">(resolvedTheme);
@@ -1187,8 +1371,14 @@ export const App: React.FC = () => {
     await readoraApi.setDocumentArchived(documentId, isArchived);
     if (isArchived && session?.descriptor.id === documentId) {
       cancelPendingScrollNav();
+      openRequestSeqRef.current += 1;
+      searchRequestGenRef.current += 1;
+      printJobSeqRef.current += 1;
+      clearPendingPrintCleanup();
       renderSeqRef.current += 1;
       await readoraApi.closeDocument(documentId);
+      if (!isMountedRef.current) return;
+      sessionRef.current = null;
       setSession(null);
       effectiveZoomRef.current = 1.0;
       setEffectiveZoom(1.0);
@@ -1439,6 +1629,7 @@ export const App: React.FC = () => {
                   }
                   pageCount={session.descriptor.page_count}
                   currentPage={session.view_state.current_page}
+                  rotation={session.view_state.rotation}
                   renderMode={effectiveRenderMode}
                   onSelectPage={(p) =>
                     void dispatchNavigation({ kind: "go_to_page", value: p })
@@ -1562,6 +1753,11 @@ export const App: React.FC = () => {
             descriptor={session.descriptor}
             viewState={session.view_state}
             renderedPage={activeRenderedPage}
+            onCancelPrepare={() => {
+              printJobSeqRef.current += 1;
+              clearPendingPrintCleanup();
+              setPrintPages(null);
+            }}
             onClose={() => setShowPrintDialog(false)}
             onExecutePrint={handleExecutePrint}
           />

@@ -8,7 +8,7 @@ use crate::value_objects::document_id::DocumentId;
 use crate::value_objects::page_index::PageIndex;
 
 /// Maximum length in characters for annotation quote or comment text.
-pub const MAX_ANNOTATION_TEXT_LEN: usize = 2000;
+pub const MAX_ANNOTATION_TEXT_LEN: usize = 4000;
 
 /// Unique identifier for a user-created annotation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,12 +75,14 @@ impl AnnotationKind {
     }
 
     /// Parses an annotation kind from its storage string.
-    #[must_use]
-    pub fn from_storage(s: &str) -> Self {
+    pub fn from_storage(s: &str) -> Result<Self, DomainError> {
         match s {
-            "underline" => Self::Underline,
-            "comment" => Self::Comment,
-            _ => Self::Highlight,
+            "highlight" => Ok(Self::Highlight),
+            "underline" => Ok(Self::Underline),
+            "comment" => Ok(Self::Comment),
+            other => Err(DomainError::InvalidAnnotation {
+                reason: format!("unknown annotation kind '{other}' in storage"),
+            }),
         }
     }
 }

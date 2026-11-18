@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 
 use app_domain::{
@@ -46,7 +46,7 @@ struct OpenedNativeDocument {
     doc_id: u64,
     info: EngineDocumentInfo,
     outline: Vec<OutlineNode>,
-    page_dimensions: Vec<PageDimensions>,
+    page_dimensions: Vec<Option<PageDimensions>>,
 }
 
 struct RawRenderedBitmap {
@@ -55,11 +55,28 @@ struct RawRenderedBitmap {
     rgba: Vec<u8>,
 }
 
+type CancelPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
+
+struct ZeroizingPassword(Option<String>);
+
+impl Drop for ZeroizingPassword {
+    fn drop(&mut self) {
+        if let Some(ref mut pw) = self.0 {
+            pdf_engine::zeroize_string(pw);
+        }
+    }
+}
+
 enum WorkerCommand {
     Open {
         bytes: Vec<u8>,
-        password: Option<String>,
+        password: ZeroizingPassword,
         reply: SyncSender<Result<OpenedNativeDocument, PdfEngineError>>,
+    },
+    PageDimensions {
+        doc_id: u64,
+        page_index: PageIndex,
+        reply: SyncSender<Result<PageDimensions, PdfEngineError>>,
     },
     ExtractPageText {
         doc_id: u64,
@@ -71,11 +88,13 @@ enum WorkerCommand {
         query: String,
         case_sensitive: bool,
         max_hits: usize,
+        cancel_check: Option<CancelPredicate>,
         reply: SyncSender<Result<Vec<SearchHit>, PdfEngineError>>,
     },
     RenderPage {
         doc_id: u64,
         request: RenderPageRequest,
+        cancel_check: Option<CancelPredicate>,
         reply: SyncSender<Result<RawRenderedBitmap, PdfEngineError>>,
     },
     Close {
@@ -93,23 +112,39 @@ struct PdfiumWorkerHandle {
 static DEFAULT_PDFIUM_WORKER: OnceLock<Option<PdfiumWorkerHandle>> = OnceLock::new();
 static CUSTOM_PDFIUM_WORKERS: OnceLock<Mutex<HashMap<PathBuf, Option<PdfiumWorkerHandle>>>> =
     OnceLock::new();
+static PDFIUM_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
-/// Returns ordered bundle candidate paths relative to `exe_dir`, probing `../Frameworks`
-/// before `../Resources` on macOS so `Contents/Frameworks/libpdfium.dylib` works seamlessly
-/// alongside `Contents/Resources/libpdfium.dylib`.
+/// Returns ordered bundle candidate paths relative to `exe_dir`, scoped by bundle layout
+/// and target platform (`[HIGH-01]`). When running inside a macOS `.app/Contents/MacOS` bundle,
+/// probes `../Frameworks` before `../Resources`.
 #[must_use]
 pub(crate) fn candidate_bundle_library_dirs(exe_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        exe_dir.join("../Frameworks"),
-        exe_dir.join("../Frameworks/pdfium"),
-        exe_dir.join("../Resources"),
-        exe_dir.join("../Resources/pdfium"),
-        exe_dir.join("pdfium"),
-        exe_dir.to_path_buf(),
-        exe_dir.join("../share/readora/pdfium"),
-        exe_dir.join("../lib/readora"),
-        PathBuf::from("/usr/share/readora/pdfium"),
-    ]
+    let mut dirs = Vec::new();
+    if cfg!(target_os = "macos") || exe_dir.ends_with("Contents/MacOS") {
+        dirs.push(exe_dir.join("../Frameworks"));
+        dirs.push(exe_dir.join("../Frameworks/pdfium"));
+        dirs.push(exe_dir.join("../Resources"));
+        dirs.push(exe_dir.join("../Resources/pdfium"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        dirs.push(exe_dir.join("pdfium"));
+        dirs.push(exe_dir.to_path_buf());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs.push(exe_dir.join("../lib/readora"));
+        dirs.push(PathBuf::from("/usr/lib/readora"));
+        dirs.push(PathBuf::from("/usr/share/readora/pdfium"));
+        dirs.push(exe_dir.join("../share/readora/pdfium"));
+        dirs.push(exe_dir.join("pdfium"));
+    }
+    #[cfg(all(target_os = "macos", any(debug_assertions, test)))]
+    {
+        dirs.push(exe_dir.join("pdfium"));
+        dirs.push(exe_dir.to_path_buf());
+    }
+    dirs
 }
 
 fn try_bind_in_dir(dir: &Path) -> Option<(PathBuf, Box<dyn PdfiumLibraryBindings>)> {
@@ -129,6 +164,7 @@ fn try_bind_in_dir(dir: &Path) -> Option<(PathBuf, Box<dyn PdfiumLibraryBindings
 fn bind_pdfium_once(
     custom_dir: Option<&Path>,
 ) -> Option<(ResolvedPdfiumSource, Box<dyn PdfiumLibraryBindings>)> {
+    #[cfg(any(debug_assertions, test))]
     if let Ok(env_dir) = std::env::var("READORA_PDFIUM_PATH") {
         let trimmed = env_dir.trim();
         if !trimmed.is_empty()
@@ -153,22 +189,22 @@ fn bind_pdfium_once(
         }
     }
 
-    // Never dlopen relative to CWD in release builds (`HIGH-01`).
-    #[cfg(debug_assertions)]
+    // Never dlopen relative to CWD or ambient system search paths in release builds (`HIGH-01`).
+    #[cfg(any(debug_assertions, test))]
     {
         if let Some((lib_path, bindings)) = try_bind_in_dir(Path::new("assets/pdfium")) {
             return Some((ResolvedPdfiumSource::LibraryFile(lib_path), bindings));
         }
-    }
-
-    if let Ok(bindings) = Pdfium::bind_to_system_library() {
-        return Some((ResolvedPdfiumSource::SystemLibrary, bindings));
+        if let Ok(bindings) = Pdfium::bind_to_system_library() {
+            return Some((ResolvedPdfiumSource::SystemLibrary, bindings));
+        }
     }
 
     None
 }
 
 fn spawn_pdfium_worker(custom_dir: Option<PathBuf>) -> Option<PdfiumWorkerHandle> {
+    let _spawn_guard = PDFIUM_SPAWN_LOCK.lock().ok()?;
     let (init_tx, init_rx) = sync_channel::<Option<ResolvedPdfiumSource>>(1);
     let (cmd_tx, cmd_rx) = sync_channel::<WorkerCommand>(WORKER_CHANNEL_CAPACITY);
     let pending_closes = Arc::new(Mutex::new(Vec::<u64>::new()));
@@ -183,13 +219,14 @@ fn spawn_pdfium_worker(custom_dir: Option<PathBuf>) -> Option<PdfiumWorkerHandle
                 return;
             };
 
-            if init_tx.send(Some(resolved_source)).is_err() {
-                return;
-            }
-
+            // Construct Pdfium bindings before reporting readiness so `Pdfium::new` completes
+            // deterministically under `PDFIUM_SPAWN_LOCK` (`[MED-01]`).
             // Intentional process-lifetime leak inside the dedicated singleton PDFium worker thread
             // so `PdfDocument<'static>` handles live safely inside `documents` with zero `unsafe`.
             let pdfium: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
+            if init_tx.send(Some(resolved_source)).is_err() {
+                return;
+            }
             let mut documents: HashMap<u64, PdfiumNativeDocument<'static>> = HashMap::new();
             let mut next_doc_id: u64 = 1;
 
@@ -203,17 +240,26 @@ fn spawn_pdfium_worker(custom_dir: Option<PathBuf>) -> Option<PdfiumWorkerHandle
                 match cmd {
                     WorkerCommand::Open {
                         bytes,
-                        password,
+                        mut password,
                         reply,
                     } => {
+                        let pw_taken = password.0.take();
                         let outcome = worker_open_document(
                             pdfium,
                             bytes,
-                            password,
+                            pw_taken,
                             &mut documents,
                             &mut next_doc_id,
                         );
                         // Caller may have dropped its one-shot receiver if cancelled; safe to ignore.
+                        let _ = reply.send(outcome);
+                    }
+                    WorkerCommand::PageDimensions {
+                        doc_id,
+                        page_index,
+                        reply,
+                    } => {
+                        let outcome = worker_page_dimensions(&documents, doc_id, page_index);
                         let _ = reply.send(outcome);
                     }
                     WorkerCommand::ExtractPageText {
@@ -229,6 +275,7 @@ fn spawn_pdfium_worker(custom_dir: Option<PathBuf>) -> Option<PdfiumWorkerHandle
                         query,
                         case_sensitive,
                         max_hits,
+                        cancel_check,
                         reply,
                     } => {
                         let outcome = worker_search_text(
@@ -237,15 +284,22 @@ fn spawn_pdfium_worker(custom_dir: Option<PathBuf>) -> Option<PdfiumWorkerHandle
                             &query,
                             case_sensitive,
                             max_hits,
+                            cancel_check.as_deref(),
                         );
                         let _ = reply.send(outcome);
                     }
                     WorkerCommand::RenderPage {
                         doc_id,
                         request,
+                        cancel_check,
                         reply,
                     } => {
-                        let outcome = worker_render_page(&documents, doc_id, &request);
+                        let outcome = worker_render_page(
+                            &documents,
+                            doc_id,
+                            &request,
+                            cancel_check.as_deref(),
+                        );
                         let _ = reply.send(outcome);
                     }
                     WorkerCommand::Close { doc_id } => {
@@ -301,21 +355,26 @@ pub fn resolve_pdfium_library_path(custom_dir: Option<&Path>) -> Option<PathBuf>
     }
 }
 
-fn zeroize_optional_password(password: Option<String>) {
-    if let Some(pw) = password {
-        let mut raw = pw.into_bytes();
-        raw.fill(0);
-        std::hint::black_box(&mut raw);
+fn zeroize_optional_password(mut password: Option<String>) {
+    if let Some(ref mut pw) = password {
+        pdf_engine::zeroize_string(pw);
     }
 }
 
 fn worker_open_document(
     pdfium: &'static Pdfium,
     bytes: Vec<u8>,
-    password: Option<String>,
+    mut password: Option<String>,
     documents: &mut HashMap<u64, PdfiumNativeDocument<'static>>,
     next_doc_id: &mut u64,
 ) -> Result<OpenedNativeDocument, PdfEngineError> {
+    if password
+        .as_deref()
+        .is_some_and(|pw| pw.as_bytes().contains(&0))
+    {
+        zeroize_optional_password(password.take());
+        return Err(PdfEngineError::IncorrectPassword);
+    }
     let effective_pw = password.as_deref().filter(|pw| !pw.is_empty());
     let had_pw = effective_pw.is_some();
 
@@ -326,7 +385,7 @@ fn worker_open_document(
     let encrypted_in_bytes = has_encrypt_dict_bytes(&bytes);
 
     let load_res = pdfium.load_pdf_from_byte_vec(bytes, effective_pw);
-    zeroize_optional_password(password);
+    zeroize_optional_password(password.take());
 
     let doc = load_res.map_err(|err| map_pdfium_error(err, had_pw))?;
     let page_count = u32::from(doc.pages().len());
@@ -336,8 +395,9 @@ fn worker_open_document(
         ));
     }
 
-    let mut page_dimensions = Vec::with_capacity(page_count as usize);
-    for idx in 0..page_count {
+    // Read only initial page dimensions eagerly; remaining pages load lazily on demand (`[MED-08]`).
+    let mut page_dimensions = vec![None; page_count as usize];
+    for (idx, slot) in page_dimensions.iter_mut().take(16).enumerate() {
         let idx_u16 = u16::try_from(idx).map_err(|_| {
             PdfEngineError::InvalidPdfFormat("PDF page count exceeds u16 limit".to_owned())
         })?;
@@ -347,7 +407,7 @@ fn worker_open_document(
             .map_err(|e| PdfEngineError::InvalidPdfFormat(format!("invalid page {idx}: {e}")))?;
         let dims = PageDimensions::new(page.width().value, page.height().value)
             .map_err(|e| PdfEngineError::InvalidPdfFormat(e.to_string()))?;
-        page_dimensions.push(dims);
+        *slot = Some(dims);
     }
 
     let mut visited = HashSet::new();
@@ -379,7 +439,8 @@ fn worker_open_document(
         form_field_count,
         signature_status,
         signature_field_count,
-    };
+    }
+    .sanitized();
 
     let doc_id = *next_doc_id;
     *next_doc_id = next_doc_id.saturating_add(1);
@@ -394,6 +455,31 @@ fn worker_open_document(
         outline,
         page_dimensions,
     })
+}
+
+fn worker_page_dimensions(
+    documents: &HashMap<u64, PdfiumNativeDocument<'static>>,
+    doc_id: u64,
+    page_index: PageIndex,
+) -> Result<PageDimensions, PdfEngineError> {
+    let doc = documents.get(&doc_id).ok_or_else(|| {
+        PdfEngineError::Internal("PDFium document handle is no longer open".to_owned())
+    })?;
+    let page_count = u32::from(doc.pages().len());
+    let idx = page_index.zero_based();
+    let idx_u16 = u16::try_from(idx).map_err(|_| PdfEngineError::PageOutOfBounds {
+        page_index: idx,
+        page_count,
+    })?;
+    let page = doc
+        .pages()
+        .get(idx_u16)
+        .map_err(|_| PdfEngineError::PageOutOfBounds {
+            page_index: idx,
+            page_count,
+        })?;
+    PageDimensions::new(page.width().value, page.height().value)
+        .map_err(|e| PdfEngineError::InvalidPdfFormat(e.to_string()))
 }
 
 fn worker_extract_page_text(
@@ -493,6 +579,7 @@ fn worker_search_text(
     query: &str,
     case_sensitive: bool,
     max_hits: usize,
+    cancel_check: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<Vec<SearchHit>, PdfEngineError> {
     let doc = documents.get(&doc_id).ok_or_else(|| {
         PdfEngineError::Internal("PDFium document handle is no longer open".to_owned())
@@ -502,6 +589,9 @@ fn worker_search_text(
 
     let mut hits = Vec::new();
     for idx in 0..page_count {
+        if cancel_check.is_some_and(|f| f()) {
+            return Err(PdfEngineError::Cancelled);
+        }
         let remaining = max_hits.saturating_sub(hits.len());
         if remaining == 0 {
             break;
@@ -601,7 +691,11 @@ fn worker_render_page(
     documents: &HashMap<u64, PdfiumNativeDocument<'static>>,
     doc_id: u64,
     request: &RenderPageRequest,
+    cancel_check: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<RawRenderedBitmap, PdfEngineError> {
+    if cancel_check.is_some_and(|f| f()) {
+        return Err(PdfEngineError::Cancelled);
+    }
     let doc = documents.get(&doc_id).ok_or_else(|| {
         PdfEngineError::Internal("PDFium document handle is no longer open".to_owned())
     })?;
@@ -619,6 +713,10 @@ fn worker_render_page(
             page_index: request.page_index.zero_based(),
             page_count,
         })?;
+
+    if cancel_check.is_some_and(|f| f()) {
+        return Err(PdfEngineError::Cancelled);
+    }
 
     let (width_px, height_px) = compute_pdfium_target_pixel_size(
         page.width().value,
@@ -645,6 +743,10 @@ fn worker_render_page(
     let bitmap = page
         .render_with_config(&config)
         .map_err(|e| PdfEngineError::Internal(format!("PDFium page render failed: {e}")))?;
+
+    if cancel_check.is_some_and(|f| f()) {
+        return Err(PdfEngineError::Cancelled);
+    }
 
     let actual_w = u32::try_from(bitmap.width())
         .map_err(|_| PdfEngineError::Internal("negative PDFium bitmap width".to_owned()))?;
@@ -753,7 +855,7 @@ pub struct DynamicPdfiumDocument {
     doc_handle_id: u64,
     info: EngineDocumentInfo,
     outline: Vec<OutlineNode>,
-    page_dimensions: Vec<PageDimensions>,
+    page_dimensions: RwLock<Vec<Option<PageDimensions>>>,
     worker: PdfiumWorkerHandle,
 }
 
@@ -777,6 +879,14 @@ impl DynamicPdfiumDocument {
         options: &OpenDocumentOptions,
         library_dir: Option<PathBuf>,
     ) -> Result<Self, PdfEngineError> {
+        if options
+            .password
+            .as_deref()
+            .is_some_and(|pw| pw.as_bytes().contains(&0))
+        {
+            return Err(PdfEngineError::IncorrectPassword);
+        }
+
         let max_size = options.effective_max_file_size();
         if (bytes.len() as u64) > max_size {
             return Err(PdfEngineError::FileTooLarge {
@@ -794,7 +904,7 @@ impl DynamicPdfiumDocument {
             .cmd_tx
             .send(WorkerCommand::Open {
                 bytes: Vec::from(bytes),
-                password: options.password.clone(),
+                password: ZeroizingPassword(options.password.clone()),
                 reply: reply_tx,
             })
             .map_err(|_| {
@@ -809,8 +919,61 @@ impl DynamicPdfiumDocument {
             doc_handle_id: opened.doc_id,
             info: opened.info,
             outline: opened.outline,
-            page_dimensions: opened.page_dimensions,
+            page_dimensions: RwLock::new(opened.page_dimensions),
             worker,
+        })
+    }
+
+    fn render_page_impl(
+        &self,
+        request: &RenderPageRequest,
+        cancel_check: Option<CancelPredicate>,
+    ) -> Result<RenderedPage, PdfEngineError> {
+        let idx = request.page_index.zero_based();
+        if idx >= self.info.page_count {
+            return Err(PdfEngineError::PageOutOfBounds {
+                page_index: idx,
+                page_count: self.info.page_count,
+            });
+        }
+        if cancel_check.as_ref().is_some_and(|f| f()) {
+            return Err(PdfEngineError::Cancelled);
+        }
+
+        let (reply_tx, reply_rx) = sync_channel(1);
+        self.worker
+            .cmd_tx
+            .send(WorkerCommand::RenderPage {
+                doc_id: self.doc_handle_id,
+                request: request.clone(),
+                cancel_check: cancel_check.clone(),
+                reply: reply_tx,
+            })
+            .map_err(|_| {
+                PdfEngineError::Internal("PDFium worker channel disconnected".to_owned())
+            })?;
+
+        let mut rendered = reply_rx.recv().map_err(|_| {
+            PdfEngineError::Internal("PDFium worker dropped render response".to_owned())
+        })??;
+
+        if cancel_check.as_ref().is_some_and(|f| f()) {
+            return Err(PdfEngineError::Cancelled);
+        }
+
+        apply_render_mode_rgba(&mut rendered.rgba, request.render_mode);
+
+        if cancel_check.as_ref().is_some_and(|f| f()) {
+            return Err(PdfEngineError::Cancelled);
+        }
+
+        let png_bytes = encode_rgba_to_png(rendered.width_px, rendered.height_px, &rendered.rgba)?;
+
+        Ok(RenderedPage {
+            page_index: request.page_index,
+            width_px: rendered.width_px,
+            height_px: rendered.height_px,
+            png_bytes,
         })
     }
 }
@@ -822,12 +985,44 @@ impl EnginePdfDocument for DynamicPdfiumDocument {
 
     fn page_geometry(&self, page_index: PageIndex) -> Result<PageGeometry, PdfEngineError> {
         let idx = page_index.zero_based();
-        let dimensions = self.page_dimensions.get(idx as usize).copied().ok_or(
-            PdfEngineError::PageOutOfBounds {
+        if idx >= self.info.page_count {
+            return Err(PdfEngineError::PageOutOfBounds {
                 page_index: idx,
                 page_count: self.info.page_count,
-            },
-        )?;
+            });
+        }
+
+        if let Ok(guard) = self.page_dimensions.read()
+            && let Some(Some(dimensions)) = guard.get(idx as usize).copied()
+        {
+            return Ok(PageGeometry {
+                page_index,
+                dimensions,
+                intrinsic_rotation: Rotation::Deg0,
+            });
+        }
+
+        let (reply_tx, reply_rx) = sync_channel(1);
+        self.worker
+            .cmd_tx
+            .send(WorkerCommand::PageDimensions {
+                doc_id: self.doc_handle_id,
+                page_index,
+                reply: reply_tx,
+            })
+            .map_err(|_| {
+                PdfEngineError::Internal("PDFium worker channel disconnected".to_owned())
+            })?;
+
+        let dimensions = reply_rx.recv().map_err(|_| {
+            PdfEngineError::Internal("PDFium worker dropped page dimensions response".to_owned())
+        })??;
+
+        if let Ok(mut guard) = self.page_dimensions.write()
+            && let Some(slot) = guard.get_mut(idx as usize)
+        {
+            *slot = Some(dimensions);
+        }
 
         // `page.width()` and `page.height()` in PDFium already incorporate any page `/Rotate`,
         // so `intrinsic_rotation` is reported as `Rotation::Deg0` relative to `dimensions`.
@@ -887,6 +1082,7 @@ impl EnginePdfDocument for DynamicPdfiumDocument {
                 query: trimmed.to_owned(),
                 case_sensitive,
                 max_hits,
+                cancel_check: None,
                 reply: reply_tx,
             })
             .map_err(|_| {
@@ -899,39 +1095,15 @@ impl EnginePdfDocument for DynamicPdfiumDocument {
     }
 
     fn render_page(&self, request: &RenderPageRequest) -> Result<RenderedPage, PdfEngineError> {
-        let idx = request.page_index.zero_based();
-        if idx >= self.info.page_count {
-            return Err(PdfEngineError::PageOutOfBounds {
-                page_index: idx,
-                page_count: self.info.page_count,
-            });
-        }
+        self.render_page_impl(request, None)
+    }
 
-        let (reply_tx, reply_rx) = sync_channel(1);
-        self.worker
-            .cmd_tx
-            .send(WorkerCommand::RenderPage {
-                doc_id: self.doc_handle_id,
-                request: request.clone(),
-                reply: reply_tx,
-            })
-            .map_err(|_| {
-                PdfEngineError::Internal("PDFium worker channel disconnected".to_owned())
-            })?;
-
-        let mut rendered = reply_rx.recv().map_err(|_| {
-            PdfEngineError::Internal("PDFium worker dropped render response".to_owned())
-        })??;
-
-        apply_render_mode_rgba(&mut rendered.rgba, request.render_mode);
-        let png_bytes = encode_rgba_to_png(rendered.width_px, rendered.height_px, &rendered.rgba)?;
-
-        Ok(RenderedPage {
-            page_index: request.page_index,
-            width_px: rendered.width_px,
-            height_px: rendered.height_px,
-            png_bytes,
-        })
+    fn render_page_cancellable(
+        &self,
+        request: &RenderPageRequest,
+        is_cancelled: CancelPredicate,
+    ) -> Result<RenderedPage, PdfEngineError> {
+        self.render_page_impl(request, Some(is_cancelled))
     }
 }
 

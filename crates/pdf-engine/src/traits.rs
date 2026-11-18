@@ -34,6 +34,32 @@ pub trait PdfDocument: Send + Sync {
 
     /// Renders a single page into a PNG-encoded `RenderedPage`.
     fn render_page(&self, request: &RenderPageRequest) -> Result<RenderedPage, PdfEngineError>;
+
+    /// Renders a single page while polling `is_cancelled` before expensive rasterization and encoding.
+    fn render_page_cancellable(
+        &self,
+        request: &RenderPageRequest,
+        is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<RenderedPage, PdfEngineError> {
+        if is_cancelled() {
+            return Err(PdfEngineError::Cancelled);
+        }
+        self.render_page(request)
+    }
+
+    /// Searches across pages while periodically polling `is_cancelled`.
+    fn search_text_cancellable(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        max_hits: usize,
+        is_cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Vec<SearchHit>, PdfEngineError> {
+        if is_cancelled() {
+            return Err(PdfEngineError::Cancelled);
+        }
+        self.search_text(query, case_sensitive, max_hits)
+    }
 }
 
 /// Port trait for opening PDF documents from files or in-memory byte buffers.

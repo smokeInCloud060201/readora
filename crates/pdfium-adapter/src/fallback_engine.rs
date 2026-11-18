@@ -17,21 +17,27 @@ use crate::png_encoder::{apply_render_mode_rgba, encode_rgba_to_png};
 
 /// Maximum non-stream structural dictionary bytes buffered in fallback mode (2 MiB).
 const MAX_STRUCTURAL_BYTES: usize = 2 * 1024 * 1024;
-/// Maximum decompressed `/Type /ObjStm` structural bytes buffered in fallback mode (2 MiB).
+/// Maximum decompressed `/Type /ObjStm` structural bytes buffered/attempted in fallback mode (2 MiB).
 const MAX_OBJSTM_STRUCTURAL_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum `/ObjStm` structural bytes buffered during native lightweight inspection (512 KiB).
+const MAX_NATIVE_OBJSTM_STRUCTURAL_BYTES: usize = 512 * 1024;
 /// Tail window preserved for trailer/xref inspection on huge files (256 KiB).
 const MAX_TAIL_WINDOW_BYTES: usize = 256 * 1024;
 /// Maximum total page content stream bytes buffered/decompressed in fallback mode (8 MiB).
 const MAX_CONTENT_STREAM_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum number of PDF streams inspected or decompressed per document in fallback mode.
+const MAX_STREAMS_INSPECTED: usize = 4_096;
 /// Maximum decoded UTF-8 bytes accumulated for a single PDF `(...)` literal string (64 KiB).
 const MAX_PDF_LITERAL_ACCUM_BYTES: usize = 64 * 1024;
+/// Hard cap on synthetic/fallback page count parsed from untrusted `/Count` entries.
+pub const MAX_FALLBACK_PAGES: u32 = 10_000;
 
 /// Parsed in-memory representation of a PDF document for the fallback engine.
 pub struct FallbackPdfDocument {
     info: EngineDocumentInfo,
     page_dimensions: PageDimensions,
     intrinsic_rotation: Rotation,
-    page_texts: Vec<String>,
+    extracted_blocks: Vec<String>,
     outline: Vec<OutlineNode>,
 }
 
@@ -66,7 +72,7 @@ impl FallbackPdfDocument {
             ));
         }
 
-        let (structural_text, content_text) = extract_bounded_pdf_regions(bytes);
+        let (structural_text, content_text) = extract_bounded_pdf_regions_inner(bytes, true);
 
         let is_encrypted =
             has_pdf_dict_key(&structural_text, "/Encrypt") || has_encrypt_dict_bytes(bytes);
@@ -74,11 +80,14 @@ impl FallbackPdfDocument {
             let supplied_pw = options.password.as_deref().filter(|pw| !pw.is_empty());
             let expected_pw = extract_pdf_string_value(&structural_text, "/UserPassword")
                 .or_else(|| extract_tail_pdf_string_value(bytes, "/UserPassword"));
-            if let Some(expected_pw) = expected_pw {
+            if let Some(mut expected_pw) = expected_pw {
                 let Some(pw) = supplied_pw else {
+                    pdf_engine::zeroize_string(&mut expected_pw);
                     return Err(PdfEngineError::PasswordRequired);
                 };
-                if pw != expected_pw {
+                let matches = constant_time_eq_bytes(pw.as_bytes(), expected_pw.as_bytes());
+                pdf_engine::zeroize_string(&mut expected_pw);
+                if !matches {
                     return Err(PdfEngineError::IncorrectPassword);
                 }
             } else {
@@ -88,7 +97,7 @@ impl FallbackPdfDocument {
             }
         }
 
-        let page_count = parse_page_count(&structural_text);
+        let page_count = parse_page_count(&structural_text).min(MAX_FALLBACK_PAGES);
         if page_count == 0 {
             return Err(PdfEngineError::InvalidPdfFormat(
                 "PDF contains zero pages".to_owned(),
@@ -115,9 +124,10 @@ impl FallbackPdfDocument {
             form_field_count,
             signature_status,
             signature_field_count,
-        };
+        }
+        .sanitized();
 
-        let page_texts = extract_texts_per_page(&content_text, page_count);
+        let extracted_blocks = extract_texts_per_page(&content_text, page_count);
         let outline = extract_outline_nodes(&structural_text, page_count);
 
         Ok(Self {
@@ -127,10 +137,21 @@ impl FallbackPdfDocument {
             },
             page_dimensions,
             intrinsic_rotation,
-            page_texts,
+            extracted_blocks,
             outline,
         })
     }
+}
+
+fn constant_time_eq_bytes(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut diff = u8::from(left.len() != right.len());
+    for i in 0..max_len {
+        let lb = left.get(i).copied().unwrap_or(0);
+        let rb = right.get(i).copied().unwrap_or(0);
+        diff |= lb ^ rb;
+    }
+    diff == 0
 }
 
 impl PdfDocument for FallbackPdfDocument {
@@ -166,10 +187,10 @@ impl PdfDocument for FallbackPdfDocument {
             });
         }
         Ok(self
-            .page_texts
+            .extracted_blocks
             .get(idx as usize)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_else(|| format!("Page {}", idx + 1)))
     }
 
     fn search_text(
@@ -178,13 +199,26 @@ impl PdfDocument for FallbackPdfDocument {
         case_sensitive: bool,
         max_hits: usize,
     ) -> Result<Vec<SearchHit>, PdfEngineError> {
+        self.search_text_cancellable(query, case_sensitive, max_hits, &|| false)
+    }
+
+    fn search_text_cancellable(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        max_hits: usize,
+        is_cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Vec<SearchHit>, PdfEngineError> {
         let trimmed = query.trim();
         if trimmed.is_empty() || max_hits == 0 {
             return Ok(Vec::new());
         }
 
         let mut hits = Vec::new();
-        for (idx, page_text) in self.page_texts.iter().enumerate() {
+        for (idx, page_text) in self.extracted_blocks.iter().enumerate() {
+            if is_cancelled() {
+                return Err(PdfEngineError::Cancelled);
+            }
             let remaining = max_hits.saturating_sub(hits.len());
             if remaining == 0 {
                 break;
@@ -197,6 +231,44 @@ impl PdfDocument for FallbackPdfDocument {
                 break;
             }
         }
+
+        if hits.len() < max_hits && (self.extracted_blocks.len() as u32) < self.info.page_count {
+            let lower = trimmed.to_ascii_lowercase();
+            let could_match_synthetic = if case_sensitive {
+                "Page ".contains(trimmed)
+                    || trimmed.starts_with("Page ")
+                    || trimmed.bytes().all(|b| b.is_ascii_digit())
+            } else {
+                "page ".contains(&lower)
+                    || lower.starts_with("page ")
+                    || lower.bytes().all(|b| b.is_ascii_digit())
+            };
+            if could_match_synthetic {
+                let start_idx = u32::try_from(self.extracted_blocks.len()).unwrap_or(u32::MAX);
+                for idx in start_idx..self.info.page_count {
+                    if is_cancelled() {
+                        return Err(PdfEngineError::Cancelled);
+                    }
+                    let remaining = max_hits.saturating_sub(hits.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    let synthetic = format!("Page {}", idx + 1);
+                    let mut page_hits = search_page_text_hits(
+                        &synthetic,
+                        PageIndex::new(idx),
+                        trimmed,
+                        case_sensitive,
+                        remaining,
+                    );
+                    hits.append(&mut page_hits);
+                    if hits.len() >= max_hits {
+                        break;
+                    }
+                }
+            }
+        }
+
         Ok(hits)
     }
 
@@ -383,13 +455,40 @@ fn advance_past_stream_eol(bytes: &[u8], stream_pos: usize) -> Option<usize> {
     }
 }
 
-fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
+fn bounded_zlib_decompress(raw_stream: &[u8], max_bytes: usize) -> (Vec<u8>, usize) {
+    if max_bytes == 0 || raw_stream.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let decoder = ZlibDecoder::new(raw_stream);
+    let mut chunk = Vec::new();
+    let res = decoder.take(max_bytes as u64).read_to_end(&mut chunk);
+    let attempted = chunk.len();
+    if res.is_ok() && !chunk.is_empty() {
+        (chunk, attempted)
+    } else {
+        // Deduct attempted decompressed bytes even if the trailer/checksum was invalid so
+        // repeated malformed flate streams cannot bypass the decompression budget (`[MED-04]`).
+        (Vec::new(), attempted)
+    }
+}
+
+fn extract_bounded_pdf_regions_inner(
+    bytes: &[u8],
+    include_content_streams: bool,
+) -> (String, String) {
     let mut structural = Vec::with_capacity(bytes.len().min(64 * 1024));
     let mut content = Vec::new();
     let mut cursor = 0usize;
     let mut non_stream_structural_bytes = 0usize;
-    let mut objstm_structural_bytes = 0usize;
+    let mut objstm_decode_attempts_bytes = 0usize;
+    let mut content_decode_attempts_bytes = 0usize;
     let mut hit_structural_cap = false;
+    let mut streams_seen = 0usize;
+    let max_objstm_bytes = if include_content_streams {
+        MAX_OBJSTM_STRUCTURAL_BYTES
+    } else {
+        MAX_NATIVE_OBJSTM_STRUCTURAL_BYTES
+    };
 
     while cursor < bytes.len() {
         let Some(stream_rel) = find_stream_keyword(&bytes[cursor..]) else {
@@ -442,57 +541,61 @@ fn extract_bounded_pdf_regions(bytes: &[u8]) -> (String, String) {
         let is_flate = contains_pdf_name(dict_header, b"/FlateDecode");
         let is_obj_stm = contains_pdf_name(dict_header, b"/ObjStm");
 
-        if is_obj_stm {
-            let rem_objstm = MAX_OBJSTM_STRUCTURAL_BYTES.saturating_sub(objstm_structural_bytes);
-            if rem_objstm > 0 && !raw_stream.is_empty() && raw_stream.len() <= 16 * 1024 * 1024 {
-                if is_flate {
-                    let decoder = ZlibDecoder::new(raw_stream);
-                    let mut chunk = Vec::new();
-                    if decoder
-                        .take(rem_objstm as u64)
-                        .read_to_end(&mut chunk)
-                        .is_ok()
-                        && !chunk.is_empty()
-                    {
+        streams_seen += 1;
+        if streams_seen <= MAX_STREAMS_INSPECTED {
+            if is_obj_stm {
+                let rem_objstm = max_objstm_bytes.saturating_sub(objstm_decode_attempts_bytes);
+                if rem_objstm > 0 && !raw_stream.is_empty() && raw_stream.len() <= 16 * 1024 * 1024
+                {
+                    if is_flate {
+                        let (chunk, attempted) = bounded_zlib_decompress(raw_stream, rem_objstm);
+                        objstm_decode_attempts_bytes =
+                            objstm_decode_attempts_bytes.saturating_add(attempted.max(1));
+                        if !chunk.is_empty() {
+                            structural.push(b'\n');
+                            structural.extend_from_slice(&chunk);
+                            structural.push(b'\n');
+                        }
+                    } else {
+                        let take_n = raw_stream.len().min(rem_objstm);
                         structural.push(b'\n');
-                        structural.extend_from_slice(&chunk);
+                        structural.extend_from_slice(&raw_stream[..take_n]);
                         structural.push(b'\n');
-                        objstm_structural_bytes += chunk.len();
-                    }
-                } else {
-                    let take_n = raw_stream.len().min(rem_objstm);
-                    structural.push(b'\n');
-                    structural.extend_from_slice(&raw_stream[..take_n]);
-                    structural.push(b'\n');
-                    objstm_structural_bytes += take_n;
-                }
-            }
-        } else {
-            let remaining_content = MAX_CONTENT_STREAM_BYTES.saturating_sub(content.len());
-            if remaining_content > 0
-                && !is_binary_non_text_stream_dict(dict_header)
-                && !raw_stream.is_empty()
-                && raw_stream.len() <= 16 * 1024 * 1024
-            {
-                let mut appended = false;
-                if is_flate || find_byte_subslice(raw_stream, b"BT").is_none() {
-                    let decoder = ZlibDecoder::new(raw_stream);
-                    let mut chunk = Vec::new();
-                    if decoder
-                        .take(remaining_content as u64)
-                        .read_to_end(&mut chunk)
-                        .is_ok()
-                        && !chunk.is_empty()
-                    {
-                        content.push(b'\n');
-                        content.extend_from_slice(&chunk);
-                        appended = true;
+                        objstm_decode_attempts_bytes =
+                            objstm_decode_attempts_bytes.saturating_add(take_n);
                     }
                 }
-                if !appended && !is_flate {
-                    let take_n = raw_stream.len().min(remaining_content);
-                    content.push(b'\n');
-                    content.extend_from_slice(&raw_stream[..take_n]);
+            } else if include_content_streams {
+                let remaining_content =
+                    MAX_CONTENT_STREAM_BYTES.saturating_sub(content_decode_attempts_bytes);
+                if remaining_content > 0
+                    && !is_binary_non_text_stream_dict(dict_header)
+                    && !raw_stream.is_empty()
+                    && raw_stream.len() <= 16 * 1024 * 1024
+                {
+                    let mut appended = false;
+                    if is_flate || find_byte_subslice(raw_stream, b"BT").is_none() {
+                        let (chunk, attempted) =
+                            bounded_zlib_decompress(raw_stream, remaining_content);
+                        content_decode_attempts_bytes =
+                            content_decode_attempts_bytes.saturating_add(attempted);
+                        if !chunk.is_empty() {
+                            content.push(b'\n');
+                            content.extend_from_slice(&chunk);
+                            appended = true;
+                        }
+                    }
+                    if !appended && !is_flate {
+                        let room =
+                            MAX_CONTENT_STREAM_BYTES.saturating_sub(content_decode_attempts_bytes);
+                        let take_n = raw_stream.len().min(room);
+                        if take_n > 0 {
+                            content.push(b'\n');
+                            content.extend_from_slice(&raw_stream[..take_n]);
+                            content_decode_attempts_bytes =
+                                content_decode_attempts_bytes.saturating_add(take_n);
+                        }
+                    }
                 }
             }
         }
@@ -811,71 +914,162 @@ fn render_synthetic_page_rgba(
     buf
 }
 
+#[derive(Default)]
+struct PdfDictFrame {
+    has_type_pages: bool,
+    has_type_other: bool,
+    count: Option<u32>,
+    saw_zero_count: bool,
+}
+
 fn parse_page_count(text: &str) -> u32 {
-    let mut max_count = 0u32;
-    let mut search_from = 0usize;
-    while let Some(rel) = text[search_from..].find("/Count") {
-        let after = &text[search_from + rel + 6..];
-        if after
-            .as_bytes()
-            .first()
-            .is_some_and(|b| b.is_ascii_whitespace())
-        {
-            let trimmed = after.trim_start();
-            let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
-            if let Ok(parsed) = digits.parse::<u32>() {
-                max_count = max_count.max(parsed);
-            }
-        }
-        search_from += rel + 6;
-    }
-    if max_count > 0 {
-        return max_count;
-    }
-
-    let mut page_nodes = 0usize;
     let bytes = text.as_bytes();
+    let mut stack: Vec<PdfDictFrame> = Vec::new();
+    let mut max_pages_count = 0u32;
+    let mut saw_zero_pages_count = false;
+    let mut page_leaf_count = 0u32;
+    let mut saw_linearized = false;
+    let mut linearized_n: Option<u32> = None;
+    let mut saw_startxref = false;
     let mut i = 0usize;
+
     while i < bytes.len() {
-        let Some(rel) = bytes[i..].iter().position(|&b| b == b'/') else {
-            break;
-        };
-        i += rel;
-        let rem = &bytes[i..];
-        if rem.starts_with(b"/Type") && rem.get(5).is_none_or(|&b| is_pdf_token_delim_or_ws(b)) {
-            let after_type = skip_pdf_ascii_ws(&rem[5..]);
-            if after_type.starts_with(b"/Page")
-                && after_type
-                    .get(5)
-                    .is_none_or(|&b| is_pdf_token_delim_or_ws(b))
-            {
-                page_nodes += 1;
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
+                    i += 1;
+                }
             }
-            i += 5;
-        } else {
-            i += 1;
+            b'(' => match parse_pdf_literal_after_open(&text[i + 1..]) {
+                LiteralParseOutcome::Parsed { next_index, .. } => {
+                    i += 1 + next_index;
+                }
+                LiteralParseOutcome::UnclosedAtEof => break,
+            },
+            b'<' if bytes.get(i + 1) == Some(&b'<') => {
+                if stack.len() < 64 {
+                    stack.push(PdfDictFrame::default());
+                }
+                i += 2;
+            }
+            b'<' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'>' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'>' if bytes.get(i + 1) == Some(&b'>') => {
+                if let Some(frame) = stack.pop()
+                    && frame.has_type_pages
+                    && !frame.has_type_other
+                {
+                    if let Some(count) = frame.count {
+                        max_pages_count = max_pages_count.max(count.min(MAX_FALLBACK_PAGES));
+                    }
+                    if frame.saw_zero_count {
+                        saw_zero_pages_count = true;
+                    }
+                }
+                i += 2;
+            }
+            b'/' => {
+                let mut end = i + 1;
+                while end < bytes.len() && !is_pdf_token_delim_or_ws(bytes[end]) {
+                    end += 1;
+                }
+                let name = &bytes[i..end];
+                i = end;
+
+                if name == b"/Linearized" {
+                    saw_linearized = true;
+                } else if name == b"/Type" {
+                    let after_ws = skip_pdf_ascii_ws(&bytes[i..]);
+                    let consumed_ws = bytes[i..].len() - after_ws.len();
+                    if after_ws.starts_with(b"/") {
+                        let mut vend = 1usize;
+                        while vend < after_ws.len() && !is_pdf_token_delim_or_ws(after_ws[vend]) {
+                            vend += 1;
+                        }
+                        let val_name = &after_ws[..vend];
+                        if val_name == b"/Pages" {
+                            if let Some(top) = stack.last_mut() {
+                                top.has_type_pages = true;
+                            }
+                        } else if val_name == b"/Page" {
+                            page_leaf_count = page_leaf_count.saturating_add(1);
+                            if let Some(top) = stack.last_mut() {
+                                top.has_type_other = true;
+                            }
+                        } else if let Some(top) = stack.last_mut() {
+                            top.has_type_other = true;
+                        }
+                        i += consumed_ws + vend;
+                    }
+                } else if name == b"/Count" {
+                    let after_ws = skip_pdf_ascii_ws(&bytes[i..]);
+                    let consumed_ws = bytes[i..].len() - after_ws.len();
+                    let digit_len = after_ws.iter().take_while(|b| b.is_ascii_digit()).count();
+                    if digit_len > 0
+                        && after_ws
+                            .get(digit_len)
+                            .is_none_or(|&b| is_pdf_token_delim_or_ws(b))
+                    {
+                        if let Ok(digit_str) = std::str::from_utf8(&after_ws[..digit_len]) {
+                            let parsed_clamped = digit_str
+                                .parse::<u64>()
+                                .map(|n| n.min(u64::from(MAX_FALLBACK_PAGES)) as u32)
+                                .unwrap_or(MAX_FALLBACK_PAGES);
+                            if let Some(top) = stack.last_mut() {
+                                if parsed_clamped == 0 {
+                                    top.saw_zero_count = true;
+                                } else {
+                                    top.count = Some(parsed_clamped);
+                                }
+                            }
+                        }
+                        i += consumed_ws + digit_len;
+                    }
+                } else if name == b"/N" {
+                    let after_ws = skip_pdf_ascii_ws(&bytes[i..]);
+                    let consumed_ws = bytes[i..].len() - after_ws.len();
+                    let digit_len = after_ws.iter().take_while(|b| b.is_ascii_digit()).count();
+                    if digit_len > 0
+                        && let Ok(digit_str) = std::str::from_utf8(&after_ws[..digit_len])
+                        && let Ok(parsed) = digit_str.parse::<u64>()
+                        && parsed > 0
+                    {
+                        linearized_n = Some(parsed.min(u64::from(MAX_FALLBACK_PAGES)) as u32);
+                        i += consumed_ws + digit_len;
+                    }
+                }
+            }
+            b's' if bytes[i..].starts_with(b"startxref") => {
+                saw_startxref = true;
+                i += 9;
+            }
+            _ => i += 1,
         }
     }
-    if page_nodes > 0 {
-        return u32::try_from(page_nodes).unwrap_or(0);
+
+    if max_pages_count > 0 {
+        return max_pages_count.min(MAX_FALLBACK_PAGES);
     }
 
-    if text.contains("/Linearized")
-        && let Some(pos) = text.find("/N ")
+    if page_leaf_count > 0 {
+        return page_leaf_count.min(MAX_FALLBACK_PAGES);
+    }
+
+    if saw_linearized
+        && let Some(n) = linearized_n
+        && n > 0
     {
-        let digits: String = text[pos + 3..]
-            .trim_start()
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        if let Ok(n) = digits.parse::<u32>()
-            && n > 0
-        {
-            return n;
-        }
+        return n.min(MAX_FALLBACK_PAGES);
     }
 
-    if !text.contains("/Count 0") && text.contains("startxref") {
+    if !saw_zero_pages_count && saw_startxref {
         return 1;
     }
 
@@ -969,13 +1163,14 @@ fn extract_pdf_string_value(text: &str, key: &str) -> Option<String> {
 }
 
 fn extract_texts_per_page(content_text: &str, page_count: u32) -> Vec<String> {
+    let cap = (page_count.min(MAX_FALLBACK_PAGES)) as usize;
     let mut blocks = Vec::new();
     let bytes = content_text.as_bytes();
     let mut i = 0usize;
     let mut in_bt = false;
     let mut current_parts: Vec<String> = Vec::new();
 
-    while i < bytes.len() {
+    while i < bytes.len() && blocks.len() < cap {
         match bytes[i] {
             b'%' => {
                 while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
@@ -1021,15 +1216,7 @@ fn extract_texts_per_page(content_text: &str, page_count: u32) -> Vec<String> {
         }
     }
 
-    let mut pages = Vec::with_capacity(page_count as usize);
-    for idx in 0..page_count {
-        if let Some(block_text) = blocks.get(idx as usize) {
-            pages.push(block_text.clone());
-        } else {
-            pages.push(format!("Page {}", idx + 1));
-        }
-    }
-    pages
+    blocks
 }
 
 fn extract_outline_nodes(text: &str, page_count: u32) -> Vec<OutlineNode> {
@@ -1265,7 +1452,7 @@ fn skip_pdf_ascii_ws(bytes: &[u8]) -> &[u8] {
 pub fn inspect_advanced_pdf_capabilities_bytes(
     bytes: &[u8],
 ) -> (FormSupportStatus, u32, SignaturePresenceStatus, u32) {
-    let (structural_text, _) = extract_bounded_pdf_regions(bytes);
+    let (structural_text, _) = extract_bounded_pdf_regions_inner(bytes, false);
     inspect_advanced_pdf_capabilities(&structural_text)
 }
 

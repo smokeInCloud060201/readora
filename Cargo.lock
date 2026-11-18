@@ -47,7 +47,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -60,11 +59,9 @@ dependencies = [
  "pdf-engine",
  "pdfium-adapter",
  "platform",
- "serde",
  "sha2",
  "storage",
  "tempfile",
- "thiserror 2.0.21",
  "tracing",
 ]
 
@@ -85,9 +82,6 @@ dependencies = [
  "app-application",
  "app-domain",
  "base64",
- "pdf-engine",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -1854,7 +1848,6 @@ dependencies = [
  "pdf-engine",
  "pdfium-render",
  "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2026,8 +2019,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -2515,10 +2506,8 @@ dependencies = [
  "app-application",
  "app-domain",
  "rusqlite",
- "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
  "tracing",
 ]
 

@@ -47,6 +47,7 @@ export interface ViewStateDto {
   rotation: Rotation;
   layout_mode: LayoutMode;
   render_mode: RenderMode;
+  generation?: number;
 }
 
 export interface OutlineNodeDto {
@@ -68,6 +69,7 @@ export interface DocumentSessionDto {
   view_state: ViewStateDto;
   outline: OutlineNodeDto[];
   bookmarks: BookmarkDto[];
+  generation?: number;
 }
 
 export interface OpenDocumentRequestDto {

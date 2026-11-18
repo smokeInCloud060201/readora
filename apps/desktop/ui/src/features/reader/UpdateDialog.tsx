@@ -59,7 +59,12 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
   onClose,
 }) => {
   const [isInstalling, setIsInstalling] = useState(false);
-  const { dialogRef, handleBackdropMouseDown } = useModalDialog(onClose);
+  const safeClose = () => {
+    if (!isInstalling) {
+      onClose();
+    }
+  };
+  const { dialogRef, handleBackdropMouseDown } = useModalDialog(safeClose);
   const targetVersion =
     updateStatus.latest_version ?? updateStatus.current_version;
   const isAvailable = updateStatus.update_available;
@@ -103,7 +108,8 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
         <button
           type="button"
           className="icon-close-btn update-dialog-close"
-          onClick={onClose}
+          disabled={isInstalling}
+          onClick={safeClose}
           aria-label="Close update dialog"
         >
           <FocusIcon name="close" size={16} />

@@ -1,5 +1,6 @@
 import React from "react";
 import { FocusIcon } from "../../shared/components/FocusIcon";
+import { handleMenuKeyDown } from "../../shared/hooks/menuKeyNavigation";
 
 interface DocumentActionsMenuProps {
   menuRef: React.RefObject<HTMLDivElement | null>;
@@ -48,6 +49,7 @@ export const DocumentActionsMenu: React.FC<DocumentActionsMenuProps> = ({
           className="document-actions-menu"
           role="menu"
           aria-label="Document Actions Menu"
+          onKeyDown={handleMenuKeyDown}
           data-node-id="6:1050"
         >
           <button

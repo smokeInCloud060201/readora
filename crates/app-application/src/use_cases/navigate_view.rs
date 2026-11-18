@@ -1,13 +1,13 @@
 //! Use case for mutating reader view state, advancing render cancellation generation,
 //! and persisting updated reading position in recent documents.
 
-use app_domain::{PageIndex, RecentDocument, ViewState, ZoomLevel};
+use app_domain::{PageIndex, RecentDocument, Rotation, ViewState, ZoomLevel};
 
 use crate::dto::NavigationAction;
 use crate::error::ApplicationError;
 use crate::ports::platform::PlatformPort;
 use crate::ports::render_cache::RenderCancellationPort;
-use crate::ports::storage::RecentDocumentRepository;
+use crate::ports::storage::{RecentDocumentRepository, SettingsRepository};
 
 /// Applies `action` to `view_state` in memory and advances `cancellation` only if `view_state`
 /// actually changed. Returns `(updated_view_state, generation, did_change)`.
@@ -69,8 +69,36 @@ pub fn apply_navigation_action(
     Ok((view_state.clone(), new_generation, true))
 }
 
+/// Builds a `RecentDocument` snapshot reflecting persisted-position privacy settings.
+pub fn build_recent_snapshot_for_navigation(
+    canonical_path: &str,
+    display_name: &str,
+    updated: &ViewState,
+    settings_repo: &dyn SettingsRepository,
+    recent_repo: &dyn RecentDocumentRepository,
+    now_ms: i64,
+) -> Result<RecentDocument, ApplicationError> {
+    let mut recent = RecentDocument::from_view_state(canonical_path, display_name, updated, now_ms);
+    let settings = settings_repo.load().ok();
+    if let Some(ref s) = settings
+        && !s.remember_page_position
+    {
+        recent.last_page = PageIndex::FIRST;
+        recent.last_zoom = s.default_zoom;
+        recent.last_rotation = Rotation::Deg0;
+        recent.last_fit_mode = Some(s.default_fit_mode);
+        recent.last_layout_mode = Some(s.default_layout);
+    }
+    if let Some(prev) = recent_repo.get(&updated.document_id)? {
+        recent.is_favorite = prev.is_favorite;
+        recent.is_archived = prev.is_archived;
+    }
+    Ok(recent)
+}
+
 /// Applies a `NavigationAction` to `view_state`, increments the document's render generation
 /// to cancel obsolete in-flight renders when state changes, and persists the updated reading position.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_navigation_action(
     view_state: &mut ViewState,
     canonical_path: &str,
@@ -78,6 +106,7 @@ pub fn execute_navigation_action(
     action: NavigationAction,
     cancellation: &dyn RenderCancellationPort,
     recent_repo: &dyn RecentDocumentRepository,
+    settings_repo: &dyn SettingsRepository,
     platform: &dyn PlatformPort,
 ) -> Result<(ViewState, u64), ApplicationError> {
     let (updated, generation, changed) = apply_navigation_action(view_state, action, cancellation)?;
@@ -85,16 +114,14 @@ pub fn execute_navigation_action(
         return Ok((updated, generation));
     }
 
-    let mut recent = RecentDocument::from_view_state(
+    let recent = build_recent_snapshot_for_navigation(
         canonical_path,
         display_name,
         &updated,
+        settings_repo,
+        recent_repo,
         platform.current_unix_ms(),
-    );
-    if let Some(prev) = recent_repo.get(&updated.document_id)? {
-        recent.is_favorite = prev.is_favorite;
-        recent.is_archived = prev.is_archived;
-    }
+    )?;
     recent_repo.upsert(&recent)?;
 
     Ok((updated, generation))

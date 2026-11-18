@@ -13,7 +13,7 @@ pub use error::PdfEngineError;
 pub use traits::{PdfDocument, PdfEngine};
 pub use types::{
     DEFAULT_MAX_PDF_FILE_SIZE_BYTES, EngineDocumentInfo, OpenDocumentOptions, PageGeometry,
-    PdfEngineKind, RenderPageRequest, RenderedPage,
+    PdfEngineKind, RenderPageRequest, RenderedPage, zeroize_string,
 };
 
 #[cfg(test)]

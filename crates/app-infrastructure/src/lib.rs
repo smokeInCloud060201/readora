@@ -221,10 +221,11 @@ impl RenderCancellationPort for GenerationCancellationRegistry {
 /// Encodes raw PNG bytes into a `data:image/png;base64,...` URL suitable for `<img src>` display.
 #[must_use]
 pub fn encode_png_data_url(png_bytes: &[u8]) -> String {
-    let encoded = BASE64_STANDARD.encode(png_bytes);
-    let mut url = String::with_capacity(22 + encoded.len());
-    url.push_str("data:image/png;base64,");
-    url.push_str(&encoded);
+    const PREFIX: &str = "data:image/png;base64,";
+    let b64_len = png_bytes.len().div_ceil(3).saturating_mul(4);
+    let mut url = String::with_capacity(PREFIX.len() + b64_len);
+    url.push_str(PREFIX);
+    BASE64_STANDARD.encode_string(png_bytes, &mut url);
     url
 }
 

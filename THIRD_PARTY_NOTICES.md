@@ -11,7 +11,7 @@ This distribution incorporates or links against the following open-source compon
 - **Upstream**: <https://pdfium.googlesource.com/pdfium/> (prebuilt distribution: `bblanchon/pdfium-binaries` tag `chromium/8165`)
 - **Version**: `chromium-8165`
 - **License**: `BSD-3-Clause AND Apache-2.0`
-- **Usage**: Dynamically loaded via `pdfium-render` (`0.8.37`) and `libloading` (`0.9.0`) when present at `READORA_PDFIUM_PATH` or inside the application bundle (`libpdfium.dylib`, `pdfium.dll`, `libpdfium.so`). When absent, Readora uses its built-in deterministic pure-Rust PDF engine.
+- **Usage**: Dynamically loaded via `pdfium-render` (`0.8.37`) and `libloading` (`0.9.0`) from trusted application bundle paths (or `READORA_PDFIUM_PATH` in development/test builds). When absent, Readora uses its built-in deterministic pure-Rust PDF engine.
 
 ```text
 Copyright 2014 The PDFium Authors. All rights reserved.

@@ -16,14 +16,27 @@ pub const ZOOM_PRESETS: [f32; 11] = [0.25, 0.5, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75,
 /// Discrete scale bucket in basis points / percentage points (e.g. `100` = 100%)
 /// used as a deterministic component of the render cache key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u16")]
 pub struct ScaleBucket(u16);
+
+impl TryFrom<u16> for ScaleBucket {
+    type Error = DomainError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if !(25..=1000).contains(&value) {
+            return Err(DomainError::InvalidRenderScale(f32::from(value) / 100.0));
+        }
+        Ok(Self(value))
+    }
+}
 
 impl ScaleBucket {
     /// Creates a `ScaleBucket` quantized to 5% increments from a scale factor, clamping into
-    /// `MIN_ZOOM_FACTOR..=MAX_RENDER_SCALE_FACTOR`.
+    /// `MIN_ZOOM_FACTOR..=MAX_RENDER_SCALE_FACTOR` (falling back to `1.0` if non-finite).
     #[must_use]
     pub fn from_scale(scale: f32) -> Self {
-        let clamped = scale.clamp(MIN_ZOOM_FACTOR, MAX_RENDER_SCALE_FACTOR);
+        let finite_scale = if scale.is_finite() { scale } else { 1.0 };
+        let clamped = finite_scale.clamp(MIN_ZOOM_FACTOR, MAX_RENDER_SCALE_FACTOR);
         let pct = (clamped * 100.0).round() as u16;
         let quantized = ((pct + 2) / 5) * 5;
         Self(quantized.clamp(25, 1000))
@@ -33,7 +46,7 @@ impl ScaleBucket {
     /// quantizes it to a 5% `ScaleBucket`.
     pub fn from_render_scale(scale: f32) -> Result<Self, DomainError> {
         if !scale.is_finite() || !(MIN_ZOOM_FACTOR..=MAX_RENDER_SCALE_FACTOR).contains(&scale) {
-            return Err(DomainError::InvalidZoomLevel(scale));
+            return Err(DomainError::InvalidRenderScale(scale));
         }
         let pct = (scale * 100.0).round() as u16;
         let quantized = ((pct + 2) / 5) * 5;

@@ -63,6 +63,20 @@ pub struct DocumentMetadata {
 }
 
 impl DocumentMetadata {
+    /// Strips ASCII/Unicode control characters and bounds metadata field lengths.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        self.title = self.title.as_deref().and_then(sanitize_metadata_title);
+        self.author = sanitize_optional_metadata_field(self.author, 512);
+        self.subject = sanitize_optional_metadata_field(self.subject, 1024);
+        self.creator = sanitize_optional_metadata_field(self.creator, 512);
+        self.pdf_version = sanitize_display_name(&self.pdf_version)
+            .chars()
+            .take(32)
+            .collect();
+        self
+    }
+
     /// Returns an explicit, non-misleading human-readable summary of digital signature status.
     #[must_use]
     pub fn signature_status_summary(&self) -> String {
@@ -121,7 +135,7 @@ impl DocumentDescriptor {
             return Err(DomainError::InvalidPageCount(0));
         }
         let clean_name = sanitize_display_name(&file_name.into());
-        metadata.title = metadata.title.as_deref().and_then(sanitize_metadata_title);
+        metadata = metadata.sanitized();
         Ok(Self {
             id,
             file_name: clean_name,
@@ -174,6 +188,59 @@ pub struct SearchHit {
     /// Individual normalized segment bounding boxes for the match on the page, when available.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bounding_boxes: Vec<SearchBoundingBox>,
+}
+
+/// Sanitizes an optional metadata string (`author`, `subject`, `creator`), stripping control
+/// characters and capping maximum character count.
+#[must_use]
+pub fn sanitize_optional_metadata_field(raw: Option<String>, max_chars: usize) -> Option<String> {
+    let cleaned: String = raw?
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Sanitizes all titles across a hierarchical PDF outline tree without unbounded recursion.
+#[must_use]
+pub fn sanitize_outline_tree(nodes: Vec<OutlineNode>) -> Vec<OutlineNode> {
+    const MAX_OUTLINE_DEPTH: usize = 32;
+    fn sanitize_recursive(nodes: Vec<OutlineNode>, depth: usize) -> Vec<OutlineNode> {
+        nodes
+            .into_iter()
+            .map(|mut node| {
+                let clean: String = node
+                    .title
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>()
+                    .trim()
+                    .chars()
+                    .take(512)
+                    .collect();
+                node.title = if clean.is_empty() {
+                    "Untitled Section".to_owned()
+                } else {
+                    clean
+                };
+                node.children = if depth < MAX_OUTLINE_DEPTH {
+                    sanitize_recursive(node.children, depth + 1)
+                } else {
+                    Vec::new()
+                };
+                node
+            })
+            .collect()
+    }
+    sanitize_recursive(nodes, 0)
 }
 
 /// Sanitizes an arbitrary filename or title into safe single-line display text.

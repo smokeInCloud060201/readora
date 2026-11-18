@@ -45,7 +45,7 @@ Visit [Readora Releases](https://github.com/smokeInCloud060201/readora/releases)
 
 Current release packages are provided for **Apple silicon Macs**, **64-bit Windows**, and **64-bit Linux**. Linux packages require WebKitGTK 4.1 and GTK 3 runtime libraries. If your operating system or processor is not listed, check the release notes before installing.
 
-After installation, open Readora and choose a PDF from your computer. Your document stays at its original location.
+After installation, open Readora and choose a PDF from your computer. Readora stores a local library copy for fast, reliable reopening without modifying your original document at its source location.
 
 ## An open-source project
 

@@ -8,8 +8,11 @@ use crate::SqliteStorage;
 
 impl BookmarkRepository for SqliteStorage {
     fn upsert(&self, bookmark: &Bookmark) -> Result<Bookmark, ApplicationError> {
-        let conn = self.lock_connection()?;
-        conn.execute(
+        let mut conn = self.lock_connection()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| ApplicationError::Storage(format!("bookmark tx begin failed: {e}")))?;
+        tx.execute(
             "INSERT INTO bookmarks (id, document_id, page_index, label, created_at_unix_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(document_id, page_index) DO UPDATE SET
@@ -24,27 +27,36 @@ impl BookmarkRepository for SqliteStorage {
         )
         .map_err(|e| ApplicationError::Storage(format!("failed to upsert bookmark: {e}")))?;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, document_id, page_index, label, created_at_unix_ms
-                 FROM bookmarks
-                 WHERE document_id = ?1 AND page_index = ?2",
-            )
-            .map_err(|e| ApplicationError::Storage(format!("prepare bookmark read failed: {e}")))?;
+        let saved = {
+            let mut stmt = tx
+                .prepare_cached(
+                    "SELECT id, document_id, page_index, label, created_at_unix_ms
+                     FROM bookmarks
+                     WHERE document_id = ?1 AND page_index = ?2",
+                )
+                .map_err(|e| {
+                    ApplicationError::Storage(format!("prepare bookmark read failed: {e}"))
+                })?;
 
-        let mut rows = stmt
-            .query(params![
-                bookmark.document_id.as_str(),
-                bookmark.page_index.zero_based()
-            ])
-            .map_err(|e| ApplicationError::Storage(format!("query bookmark failed: {e}")))?;
+            let mut rows = stmt
+                .query(params![
+                    bookmark.document_id.as_str(),
+                    bookmark.page_index.zero_based()
+                ])
+                .map_err(|e| ApplicationError::Storage(format!("query bookmark failed: {e}")))?;
 
-        let row = rows
-            .next()
-            .map_err(|e| ApplicationError::Storage(format!("bookmark fetch failed: {e}")))?
-            .ok_or_else(|| ApplicationError::Storage("upserted bookmark not found".to_owned()))?;
+            let row = rows
+                .next()
+                .map_err(|e| ApplicationError::Storage(format!("bookmark fetch failed: {e}")))?
+                .ok_or_else(|| {
+                    ApplicationError::Storage("upserted bookmark not found".to_owned())
+                })?;
 
-        map_bookmark_row(row)
+            map_bookmark_row(row)?
+        };
+        tx.commit()
+            .map_err(|e| ApplicationError::Storage(format!("bookmark tx commit failed: {e}")))?;
+        Ok(saved)
     }
 
     fn list_for_document(
@@ -53,7 +65,7 @@ impl BookmarkRepository for SqliteStorage {
     ) -> Result<Vec<Bookmark>, ApplicationError> {
         let conn = self.lock_connection()?;
         let mut stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT id, document_id, page_index, label, created_at_unix_ms
                  FROM bookmarks
                  WHERE document_id = ?1

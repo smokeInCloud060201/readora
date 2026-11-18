@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { readoraApi } from "../../lib/tauri/client";
+import { isValidGithubRepoSlug, readoraApi } from "../../lib/tauri/client";
 import { FocusIcon } from "../../shared/components/FocusIcon";
 import { ReadoraLogo } from "../../shared/components/ReadoraLogo";
 import { useModalDialog } from "../../shared/hooks/useModalDialog";
@@ -35,7 +35,7 @@ const PREFERENCE_ZOOM_PRESETS: readonly number[] = [
 ];
 
 const FALLBACK_APP_VERSION = "1.1.2";
-const FALLBACK_SQLITE_SCHEMA_VERSION = 4;
+const FALLBACK_SQLITE_SCHEMA_VERSION = 5;
 
 const FALLBACK_THIRD_PARTY_NOTICES: readonly ThirdPartyNoticeDto[] = [
   {
@@ -157,6 +157,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
   const [githubReleaseRepo, setGithubReleaseRepo] = useState<string>(
     settings.github_release_repo ?? "smokeInCloud060201/readora",
   );
+  const [repoError, setRepoError] = useState<string | null>(null);
   const [shortcutFilter, setShortcutFilter] = useState("");
 
   useEffect(() => {
@@ -176,6 +177,14 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const resolvedRepo =
+      githubReleaseRepo.trim() || "smokeInCloud060201/readora";
+    if (!isValidGithubRepoSlug(resolvedRepo)) {
+      setRepoError("Enter a valid GitHub repository slug (owner/repo).");
+      setActiveSection("general");
+      return;
+    }
+    setRepoError(null);
     const clampedCache = clampCacheMiB(cacheMiBInput);
     const clampedPrefetch = clampPrefetchWindow(prefetchWindowInput);
     setCacheMiBInput(String(clampedCache));
@@ -193,8 +202,7 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
       confirm_before_delete: confirmBeforeDeleting,
       show_extracted_text_layer: showExtractedTextLayer,
       auto_check_updates: autoCheckUpdates,
-      github_release_repo:
-        githubReleaseRepo.trim() || "smokeInCloud060201/readora",
+      github_release_repo: resolvedRepo,
     });
   };
 
@@ -383,12 +391,21 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                 <input
                   type="text"
                   aria-label="GitHub Release Repository"
+                  aria-invalid={Boolean(repoError)}
                   value={githubReleaseRepo}
-                  onChange={(e) => setGithubReleaseRepo(e.target.value)}
+                  onChange={(e) => {
+                    setGithubReleaseRepo(e.target.value);
+                    if (repoError) setRepoError(null);
+                  }}
                   placeholder="owner/repo"
                   className="focus-input"
                 />
               </label>
+              {repoError && (
+                <p role="alert" className="print-validation-error">
+                  {repoError}
+                </p>
+              )}
 
               <label className="form-field-row">
                 <span>Default zoom</span>

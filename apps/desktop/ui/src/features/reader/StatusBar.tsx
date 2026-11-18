@@ -33,7 +33,11 @@ export const StatusBar: React.FC<StatusBarProps> = ({
         )}
       </div>
       <div className="status-right">
-        {statusMessage && <span className="status-notice">{statusMessage}</span>}
+        {statusMessage && (
+          <span className="status-notice" role="status" aria-live="polite">
+            {statusMessage}
+          </span>
+        )}
         {viewState && (
           <span>
             {viewState.layout_mode === "continuous" ? "Continuous" : "Single Page"} •{" "}
