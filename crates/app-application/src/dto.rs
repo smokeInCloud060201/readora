@@ -258,26 +258,36 @@ impl ReleaseManifestDto {
     }
 }
 
-/// Validates that `raw_url` uses `https://`, contains no whitespace/control/userinfo (`@`),
-/// and targets an allowlisted official GitHub host.
+/// Validates that `raw_url` uses `https://` on default port 443, contains no
+/// whitespace/control/backslash/userinfo (`@`), and targets an allowlisted official GitHub host.
 #[must_use]
 pub fn is_allowed_github_download_url(raw_url: &str) -> bool {
     let trimmed = raw_url.trim();
     if !trimmed.starts_with("https://")
-        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+        || trimmed
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
     {
         return false;
     }
     let after_scheme = &trimmed["https://".len()..];
-    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.is_empty() || authority.contains('@') {
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.contains('?')
+        || authority.contains('#')
+    {
         return false;
     }
-    let host = authority
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let host = match authority.split_once(':') {
+        Some((h, port)) => {
+            if port != "443" {
+                return false;
+            }
+            h.to_ascii_lowercase()
+        }
+        None => authority.to_ascii_lowercase(),
+    };
     matches!(
         host.as_str(),
         "github.com"
@@ -286,6 +296,50 @@ pub fn is_allowed_github_download_url(raw_url: &str) -> bool {
             | "release-assets.githubusercontent.com"
             | "codeload.github.com"
     )
+}
+
+/// Validates that `raw_url` passes [`is_allowed_github_download_url`] and, for repository-scoped
+/// GitHub hosts (`github.com`, `api.github.com`, `codeload.github.com`), strictly matches
+/// `repo_slug` (`owner/repo`).
+#[must_use]
+pub fn is_allowed_github_download_url_for_repo(raw_url: &str, repo_slug: &str) -> bool {
+    if !is_allowed_github_download_url(raw_url) {
+        return false;
+    }
+    let clean_repo = repo_slug.trim().to_ascii_lowercase();
+    if clean_repo.is_empty() {
+        return false;
+    }
+    let trimmed = raw_url.trim();
+    let after_scheme = &trimmed["https://".len()..];
+    let (authority, path_part) = match after_scheme.split_once('/') {
+        Some((a, p)) => (a, p),
+        None => (after_scheme, ""),
+    };
+    let host = authority
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path_lower = path_part
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match host.as_str() {
+        "github.com" => {
+            path_lower == format!("{clean_repo}/releases")
+                || path_lower.starts_with(&format!("{clean_repo}/releases/"))
+        }
+        "api.github.com" => {
+            path_lower == format!("repos/{clean_repo}/releases")
+                || path_lower.starts_with(&format!("repos/{clean_repo}/releases/"))
+        }
+        "codeload.github.com" => path_lower.starts_with(&format!("{clean_repo}/")),
+        // Signed GitHub CDN release-asset hosts do not include owner/repo in URL path.
+        "objects.githubusercontent.com" | "release-assets.githubusercontent.com" => true,
+        _ => false,
+    }
 }
 
 /// Live application update status evaluated against the installed version and release manifest.

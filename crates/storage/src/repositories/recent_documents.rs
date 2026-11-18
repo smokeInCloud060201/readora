@@ -1,7 +1,9 @@
 //! SQLite repository implementation for `RecentDocumentRepository`.
 
 use app_application::{ApplicationError, RecentDocumentRepository};
-use app_domain::{DocumentId, FitMode, LayoutMode, PageIndex, RecentDocument, Rotation, ZoomLevel};
+use app_domain::{
+    AppSettings, DocumentId, FitMode, LayoutMode, PageIndex, RecentDocument, Rotation, ZoomLevel,
+};
 use rusqlite::params;
 
 use crate::SqliteStorage;
@@ -84,6 +86,9 @@ impl RecentDocumentRepository for SqliteStorage {
     }
 
     fn list(&self, limit: usize) -> Result<Vec<RecentDocument>, ApplicationError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let conn = self.lock_connection()?;
         let capped_limit = i64::try_from(limit.clamp(1, 200)).unwrap_or(50);
         let mut stmt = conn
@@ -106,14 +111,19 @@ impl RecentDocumentRepository for SqliteStorage {
             .next()
             .map_err(|e| ApplicationError::Storage(format!("row iteration failed: {e}")))?
         {
-            results.push(map_recent_row(row)?);
+            match map_recent_row(row) {
+                Ok(entry) => results.push(entry),
+                Err(err) => {
+                    tracing::warn!("skipping corrupt recent_documents row: {err}");
+                }
+            }
         }
         Ok(results)
     }
 
     fn list_library(&self, recent_limit: usize) -> Result<Vec<RecentDocument>, ApplicationError> {
         let conn = self.lock_connection()?;
-        let capped_limit = i64::try_from(recent_limit.clamp(1, 200)).unwrap_or(50);
+        let capped_limit = i64::try_from(recent_limit.min(200)).unwrap_or(50);
         let mut stmt = conn
             .prepare_cached(
                 "SELECT document_id, file_path, display_name, last_page, page_count,
@@ -125,15 +135,20 @@ impl RecentDocumentRepository for SqliteStorage {
                                 zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived,
                                 fit_mode, layout_mode
                          FROM recent_documents
+                         WHERE is_favorite = 0 AND is_archived = 0
                          ORDER BY last_opened_unix_ms DESC
                          LIMIT ?1
                      )
-                     UNION
-                     SELECT document_id, file_path, display_name, last_page, page_count,
-                            zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived,
-                            fit_mode, layout_mode
-                     FROM recent_documents
-                     WHERE is_favorite = 1 OR is_archived = 1
+                     UNION ALL
+                     SELECT * FROM (
+                         SELECT document_id, file_path, display_name, last_page, page_count,
+                                zoom_pct, rotation_deg, last_opened_unix_ms, is_favorite, is_archived,
+                                fit_mode, layout_mode
+                         FROM recent_documents
+                         WHERE is_favorite = 1 OR is_archived = 1
+                         ORDER BY last_opened_unix_ms DESC
+                         LIMIT 1000
+                     )
                  )
                  ORDER BY last_opened_unix_ms DESC",
             )
@@ -148,7 +163,12 @@ impl RecentDocumentRepository for SqliteStorage {
             .next()
             .map_err(|e| ApplicationError::Storage(format!("library row iteration failed: {e}")))?
         {
-            results.push(map_recent_row(row)?);
+            match map_recent_row(row) {
+                Ok(entry) => results.push(entry),
+                Err(err) => {
+                    tracing::warn!("skipping corrupt library row: {err}");
+                }
+            }
         }
         Ok(results)
     }
@@ -202,6 +222,28 @@ impl RecentDocumentRepository for SqliteStorage {
         .map_err(|e| ApplicationError::Storage(format!("delete recent document failed: {e}")))?;
         Ok(())
     }
+
+    fn reset_reading_positions(
+        &self,
+        default_settings: &AppSettings,
+    ) -> Result<(), ApplicationError> {
+        let conn = self.lock_connection()?;
+        conn.execute(
+            "UPDATE recent_documents
+             SET last_page = 0,
+                 zoom_pct = ?1,
+                 rotation_deg = 0,
+                 fit_mode = ?2,
+                 layout_mode = ?3",
+            params![
+                default_settings.default_zoom.percentage(),
+                fit_mode_to_str(Some(default_settings.default_fit_mode)),
+                layout_mode_to_str(Some(default_settings.default_layout)),
+            ],
+        )
+        .map_err(|e| ApplicationError::Storage(format!("reset reading positions failed: {e}")))?;
+        Ok(())
+    }
 }
 
 fn query_recent_by_id(
@@ -242,25 +284,25 @@ fn map_recent_row(row: &rusqlite::Row<'_>) -> Result<RecentDocument, Application
     let display_name: String = row
         .get(2)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let last_page_u32: u32 = row
+    let last_page_i64: i64 = row
         .get(3)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let page_count: u32 = row
+    let page_count_i64: i64 = row
         .get(4)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let zoom_pct: u16 = row
+    let zoom_pct_i64: i64 = row
         .get(5)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let rotation_deg: u16 = row
+    let rotation_deg_i64: i64 = row
         .get(6)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
     let last_opened_unix_ms: i64 = row
         .get(7)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let is_favorite_int: i32 = row
+    let is_favorite_int: i64 = row
         .get(8)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let is_archived_int: i32 = row
+    let is_archived_int: i64 = row
         .get(9)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
     let raw_fit: Option<String> = row
@@ -269,6 +311,15 @@ fn map_recent_row(row: &rusqlite::Row<'_>) -> Result<RecentDocument, Application
     let raw_layout: Option<String> = row
         .get(11)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
+
+    let last_page_u32 = u32::try_from(last_page_i64)
+        .map_err(|_| ApplicationError::Storage("negative last_page in recent row".to_owned()))?;
+    let page_count = u32::try_from(page_count_i64)
+        .map_err(|_| ApplicationError::Storage("negative page_count in recent row".to_owned()))?;
+    let zoom_pct = u16::try_from(zoom_pct_i64)
+        .map_err(|_| ApplicationError::Storage("invalid zoom_pct in recent row".to_owned()))?;
+    let rotation_deg = u16::try_from(rotation_deg_i64)
+        .map_err(|_| ApplicationError::Storage("invalid rotation_deg in recent row".to_owned()))?;
 
     let document_id = DocumentId::new(raw_id)?;
     let last_zoom = ZoomLevel::from_percentage(zoom_pct).unwrap_or_default();

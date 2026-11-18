@@ -26,6 +26,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [internalHitIdx, setInternalHitIdx] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const activeHitRef = useRef<HTMLButtonElement | null>(null);
   const debounceTimerRef = useRef<number | null>(null);
   const lastSearchedRef = useRef<{ query: string; caseSensitive: boolean }>({
     query: "",
@@ -54,6 +55,13 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
     setInternalHitIdx(idx);
     onActiveHitChange?.(idx);
   };
+
+  useEffect(() => {
+    const activeEl = activeHitRef.current;
+    if (activeEl && typeof activeEl.scrollIntoView === "function") {
+      activeEl.scrollIntoView({ block: "nearest" });
+    }
+  }, [currentHitIdx, hits.length]);
 
   useEffect(() => {
     if (debounceTimerRef.current !== null) {
@@ -226,6 +234,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           {hits.map((hit, idx) => (
             <li key={`${hit.page_index}-${hit.match_index}-${idx}`}>
               <button
+                ref={idx === currentHitIdx ? activeHitRef : null}
                 type="button"
                 className={`search-hit-item ${
                   idx === currentHitIdx ? "active" : ""

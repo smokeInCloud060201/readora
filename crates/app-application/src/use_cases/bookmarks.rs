@@ -4,7 +4,8 @@ use std::path::{Component, Path};
 
 use app_domain::{
     Annotation, AnnotationId, Bookmark, BookmarkId, DocumentId, PageIndex,
-    is_windows_reserved_device_name, sanitize_display_name, sanitize_export_stem,
+    has_unsafe_os_path_or_ads, is_windows_reserved_device_name, sanitize_display_name,
+    sanitize_export_stem,
 };
 
 use crate::dto::{ExportAnnotationsBundleDto, UpsertAnnotationCommand, UpsertBookmarkCommand};
@@ -103,6 +104,11 @@ fn validate_markdown_export_destination(raw_dest: &str) -> Result<&str, Applicat
     if trimmed.chars().any(char::is_control) {
         return Err(ApplicationError::Platform(
             "export destination path contains control characters".to_owned(),
+        ));
+    }
+    if has_unsafe_os_path_or_ads(trimmed) {
+        return Err(ApplicationError::Platform(
+            "export destination path contains an unsafe UNC/device prefix, ADS colon, or reserved DOS name".to_owned(),
         ));
     }
     let path = Path::new(trimmed);

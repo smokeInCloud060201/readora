@@ -16,19 +16,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use app_application::{
     AppCleanupReportDto, ApplicationError, PlatformPort, ReleaseManifestDto, ResolvedFileInfo,
 };
-use app_domain::{DocumentId, sanitize_display_name};
+use app_domain::{DocumentId, SemVer, has_unsafe_os_path_or_ads, sanitize_display_name};
 use sha2::{Digest, Sha256};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[inline]
+fn is_reparse_or_symlink(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+#[inline]
 fn is_regular_non_symlink_file(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && !is_reparse_or_symlink(&m))
 }
 
 #[inline]
 fn is_non_symlink_dir(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !is_reparse_or_symlink(&m))
 }
 
 const ALLOWED_APP_DIR_NAMES: &[&str] = &[
@@ -196,6 +211,9 @@ impl NativePlatformAdapter {
     /// (and never a source repository, root, home, Desktop, or Documents directory) before any cleanup.
     #[must_use]
     pub fn is_safe_readora_directory(path: &Path) -> bool {
+        if !path.is_absolute() {
+            return false;
+        }
         let has_repo_markers = |dir: &Path| {
             dir.join("Cargo.toml").exists()
                 || dir.join("package.json").exists()
@@ -238,8 +256,8 @@ impl NativePlatformAdapter {
     }
 
     /// Cleans live application directories after SQLite tables have been transactionally reset,
-    /// tolerating OS file-sharing locks on open `readora.sqlite*` handles (e.g. Windows
-    /// `ERROR_SHARING_VIOLATION`).
+    /// leaving open `readora.sqlite*` files and the live `data_dir` intact so POSIX/Windows file
+    /// descriptors remain valid for the running process.
     pub fn cleanup_live_app_artifacts(
         data_dir: &Path,
         cache_dir: &Path,
@@ -248,10 +266,19 @@ impl NativePlatformAdapter {
         Self::cleanup_app_artifacts_internal(data_dir, cache_dir, true, clean_shared_sample_dir)
     }
 
+    /// Cleans ephemeral isolated test directories during `AppCore::drop` when SQLite is in-memory
+    /// and removing empty `data_dir` allows the ephemeral parent directory to be cleaned up.
+    pub fn cleanup_ephemeral_app_artifacts(
+        data_dir: &Path,
+        cache_dir: &Path,
+    ) -> Result<AppCleanupReportDto, ApplicationError> {
+        Self::cleanup_app_artifacts_internal(data_dir, cache_dir, false, false)
+    }
+
     fn cleanup_app_artifacts_internal(
         data_dir: &Path,
         cache_dir: &Path,
-        tolerate_open_sqlite_lock: bool,
+        is_live_cleanup: bool,
         clean_shared_sample_dir: bool,
     ) -> Result<AppCleanupReportDto, ApplicationError> {
         let mut report = AppCleanupReportDto {
@@ -268,23 +295,18 @@ impl NativePlatformAdapter {
                 ));
             }
 
-            // 1. Remove known SQLite database files created by Readora
-            for file_name in KNOWN_SQLITE_FILES {
-                let candidate = data_dir.join(file_name);
-                if is_regular_non_symlink_file(&candidate) {
-                    match fs::remove_file(&candidate) {
-                        Ok(()) => {
-                            report.removed_database_files += 1;
-                        }
-                        Err(_err) if tolerate_open_sqlite_lock => {
-                            // On Windows, an open SQLite handle returns ERROR_SHARING_VIOLATION (32).
-                            // All application tables were already transactionally cleared and checkpointed.
-                        }
-                        Err(e) => {
-                            return Err(ApplicationError::Platform(format!(
+            // 1. Remove known SQLite database files created by Readora ONLY when no live
+            //    SqliteStorage connection is open (unlinking on POSIX orphans the live DB inode).
+            if !is_live_cleanup {
+                for file_name in KNOWN_SQLITE_FILES {
+                    let candidate = data_dir.join(file_name);
+                    if is_regular_non_symlink_file(&candidate) {
+                        fs::remove_file(&candidate).map_err(|e| {
+                            ApplicationError::Platform(format!(
                                 "failed to remove application database file {file_name}: {e}"
-                            )));
-                        }
+                            ))
+                        })?;
+                        report.removed_database_files += 1;
                     }
                 }
             }
@@ -331,8 +353,8 @@ impl NativePlatformAdapter {
                 let _ = fs::remove_dir(&library_dir);
             }
 
-            // Remove data_dir only if completely empty (never deletes unrelated files)
-            if fs::remove_dir(data_dir).is_ok() {
+            // Remove data_dir only when not in live mode and completely empty
+            if !is_live_cleanup && fs::remove_dir(data_dir).is_ok() {
                 report.data_dir_removed = true;
             }
         }
@@ -503,8 +525,13 @@ impl NativePlatformAdapter {
             let Ok(meta) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if meta.file_type().is_symlink() {
-                if fs::remove_file(&path).is_ok() {
+            if is_reparse_or_symlink(&meta) {
+                let removed_link = if cfg!(windows) && meta.is_dir() {
+                    fs::remove_dir(&path).is_ok()
+                } else {
+                    fs::remove_file(&path).is_ok() || fs::remove_dir(&path).is_ok()
+                };
+                if removed_link {
                     removed += 1;
                 }
             } else if meta.is_dir() {
@@ -530,6 +557,7 @@ impl NativePlatformAdapter {
     /// Resolves the path to the staged release manifest inside the given data directory.
     #[must_use]
     pub fn release_manifest_path_in(data_dir: &Path) -> PathBuf {
+        #[cfg(any(test, debug_assertions))]
         if let Ok(custom_path) = std::env::var("READORA_UPDATE_MANIFEST") {
             let trimmed = custom_path.trim();
             if !trimmed.is_empty() {
@@ -544,20 +572,65 @@ impl NativePlatformAdapter {
     pub fn read_release_manifest_in(
         data_dir: &Path,
     ) -> Result<Option<ReleaseManifestDto>, ApplicationError> {
+        const MAX_RELEASE_MANIFEST_BYTES: u64 = 1024 * 1024;
+
         let manifest_path = Self::release_manifest_path_in(data_dir);
-        if !manifest_path.is_file() {
-            return Ok(None);
+        match fs::symlink_metadata(&manifest_path) {
+            Ok(meta) => {
+                if is_reparse_or_symlink(&meta) || !meta.is_file() {
+                    return Err(ApplicationError::Platform(
+                        "refusing to read symlinked or non-regular release manifest".to_owned(),
+                    ));
+                }
+                if meta.len() > MAX_RELEASE_MANIFEST_BYTES {
+                    return Err(ApplicationError::Platform(
+                        "staged release manifest exceeds maximum allowed size".to_owned(),
+                    ));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(ApplicationError::Platform(format!(
+                    "failed to inspect release manifest: {err}"
+                )));
+            }
         }
 
-        let raw_json = fs::read_to_string(&manifest_path).map_err(|e| {
-            ApplicationError::Platform(format!("failed to read release manifest: {e}"))
+        let file = File::open(&manifest_path).map_err(|e| {
+            ApplicationError::Platform(format!("failed to open release manifest: {e}"))
         })?;
-        let manifest: ReleaseManifestDto = serde_json::from_str(&raw_json).map_err(|e| {
+        let mut raw_bytes = Vec::new();
+        file.take(MAX_RELEASE_MANIFEST_BYTES.saturating_add(1))
+            .read_to_end(&mut raw_bytes)
+            .map_err(|e| {
+                ApplicationError::Platform(format!("failed to read release manifest: {e}"))
+            })?;
+        if (raw_bytes.len() as u64) > MAX_RELEASE_MANIFEST_BYTES {
+            return Err(ApplicationError::Platform(
+                "staged release manifest exceeds maximum allowed size".to_owned(),
+            ));
+        }
+
+        let manifest: ReleaseManifestDto = serde_json::from_slice(&raw_bytes).map_err(|e| {
             ApplicationError::Platform(format!("invalid release manifest JSON: {e}"))
         })?;
-        if manifest.version.trim().is_empty() {
+        let normalized_ver = manifest
+            .version
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .trim();
+        if normalized_ver.is_empty() {
             return Err(ApplicationError::Platform(
                 "release manifest is missing required version field".to_owned(),
+            ));
+        }
+        let _ = SemVer::parse(normalized_ver)?;
+        if let Some(ref url) = manifest.download_url
+            && !app_application::is_allowed_github_download_url(url)
+        {
+            return Err(ApplicationError::Platform(
+                "release manifest download_url is not an allowlisted https:// GitHub URL"
+                    .to_owned(),
             ));
         }
         Ok(Some(manifest))
@@ -636,6 +709,11 @@ impl NativePlatformAdapter {
         if !Self::is_hex_sha256(cleaned) {
             return Ok(false);
         }
+        if !is_regular_non_symlink_file(file_path) {
+            return Err(ApplicationError::Platform(
+                "refusing to verify SHA-256 of symlink or non-regular file".to_owned(),
+            ));
+        }
         let mut file = File::open(file_path).map_err(|e| {
             ApplicationError::Platform(format!("failed to open file for SHA-256 check: {e}"))
         })?;
@@ -670,7 +748,14 @@ impl NativePlatformAdapter {
         raw_json: &str,
         target_os: &str,
     ) -> Result<ReleaseManifestDto, ApplicationError> {
-        Self::parse_github_release_json_for_target(raw_json, target_os, std::env::consts::ARCH)
+        let default_arch = if target_os == std::env::consts::OS {
+            std::env::consts::ARCH
+        } else if target_os == "macos" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        Self::parse_github_release_json_for_target(raw_json, target_os, default_arch)
     }
 
     /// Parses a GitHub Releases `/repos/{owner}/{repo}/releases/latest` JSON payload into a
@@ -709,6 +794,7 @@ impl NativePlatformAdapter {
                 "GitHub release payload is missing tag_name".to_owned(),
             ));
         }
+        let _ = SemVer::parse(&version)?;
 
         let title = value
             .get("name")
@@ -739,18 +825,29 @@ impl NativePlatformAdapter {
         let html_url = value
             .get("html_url")
             .and_then(serde_json::Value::as_str)
+            .filter(|u| {
+                u.starts_with("https://")
+                    && !u
+                        .chars()
+                        .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+            })
             .map(ToOwned::to_owned);
 
         let os_extensions: &[&str] = match target_os {
-            "macos" => &[".dmg", ".app.tar.gz", "macos", "darwin"],
-            "windows" => &[".msi", ".exe", "windows", "win64"],
-            "linux" => &[".appimage", ".deb", ".rpm", "linux"],
+            "macos" => &[".app.tar.gz", ".dmg", ".pkg"],
+            "windows" => &[".msi", ".exe"],
+            "linux" => &[".deb", ".appimage", ".rpm"],
             _ => &[".dmg", ".msi", ".appimage"],
         };
 
         let arch_tokens: &[&str] = match target_arch {
             "aarch64" | "arm64" => &["aarch64", "arm64", "universal"],
             "x86_64" | "x64" | "amd64" => &["x86_64", "x64", "amd64", "win64", "universal"],
+            _ => &[],
+        };
+        let foreign_arch_tokens: &[&str] = match target_arch {
+            "aarch64" | "arm64" => &["x86_64", "x64", "amd64", "win64", "win32", "i386", "i686"],
+            "x86_64" | "x64" | "amd64" => &["aarch64", "arm64", "armv7", "armhf"],
             _ => &[],
         };
 
@@ -765,7 +862,36 @@ impl NativePlatformAdapter {
                     .get("name")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("")
+                    .trim()
                     .to_ascii_lowercase();
+                let is_sidecar = asset_name.is_empty()
+                    || asset_name.starts_with("release-manifest")
+                    || asset_name.ends_with(".json")
+                    || asset_name.ends_with(".sig")
+                    || asset_name.ends_with(".sha256")
+                    || asset_name.ends_with(".sha512")
+                    || asset_name.ends_with(".asc")
+                    || asset_name.ends_with(".blockmap")
+                    || asset_name.ends_with(".txt")
+                    || asset_name.ends_with(".yml")
+                    || asset_name.ends_with(".yaml")
+                    || asset_name.ends_with(".md");
+                if is_sidecar {
+                    continue;
+                }
+
+                let matches_os = os_extensions.iter().any(|ext| asset_name.ends_with(ext));
+                if !matches_os {
+                    continue;
+                }
+                if !asset_name.contains("universal")
+                    && foreign_arch_tokens
+                        .iter()
+                        .any(|tok| asset_name.contains(tok))
+                {
+                    continue;
+                }
+
                 let asset_size = asset
                     .get("size")
                     .and_then(serde_json::Value::as_u64)
@@ -774,15 +900,19 @@ impl NativePlatformAdapter {
                     .get("browser_download_url")
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned);
+                if let Some(ref url) = asset_url
+                    && (!url.starts_with("https://")
+                        || url
+                            .chars()
+                            .any(|c| c.is_control() || c.is_whitespace() || c == '\\'))
+                {
+                    continue;
+                }
                 let asset_digest = asset
                     .get("digest")
                     .and_then(serde_json::Value::as_str)
                     .map(|d| d.trim_start_matches("sha256:").to_owned());
 
-                let matches_os = os_extensions.iter().any(|ext| asset_name.contains(ext));
-                if !matches_os {
-                    continue;
-                }
                 let matches_arch = arch_tokens.is_empty()
                     || arch_tokens.iter().any(|tok| asset_name.contains(tok));
                 let is_preferred_updater_bundle = (target_os == "macos"
@@ -836,6 +966,11 @@ impl PlatformPort for NativePlatformAdapter {
                 "file path must not be empty".to_owned(),
             ));
         }
+        if has_unsafe_os_path_or_ads(trimmed) {
+            return Err(ApplicationError::Platform(
+                "unsafe or unsupported file path syntax".to_owned(),
+            ));
+        }
 
         let input_path = Path::new(trimmed);
         let canonical = fs::canonicalize(input_path).map_err(|_| {
@@ -862,7 +997,12 @@ impl PlatformPort for NativePlatformAdapter {
             });
         }
 
-        let canonical_str = canonical.to_string_lossy().into_owned();
+        let canonical_str = normalize_canonical_path_string(&canonical)?;
+        if has_unsafe_os_path_or_ads(&canonical_str) {
+            return Err(ApplicationError::Platform(
+                "resolved file path uses an unsafe Windows device or UNC location".to_owned(),
+            ));
+        }
         let display_name = canonical
             .file_name()
             .map(|n| sanitize_display_name(&n.to_string_lossy()))
@@ -1051,6 +1191,104 @@ impl PlatformPort for NativePlatformAdapter {
         Ok(buf)
     }
 
+    fn read_verified_pdf_bytes(
+        &self,
+        raw_path: &str,
+        expected_doc_id: &DocumentId,
+        max_size_bytes: u64,
+    ) -> Result<Vec<u8>, ApplicationError> {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() || has_unsafe_os_path_or_ads(trimmed) {
+            return Err(ApplicationError::Platform(
+                "unsafe or empty PDF file path".to_owned(),
+            ));
+        }
+
+        let input_path = Path::new(trimmed);
+        let pre_meta = fs::symlink_metadata(input_path).map_err(|_| {
+            ApplicationError::Platform("target PDF file does not exist or is unreadable".to_owned())
+        })?;
+        if is_reparse_or_symlink(&pre_meta) || !pre_meta.is_file() {
+            return Err(ApplicationError::Platform(
+                "refusing to read symlinked or non-regular PDF path".to_owned(),
+            ));
+        }
+
+        let resolved = self.resolve_and_validate_pdf_path(trimmed, max_size_bytes)?;
+        if &resolved.document_id != expected_doc_id {
+            return Err(ApplicationError::Platform(
+                "document identity does not match persisted path".to_owned(),
+            ));
+        }
+
+        let canon_meta =
+            fs::symlink_metadata(Path::new(&resolved.canonical_path)).map_err(|_| {
+                ApplicationError::Platform("unable to inspect resolved PDF file".to_owned())
+            })?;
+        if is_reparse_or_symlink(&canon_meta) || !canon_meta.is_file() {
+            return Err(ApplicationError::Platform(
+                "refusing to read symlinked or non-regular PDF target".to_owned(),
+            ));
+        }
+
+        let file = File::open(Path::new(&resolved.canonical_path)).map_err(|_| {
+            ApplicationError::Platform("failed to open PDF file for reading".to_owned())
+        })?;
+        let opened_meta = file.metadata().map_err(|_| {
+            ApplicationError::Platform("unable to inspect opened PDF handle".to_owned())
+        })?;
+        if !opened_meta.is_file() {
+            return Err(ApplicationError::Platform(
+                "opened handle is not a regular file".to_owned(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if pre_meta.dev() != opened_meta.dev() || pre_meta.ino() != opened_meta.ino() {
+                return Err(ApplicationError::Platform(
+                    "target PDF file changed concurrently during open".to_owned(),
+                ));
+            }
+        }
+        let file_len = opened_meta.len();
+        if file_len == 0 {
+            return Err(ApplicationError::Platform("PDF file is empty".to_owned()));
+        }
+        if max_size_bytes > 0 && file_len > max_size_bytes {
+            return Err(ApplicationError::FileTooLarge {
+                size_bytes: file_len,
+                max_bytes: max_size_bytes,
+            });
+        }
+
+        let cap = usize::try_from(file_len.min(16 * 1024 * 1024)).unwrap_or(64 * 1024);
+        let mut buf = Vec::with_capacity(cap);
+        if max_size_bytes > 0 {
+            file.take(max_size_bytes.saturating_add(1))
+                .read_to_end(&mut buf)
+                .map_err(|_| ApplicationError::Platform("failed to read PDF bytes".to_owned()))?;
+            if (buf.len() as u64) > max_size_bytes {
+                return Err(ApplicationError::FileTooLarge {
+                    size_bytes: buf.len() as u64,
+                    max_bytes: max_size_bytes,
+                });
+            }
+        } else {
+            let mut f = file;
+            f.read_to_end(&mut buf)
+                .map_err(|_| ApplicationError::Platform("failed to read PDF bytes".to_owned()))?;
+        }
+
+        let header_slice = &buf[..buf.len().min(1024)];
+        if !header_slice.windows(5).any(|w| w == b"%PDF-") {
+            return Err(ApplicationError::Platform(
+                "target file does not begin with a valid %PDF- header".to_owned(),
+            ));
+        }
+        Ok(buf)
+    }
+
     fn remove_empty_dir_if_exists(&self, path: &str) -> Result<bool, ApplicationError> {
         let trimmed = path.trim();
         if trimmed.is_empty() {
@@ -1067,7 +1305,7 @@ impl PlatformPort for NativePlatformAdapter {
         use std::path::Component;
 
         let trimmed = candidate_path.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || has_unsafe_os_path_or_ads(trimmed) {
             return false;
         }
         let Ok(canon_parent) = fs::canonicalize(parent_dir) else {
@@ -1109,6 +1347,31 @@ impl PlatformPort for NativePlatformAdapter {
         let canon_cand = canon_cand_parent.join(name);
         canon_cand != canon_parent && canon_cand.starts_with(&canon_parent)
     }
+}
+
+fn normalize_canonical_path_string(canonical: &Path) -> Result<String, ApplicationError> {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        use std::path::Prefix;
+        if let Some(Component::Prefix(prefix)) = canonical.components().next() {
+            match prefix.kind() {
+                Prefix::VerbatimUNC(_, _) | Prefix::UNC(_, _) | Prefix::DeviceNS(_) => {
+                    return Err(ApplicationError::Platform(
+                        "refusing UNC or Windows DOS device path".to_owned(),
+                    ));
+                }
+                Prefix::VerbatimDisk(_) => {
+                    let s = canonical.to_string_lossy();
+                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                        return Ok(stripped.to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(canonical.to_string_lossy().into_owned())
 }
 
 fn derive_document_id(canonical_path: &str) -> Result<DocumentId, ApplicationError> {
@@ -1398,5 +1661,100 @@ mod tests {
             &format!("{}/./staged.pdf", sub_dir.to_string_lossy()),
             &library_pdfs
         ));
+    }
+
+    #[test]
+    fn round2_platform_sidecar_arch_filtering_live_cleanup_and_verified_pdf_read() {
+        let valid_sha = "b".repeat(64);
+        let release_json = serde_json::json!({
+            "tag_name": "v1.1.3",
+            "html_url": "https://github.com/smokeInCloud060201/readora/releases/tag/v1.1.3",
+            "assets": [
+                {
+                    "name": "Readora_1.1.3_macos-aarch64.app.tar.gz.sha256",
+                    "size": 128,
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.3/Readora_1.1.3_macos-aarch64.app.tar.gz.sha256"
+                },
+                {
+                    "name": "Readora_1.1.3_macos-aarch64.app.tar.gz.sig",
+                    "size": 128,
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.3/Readora_1.1.3_macos-aarch64.app.tar.gz.sig"
+                },
+                {
+                    "name": "Readora_1.1.3_macos-x86_64.dmg",
+                    "size": 12_000_000,
+                    "digest": format!("sha256:{}", "c".repeat(64)),
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.3/Readora_1.1.3_macos-x86_64.dmg"
+                },
+                {
+                    "name": "Readora_1.1.3_macos-aarch64.dmg",
+                    "size": 11_000_000,
+                    "digest": format!("sha256:{valid_sha}"),
+                    "browser_download_url": "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.3/Readora_1.1.3_macos-aarch64.dmg"
+                }
+            ]
+        })
+        .to_string();
+
+        let parsed = NativePlatformAdapter::parse_github_release_json_for_target(
+            &release_json,
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.download_url.as_deref(),
+            Some(
+                "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.3/Readora_1.1.3_macos-aarch64.dmg"
+            )
+        );
+        assert_eq!(parsed.sha256, valid_sha);
+
+        assert!(app_application::is_allowed_github_download_url_for_repo(
+            "https://github.com/smokeInCloud060201/readora/releases/download/v1.1.2/Readora.dmg",
+            "smokeInCloud060201/readora",
+        ));
+        assert!(!app_application::is_allowed_github_download_url_for_repo(
+            "https://github.com/other/repo/releases/download/v1.1.2/Readora.dmg",
+            "smokeInCloud060201/readora",
+        ));
+        assert!(!app_application::is_allowed_github_download_url_for_repo(
+            "https://github.com:8443/smokeInCloud060201/readora/releases/download/v1.1.2/Readora.dmg",
+            "smokeInCloud060201/readora",
+        ));
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("com.readora.desktop");
+        let cache_dir = temp.path().join("readora-cache");
+        fs::create_dir_all(data_dir.join("cache")).unwrap();
+        fs::create_dir_all(&cache_dir).unwrap();
+        let sqlite_path = data_dir.join("readora.sqlite");
+        let tile_path = data_dir.join("cache").join("tile.png");
+        fs::write(&sqlite_path, b"SQLite format 3\0").unwrap();
+        fs::write(&tile_path, b"pngdata").unwrap();
+
+        NativePlatformAdapter::cleanup_live_app_artifacts(&data_dir, &cache_dir, false).unwrap();
+        assert!(data_dir.exists());
+        assert!(sqlite_path.exists());
+        assert!(!tile_path.exists());
+
+        let pdf_path = temp.path().join("verified.pdf");
+        let pdf_bytes = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF";
+        fs::write(&pdf_path, pdf_bytes).unwrap();
+        let pdf_path_str = pdf_path.to_string_lossy().into_owned();
+        let adapter = NativePlatformAdapter::new();
+        let resolved = adapter
+            .resolve_and_validate_pdf_path(&pdf_path_str, 1024 * 1024)
+            .unwrap();
+        let read_back = adapter
+            .read_verified_pdf_bytes(&pdf_path_str, &resolved.document_id, 1024 * 1024)
+            .unwrap();
+        assert_eq!(read_back, pdf_bytes);
+        let wrong_id = DocumentId::new("wrong-doc-id").unwrap();
+        assert!(
+            adapter
+                .read_verified_pdf_bytes(&pdf_path_str, &wrong_id, 1024 * 1024)
+                .is_err()
+        );
     }
 }

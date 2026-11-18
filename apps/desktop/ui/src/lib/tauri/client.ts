@@ -35,17 +35,10 @@ import {
   type ViewStateDto,
 } from "../../types/ipc";
 import { hasUsableCanvas2D, readFileToUint8Array } from "../pdf/indexedDbStore";
-import {
-  destroyParsedPdf,
-  extractPdfJsPageLayout,
-  parsePdfWithPdfJs,
-  purgeDocumentRenderCache,
-  renderPdfJsPageToDataUrl,
-  searchPdfJsDocument,
-  type ParsedPdfJsDocument,
-} from "../pdf/pdfCanvasRenderer";
+import type { ParsedPdfJsDocument } from "../pdf/pdfCanvasRenderer";
 import {
   isAllowedGithubHttpsUrl,
+  isAllowedGithubHttpsUrlForRepo,
   isValidGithubRepoSlug,
   parseGithubReleasePayload,
 } from "../pdf/releaseParser";
@@ -57,10 +50,42 @@ import {
 } from "../pdf/textSearch";
 import { BrowserFallbackBridge } from "./fallbackBridge";
 
+type PdfCanvasRendererModule = typeof import("../pdf/pdfCanvasRenderer");
+let pdfCanvasRendererModule: PdfCanvasRendererModule | null = null;
+let pdfCanvasRendererPromise: Promise<PdfCanvasRendererModule> | null = null;
+
+async function loadPdfCanvasRenderer(): Promise<PdfCanvasRendererModule> {
+  if (pdfCanvasRendererModule) {
+    return pdfCanvasRendererModule;
+  }
+  if (!pdfCanvasRendererPromise) {
+    pdfCanvasRendererPromise = import("../pdf/pdfCanvasRenderer").then(
+      (mod) => {
+        pdfCanvasRendererModule = mod;
+        return mod;
+      },
+    );
+  }
+  return pdfCanvasRendererPromise;
+}
+
+function purgeNativeRenderCache(
+  renderCache: Map<string, string>,
+  documentId: string,
+): void {
+  const prefix = `${documentId}:`;
+  for (const key of Array.from(renderCache.keys())) {
+    if (key.startsWith(prefix)) {
+      renderCache.delete(key);
+    }
+  }
+}
+
 export {
   computeMatchBoundingBoxes,
   findMatchesInPageText,
   isAllowedGithubHttpsUrl,
+  isAllowedGithubHttpsUrlForRepo,
   isValidGithubRepoSlug,
   normalizePdfGlyphText,
   parseGithubReleasePayload,
@@ -368,17 +393,22 @@ async function ensureNativeCanvasDoc(
     ) {
       return null;
     }
-    const parsed = await parsePdfWithPdfJs(fileNameHint, bytes, password);
+    const renderer = await loadPdfCanvasRenderer();
+    const parsed = await renderer.parsePdfWithPdfJs(
+      fileNameHint,
+      bytes,
+      password,
+    );
     if (
       (nativeDocEpochs.get(documentId) ?? 0) !== startDocEpoch ||
       globalResetEpoch !== startResetEpoch
     ) {
-      destroyParsedPdf(parsed);
+      renderer.destroyParsedPdf(parsed);
       return null;
     }
     const previous = nativeCanvasDocs.get(documentId);
     if (previous && previous !== parsed) {
-      destroyParsedPdf(previous);
+      renderer.destroyParsedPdf(previous);
     }
     nativeCanvasDocs.set(documentId, parsed);
     return parsed;
@@ -406,21 +436,30 @@ export const readoraApi = {
       const engineKind = await resolveNativeEngineKind(invoke);
       let parsedCanvasDoc: ParsedPdfJsDocument | null = null;
       if (engineKind !== "pdfium_dynamic" && hasUsableCanvas2D()) {
-        parsedCanvasDoc = await parsePdfWithPdfJs(
+        const renderer = await loadPdfCanvasRenderer();
+        parsedCanvasDoc = await renderer.parsePdfWithPdfJs(
           file.name || "Document.pdf",
           bytes,
           password,
         );
       }
-      const session = await bridge.importPdfBytes(
-        file.name || "Document.pdf",
-        bytes,
-        password,
-      );
+      let session: DocumentSessionDto;
+      try {
+        session = await bridge.importPdfBytes(
+          file.name || "Document.pdf",
+          bytes,
+          password,
+        );
+      } catch (err) {
+        if (parsedCanvasDoc) {
+          pdfCanvasRendererModule?.destroyParsedPdf(parsedCanvasDoc);
+        }
+        throw err;
+      }
       if (parsedCanvasDoc) {
         const previous = nativeCanvasDocs.get(session.descriptor.id);
         if (previous && previous !== parsedCanvasDoc) {
-          destroyParsedPdf(previous);
+          pdfCanvasRendererModule?.destroyParsedPdf(previous);
         }
         nativeCanvasDocs.set(session.descriptor.id, parsedCanvasDoc);
       }
@@ -493,10 +532,10 @@ export const readoraApi = {
     bumpNativeDocEpoch(documentId);
     nativeSearchGeneration += 1;
     inFlightCanvasDocs.delete(documentId);
-    destroyParsedPdf(nativeCanvasDocs.get(documentId));
+    pdfCanvasRendererModule?.destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
     nativeViewStates.delete(documentId);
-    purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
+    purgeNativeRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       try {
@@ -601,7 +640,8 @@ export const readoraApi = {
         nativeCanvasDocs.get(command.document_id) ??
         (await ensureNativeCanvasDoc(invoke, command.document_id));
       if (canvasDoc) {
-        const rendered = await renderPdfJsPageToDataUrl(
+        const renderer = await loadPdfCanvasRenderer();
+        const rendered = await renderer.renderPdfJsPageToDataUrl(
           canvasDoc,
           { ...command, generation: effectiveGeneration },
           nativeCanvasRenderCache,
@@ -653,7 +693,8 @@ export const readoraApi = {
         nativeCanvasDocs.get(documentId) ??
         (await ensureNativeCanvasDoc(invoke, documentId));
       if (canvasDoc) {
-        await extractPdfJsPageLayout(canvasDoc, pageIndex);
+        const renderer = await loadPdfCanvasRenderer();
+        await renderer.extractPdfJsPageLayout(canvasDoc, pageIndex);
         return canvasDoc.pageTexts.get(pageIndex) ?? "";
       }
       return invoke<string>("page_extract_text", { documentId, pageIndex });
@@ -668,8 +709,9 @@ export const readoraApi = {
         nativeCanvasDocs.get(request.document_id) ??
         (await ensureNativeCanvasDoc(invoke, request.document_id));
       if (canvasDoc) {
+        const renderer = await loadPdfCanvasRenderer();
         const gen = ++nativeSearchGeneration;
-        return searchPdfJsDocument(
+        return renderer.searchPdfJsDocument(
           canvasDoc,
           request,
           () => gen !== nativeSearchGeneration,
@@ -720,10 +762,10 @@ export const readoraApi = {
     bumpNativeDocEpoch(documentId);
     nativeSearchGeneration += 1;
     inFlightCanvasDocs.delete(documentId);
-    destroyParsedPdf(nativeCanvasDocs.get(documentId));
+    pdfCanvasRendererModule?.destroyParsedPdf(nativeCanvasDocs.get(documentId));
     nativeCanvasDocs.delete(documentId);
     nativeViewStates.delete(documentId);
-    purgeDocumentRenderCache(nativeCanvasRenderCache, documentId);
+    purgeNativeRenderCache(nativeCanvasRenderCache, documentId);
     const invoke = getNativeTauriInvoke();
     if (invoke) {
       await invoke<void>("recent_document_delete", { documentId });
@@ -818,6 +860,13 @@ export const readoraApi = {
       });
       if (settings.render_cache_budget_bytes > 0) {
         cachedNativeRenderBudgetBytes = settings.render_cache_budget_bytes;
+        if (nativeCanvasRenderCache.size > 0) {
+          const renderer = await loadPdfCanvasRenderer();
+          renderer.evictRenderCacheToBudget(
+            nativeCanvasRenderCache,
+            cachedNativeRenderBudgetBytes,
+          );
+        }
       }
       return settings;
     }
@@ -841,17 +890,34 @@ export const readoraApi = {
 
     let stagedVerifiedViaWebview = false;
     if (typeof fetch === "function" && isValidGithubRepoSlug(repo)) {
+      const MAX_RELEASE_JSON_BYTES = 512 * 1024;
+      const controller =
+        typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller
+        ? setTimeout(() => controller.abort(), 5000)
+        : null;
       try {
         const response = await fetch(
           `https://api.github.com/repos/${repo}/releases/latest`,
           {
             method: "GET",
             headers: { Accept: "application/vnd.github+json" },
+            signal: controller?.signal,
           },
         );
-        if (response.ok) {
+        const contentLengthHeader = response.headers?.get("content-length");
+        const parsedContentLength = contentLengthHeader
+          ? Number.parseInt(contentLengthHeader, 10)
+          : 0;
+        const withinHeaderLimit =
+          !Number.isFinite(parsedContentLength) ||
+          parsedContentLength <= MAX_RELEASE_JSON_BYTES;
+        if (response.ok && withinHeaderLimit) {
           const rawJson = await response.text();
-          if (rawJson.trim().startsWith("{")) {
+          if (
+            rawJson.length <= MAX_RELEASE_JSON_BYTES &&
+            rawJson.trim().startsWith("{")
+          ) {
             if (invoke) {
               const staged = await invoke<AppUpdateStatusDto>(
                 "app_stage_github_release",
@@ -867,7 +933,11 @@ export const readoraApi = {
           }
         }
       } catch {
-        // Offline or network unreachable — fall back to native remote manifest or cached state
+        // Offline, timed out, or network unreachable — fall back to native remote manifest or cached state
+      } finally {
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
       }
     }
 
@@ -946,7 +1016,7 @@ export const readoraApi = {
     nativeSearchGeneration += 1;
     inFlightCanvasDocs.clear();
     for (const parsed of nativeCanvasDocs.values()) {
-      destroyParsedPdf(parsed);
+      pdfCanvasRendererModule?.destroyParsedPdf(parsed);
     }
     nativeCanvasDocs.clear();
     nativeViewStates.clear();

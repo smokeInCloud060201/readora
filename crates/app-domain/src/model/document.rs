@@ -190,18 +190,35 @@ pub struct SearchHit {
     pub bounding_boxes: Vec<SearchBoundingBox>,
 }
 
-/// Sanitizes an optional metadata string (`author`, `subject`, `creator`), stripping control
-/// characters and capping maximum character count.
-#[must_use]
-pub fn sanitize_optional_metadata_field(raw: Option<String>, max_chars: usize) -> Option<String> {
-    let cleaned: String = raw?
+const fn is_invisible_or_bidi_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+    )
+}
+
+fn clean_single_line_text(raw: &str, max_chars: usize) -> String {
+    let normalized: String = raw
         .chars()
-        .filter(|c| !c.is_control() || *c == '\t')
-        .collect::<String>()
-        .trim()
+        .filter(|c| !is_invisible_or_bidi_format(*c))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    normalized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .chars()
         .take(max_chars)
-        .collect();
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+/// Sanitizes an optional metadata string (`author`, `subject`, `creator`), mapping control
+/// characters to spaces, stripping invisible BiDi formatting characters, and bounding character count.
+#[must_use]
+pub fn sanitize_optional_metadata_field(raw: Option<String>, max_chars: usize) -> Option<String> {
+    let cleaned = clean_single_line_text(&raw?, max_chars);
     if cleaned.is_empty() {
         None
     } else {
@@ -209,53 +226,52 @@ pub fn sanitize_optional_metadata_field(raw: Option<String>, max_chars: usize) -
     }
 }
 
-/// Sanitizes all titles across a hierarchical PDF outline tree without unbounded recursion.
+/// Sanitizes all titles across a hierarchical PDF outline tree without unbounded recursion or node blowup.
 #[must_use]
 pub fn sanitize_outline_tree(nodes: Vec<OutlineNode>) -> Vec<OutlineNode> {
     const MAX_OUTLINE_DEPTH: usize = 32;
-    fn sanitize_recursive(nodes: Vec<OutlineNode>, depth: usize) -> Vec<OutlineNode> {
-        nodes
-            .into_iter()
-            .map(|mut node| {
-                let clean: String = node
-                    .title
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .collect::<String>()
-                    .trim()
-                    .chars()
-                    .take(512)
-                    .collect();
-                node.title = if clean.is_empty() {
-                    "Untitled Section".to_owned()
-                } else {
-                    clean
-                };
-                node.children = if depth < MAX_OUTLINE_DEPTH {
-                    sanitize_recursive(node.children, depth + 1)
-                } else {
-                    Vec::new()
-                };
-                node
-            })
-            .collect()
+    const MAX_OUTLINE_NODES: usize = 2_048;
+
+    fn sanitize_recursive(
+        nodes: Vec<OutlineNode>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Vec<OutlineNode> {
+        let mut out = Vec::new();
+        for mut node in nodes {
+            if *remaining == 0 {
+                break;
+            }
+            *remaining -= 1;
+
+            let clean = clean_single_line_text(&node.title, 512);
+            node.title = if clean.is_empty() {
+                "Untitled Section".to_owned()
+            } else {
+                clean
+            };
+            node.children = if depth < MAX_OUTLINE_DEPTH && *remaining > 0 {
+                sanitize_recursive(node.children, depth + 1, remaining)
+            } else {
+                Vec::new()
+            };
+            out.push(node);
+        }
+        out
     }
-    sanitize_recursive(nodes, 0)
+
+    let mut remaining = MAX_OUTLINE_NODES;
+    sanitize_recursive(nodes, 0, &mut remaining)
 }
 
-/// Sanitizes an arbitrary filename or title into safe single-line display text.
+/// Sanitizes an arbitrary filename or title into bounded, safe single-line display text.
 #[must_use]
 pub fn sanitize_display_name(raw: &str) -> String {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect::<String>()
-        .trim()
-        .to_owned();
-    if filtered.is_empty() {
+    let cleaned = clean_single_line_text(raw, 512);
+    if cleaned.is_empty() {
         "Untitled.pdf".to_owned()
     } else {
-        filtered
+        cleaned
     }
 }
 
@@ -265,12 +281,7 @@ pub fn sanitize_display_name(raw: &str) -> String {
 /// PDF filename instead of displaying converter junk.
 #[must_use]
 pub fn sanitize_metadata_title(raw: &str) -> Option<String> {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect::<String>()
-        .trim()
-        .to_owned();
+    let cleaned = clean_single_line_text(raw, 512);
     if cleaned.is_empty() {
         return None;
     }
@@ -349,18 +360,28 @@ pub fn sanitize_metadata_title(raw: &str) -> Option<String> {
     Some(stripped.to_owned())
 }
 
-/// Returns `true` if `stem` (or the segment before the first `.`) matches a Windows reserved
-/// device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`..`COM9`, `LPT1`..`LPT9`).
+/// Returns `true` if `stem` (or the segment before the first `.` or `:`) matches a Windows
+/// reserved device name (`CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`,
+/// `COM0`..`COM9`, `LPT0`..`LPT9`, or superscript `COM¹`/`COM²`/`COM³`/`LPT¹`/`LPT²`/`LPT³`).
 #[must_use]
 pub fn is_windows_reserved_device_name(stem: &str) -> bool {
-    let head = stem.split('.').next().unwrap_or(stem).trim();
+    let before_stream = stem.split(':').next().unwrap_or(stem);
+    let head = before_stream
+        .split('.')
+        .next()
+        .unwrap_or(before_stream)
+        .trim()
+        .trim_end_matches(|c: char| c.is_whitespace());
     let upper = head.to_ascii_uppercase();
     matches!(
         upper.as_str(),
         "CON"
+            | "CONIN$"
+            | "CONOUT$"
             | "PRN"
             | "AUX"
             | "NUL"
+            | "COM0"
             | "COM1"
             | "COM2"
             | "COM3"
@@ -370,6 +391,10 @@ pub fn is_windows_reserved_device_name(stem: &str) -> bool {
             | "COM7"
             | "COM8"
             | "COM9"
+            | "COM\u{00B9}"
+            | "COM\u{00B2}"
+            | "COM\u{00B3}"
+            | "LPT0"
             | "LPT1"
             | "LPT2"
             | "LPT3"
@@ -379,7 +404,44 @@ pub fn is_windows_reserved_device_name(stem: &str) -> bool {
             | "LPT7"
             | "LPT8"
             | "LPT9"
+            | "LPT\u{00B9}"
+            | "LPT\u{00B2}"
+            | "LPT\u{00B3}"
     )
+}
+
+/// Returns `true` if `raw_path` uses Windows UNC/DOS device prefixes (`\\server\...`, `\\.\...`,
+/// `\\?\...`), contains NTFS alternate data stream colons (`file.pdf:stream`), NUL bytes, or
+/// includes any Windows reserved DOS device segment.
+#[must_use]
+pub fn has_unsafe_os_path_or_ads(raw_path: &str) -> bool {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.starts_with(r"\\")
+        || trimmed.starts_with("//")
+    {
+        return true;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let has_leading_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+
+    let mut is_first_segment = true;
+    for seg in trimmed.split(['/', '\\']) {
+        if seg.is_empty() {
+            continue;
+        }
+        if is_first_segment && has_leading_drive && seg.len() == 2 && seg.as_bytes()[1] == b':' {
+            is_first_segment = false;
+            continue;
+        }
+        is_first_segment = false;
+        if seg.contains(':') || is_windows_reserved_device_name(seg) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Sanitizes an arbitrary title or filename stem for cross-platform filesystem export:

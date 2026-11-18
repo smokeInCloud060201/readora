@@ -16,13 +16,19 @@ case "${1:-}" in
 
     check_no_symlink_segments() {
       target_path="$1"
+      case "$target_path" in
+        /*) ;;
+        *) return 1 ;;
+      esac
       cur=""
-      old_ifs="$IFS"
-      IFS="/"
-      # shellcheck disable=SC2086
-      set -- $target_path
-      IFS="$old_ifs"
-      for seg in "$@"; do
+      rest="${target_path#/}"
+      while [ -n "$rest" ]; do
+        seg="${rest%%/*}"
+        if [ "$seg" = "$rest" ]; then
+          rest=""
+        else
+          rest="${rest#*/}"
+        fi
         [ -n "$seg" ] || continue
         cur="$cur/$seg"
         if [ -L "$cur" ]; then
@@ -64,7 +70,18 @@ case "${1:-}" in
 
       for d in "$DATA_DIR" "$CACHE_DIR"; do
         if [ -d "$d/updates" ] && [ ! -L "$d/updates" ]; then
-          find -P "$d/updates" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+          find -P "$d/updates" -maxdepth 2 -type f \( \
+            -name "release-manifest*.json" \
+            -o -name "*.deb" \
+            -o -name "*.rpm" \
+            -o -name "*.AppImage" \
+            -o -name "*.tar.gz" \
+            -o -name "*.zip" \
+            -o -name "*.sha256" \
+            -o -name "*.tmp" \
+            -o -name ".*.tmp-*" \
+          \) -delete 2>/dev/null || true
+          find -P "$d/updates" -depth -mindepth 1 -type d -exec rmdir {} + 2>/dev/null || true
           rmdir "$d/updates" 2>/dev/null || true
         fi
       done
@@ -97,7 +114,30 @@ case "${1:-}" in
           rmdir "$DATA_DIR/library" 2>/dev/null || true
         fi
 
+        if is_safe_dir "$DATA_DIR/samples"; then
+          find -P "$DATA_DIR/samples" -maxdepth 1 -type f \( \
+            -name "Readora-Welcome-Guide.pdf" \
+            -o -name "*.tmp" \
+            -o -name ".*.tmp-*" \
+          \) -delete 2>/dev/null || true
+          rmdir "$DATA_DIR/samples" 2>/dev/null || true
+        fi
+
         if is_safe_dir "$DATA_DIR/cache"; then
+          for sub in thumbnails pages temp updates; do
+            if is_safe_dir "$DATA_DIR/cache/$sub"; then
+              find -P "$DATA_DIR/cache/$sub" -maxdepth 2 -type f \( \
+                -name "*.png" \
+                -o -name "*.cache" \
+                -o -name "*.tmp" \
+                -o -name "*.json" \
+                -o -name "*.bin" \
+                -o -name ".*.tmp-*" \
+              \) -delete 2>/dev/null || true
+              find -P "$DATA_DIR/cache/$sub" -depth -mindepth 1 -type d -exec rmdir {} + 2>/dev/null || true
+              rmdir "$DATA_DIR/cache/$sub" 2>/dev/null || true
+            fi
+          done
           find -P "$DATA_DIR/cache" -maxdepth 1 -type f \( \
             -name "*.png" \
             -o -name "*.cache" \
@@ -112,14 +152,20 @@ case "${1:-}" in
       fi
 
       if is_safe_dir "$CACHE_DIR"; then
-        if is_safe_dir "$CACHE_DIR/render-cache"; then
-          find -P "$CACHE_DIR/render-cache" -maxdepth 1 -type f \( \
-            -name "*.png" \
-            -o -name "*.cache" \
-            -o -name "*.bin" \
-          \) -delete 2>/dev/null || true
-          rmdir "$CACHE_DIR/render-cache" 2>/dev/null || true
-        fi
+        for sub in render-cache thumbnails pages temp updates; do
+          if is_safe_dir "$CACHE_DIR/$sub"; then
+            find -P "$CACHE_DIR/$sub" -maxdepth 2 -type f \( \
+              -name "*.png" \
+              -o -name "*.cache" \
+              -o -name "*.tmp" \
+              -o -name "*.json" \
+              -o -name "*.bin" \
+              -o -name ".*.tmp-*" \
+            \) -delete 2>/dev/null || true
+            find -P "$CACHE_DIR/$sub" -depth -mindepth 1 -type d -exec rmdir {} + 2>/dev/null || true
+            rmdir "$CACHE_DIR/$sub" 2>/dev/null || true
+          fi
+        done
         find -P "$CACHE_DIR" -maxdepth 1 -type f \( \
           -name "*.png" \
           -o -name "*.cache" \

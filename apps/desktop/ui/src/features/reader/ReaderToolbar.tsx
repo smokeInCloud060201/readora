@@ -161,6 +161,23 @@ export const ReaderToolbar: React.FC<ReaderToolbarProps> = ({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        const activeEl = document.activeElement;
+        if (activeAppMenu && appMenuBarRef.current?.contains(activeEl)) {
+          appMenuBarRef.current
+            .querySelector<HTMLButtonElement>('button[aria-expanded="true"]')
+            ?.focus();
+        } else if (showZoomMenu && zoomMenuRef.current?.contains(activeEl)) {
+          zoomMenuRef.current
+            .querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+            ?.focus();
+        } else if (
+          showMoreActionsMenu &&
+          moreActionsRef.current?.contains(activeEl)
+        ) {
+          moreActionsRef.current
+            .querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+            ?.focus();
+        }
         setActiveAppMenu(null);
         setShowZoomMenu(false);
         setShowMoreActionsMenu(false);

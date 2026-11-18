@@ -24,7 +24,7 @@
 
 **Status:** Accepted
 
-**Decision:** Implement `PdfiumEngineAdapter` behind `pdf-engine` (`PdfEngine` / `PdfDocument`) using dynamic native binding (`pdfium-render` `thread_safe` + `pdfium_latest`) probing `READORA_PDFIUM_PATH`, OS bundle resource directories (`../Resources/pdfium`, `./pdfium`, `/usr/share/readora/pdfium`), `assets/pdfium/`, and system paths, paired with a built-in pure-Rust fallback engine (`FallbackPdfDocument` with bounded Flate stream inspection) when `libpdfium` is absent.
+**Decision:** Implement `PdfiumEngineAdapter` behind `pdf-engine` (`PdfEngine` / `PdfDocument`) using dynamic native binding (`pdfium-render` `thread_safe` + `pdfium_latest`) probing `READORA_PDFIUM_PATH` (debug/test builds) and verified non-symlink, non-world-writable OS bundle directories (`Contents/MacOS` / `Contents/Frameworks` on macOS, executable directory / `/usr/lib/readora` on Linux, `<exe>/pdfium` on Windows), plus `assets/pdfium/` and system paths in debug/test builds, paired with a built-in pure-Rust fallback engine (`FallbackPdfDocument` with bounded Flate stream inspection) when `libpdfium` is absent.
 
 **Reasoning:** Release installers provision native `libpdfium` for full fidelity while clean developer checkouts and CI runners execute deterministic unit, contract, and vertical-slice tests without committing native binaries to Git.
 

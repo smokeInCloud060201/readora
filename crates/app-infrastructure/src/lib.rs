@@ -88,16 +88,17 @@ impl RenderCachePort for MemoryRenderCache {
             return;
         };
 
-        // Do not cache a single entry larger than the entire cache budget.
-        if entry.byte_size > guard.budget_bytes {
-            return;
-        }
-
+        // Always remove any previous entry for `key` so oversized re-renders never leave stale data.
         if let Some(existing) = guard.entries.remove(&key) {
             guard.current_bytes = guard.current_bytes.saturating_sub(existing.byte_size);
             if let Some(pos) = guard.order.iter().position(|k| k == &key) {
                 guard.order.remove(pos);
             }
+        }
+
+        // Do not cache a single entry larger than the entire cache budget.
+        if entry.byte_size > guard.budget_bytes {
+            return;
         }
 
         guard.evict_to_fit(entry.byte_size);
@@ -123,6 +124,15 @@ impl RenderCachePort for MemoryRenderCache {
             }
         }
         guard.order.retain(|k| &k.document_id != document_id);
+    }
+
+    fn clear(&self) {
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        guard.entries.clear();
+        guard.order.clear();
+        guard.current_bytes = 0;
     }
 
     fn set_budget_bytes(&self, budget_bytes: usize) {

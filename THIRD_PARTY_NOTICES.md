@@ -10,7 +10,7 @@ This distribution incorporates or links against the following open-source compon
 ### PDFium (Chromium PDF Engine — `chromium/8165`)
 - **Upstream**: <https://pdfium.googlesource.com/pdfium/> (prebuilt distribution: `bblanchon/pdfium-binaries` tag `chromium/8165`)
 - **Version**: `chromium-8165`
-- **License**: `BSD-3-Clause AND Apache-2.0`
+- **License**: `BSD-3-Clause AND Apache-2.0` (full upstream license bundled as [`LICENSE-PDFIUM`](LICENSE-PDFIUM) in every release archive)
 - **Usage**: Dynamically loaded via `pdfium-render` (`0.8.37`) and `libloading` (`0.9.0`) from trusted application bundle paths (or `READORA_PDFIUM_PATH` in development/test builds). When absent, Readora uses its built-in deterministic pure-Rust PDF engine.
 
 ```text
@@ -29,6 +29,18 @@ distribution.
    * Neither the name of Google Inc. nor the names of its
 contributors may be used to endorse or promote products derived from
 this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ---

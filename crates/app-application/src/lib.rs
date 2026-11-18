@@ -15,7 +15,7 @@ pub use dto::{
     NavigationAction, OpenDocumentRequest, ReleaseManifestDto, RenderPageCommand,
     RenderedPageResultDto, SearchRequestDto, SettingsPatchDto, SystemDiagnosticsDto,
     ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand,
-    is_allowed_github_download_url,
+    is_allowed_github_download_url, is_allowed_github_download_url_for_repo,
 };
 pub use error::ApplicationError;
 pub use ports::platform::{PlatformPort, ResolvedFileInfo};
@@ -35,7 +35,10 @@ pub use use_cases::navigate_view::{
 };
 pub use use_cases::open_document::{OpenedDocumentSession, execute_open_document};
 pub use use_cases::render_page::{execute_render_page, execute_render_page_cancellable};
-pub use use_cases::search::{DEFAULT_MAX_SEARCH_HITS, execute_search_document};
+pub use use_cases::search::{
+    DEFAULT_MAX_SEARCH_HITS, MAX_SEARCH_QUERY_BYTES, execute_search_document,
+    execute_search_document_cancellable,
+};
 pub use use_cases::settings::{execute_get_settings, execute_update_settings};
 
 #[cfg(test)]
@@ -368,6 +371,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .retain(|k, _| &k.document_id != document_id);
+        }
+
+        fn clear(&self) {
+            self.cache.lock().unwrap().clear();
         }
 
         fn set_budget_bytes(&self, budget_bytes: usize) {

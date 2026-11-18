@@ -40,9 +40,19 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   const prevRenderModeRef = useRef<RenderMode>(renderMode);
   const prevRotationRef = useRef<Rotation>(rotation);
   const isProgrammaticScrollRef = useRef<boolean>(false);
+  const scrollRafRef = useRef<number | null>(null);
   const activeRendersRef = useRef<number>(0);
   const slotWaitersRef = useRef<Array<() => void>>([]);
   const pages = Array.from({ length: pageCount }, (_, i) => i);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
 
   const syncPanelScrollToPage = (targetPage: number, forceTopReset = false) => {
     const el = panelRef.current;
@@ -220,21 +230,26 @@ export const ThumbnailsPanel: React.FC<ThumbnailsPanelProps> = ({
   }, [documentId, pageCount, renderMode, rotation, scrollCenterPage]);
 
   const handlePanelScroll = () => {
-    if (isProgrammaticScrollRef.current) return;
-    const el = panelRef.current;
-    if (!el || pageCount <= 0) return;
-    const approxIdx = Math.min(
-      pageCount - 1,
-      Math.max(
-        0,
-        Math.floor(
-          (el.scrollTop + el.clientHeight * 0.4) / ESTIMATED_THUMB_ROW_HEIGHT,
-        ),
-      ),
-    );
-    if (Math.abs(approxIdx - scrollCenterPage) >= 3) {
-      setScrollCenterPage(approxIdx);
+    if (isProgrammaticScrollRef.current || scrollRafRef.current !== null) {
+      return;
     }
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = panelRef.current;
+      if (!el || pageCount <= 0) return;
+      const approxIdx = Math.min(
+        pageCount - 1,
+        Math.max(
+          0,
+          Math.floor(
+            (el.scrollTop + el.clientHeight * 0.4) / ESTIMATED_THUMB_ROW_HEIGHT,
+          ),
+        ),
+      );
+      if (Math.abs(approxIdx - scrollCenterPage) >= 3) {
+        setScrollCenterPage(approxIdx);
+      }
+    });
   };
 
   const cleanCoverTitle = (documentTitle || "PDF")

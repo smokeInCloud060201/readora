@@ -30,6 +30,9 @@ impl From<ApplicationError> for CommandErrorDto {
     }
 }
 
+/// Official GitHub `owner/repo` slug used to pin update checks and binary self-updates in release builds.
+pub const OFFICIAL_RELEASE_REPO: &str = "smokeInCloud060201/readora";
+
 /// Typed IPC command dispatcher wrapping `AppCore`.
 pub struct DesktopCommandHandler {
     core: AppCore,
@@ -54,12 +57,33 @@ impl DesktopCommandHandler {
         Ok(Self { core })
     }
 
+    /// Handles `document_open` when authorized either by the native OS file picker (`dialog_approved`)
+    /// or as a previously persisted/app-owned document (`is_authorized_reopen_path`).
+    pub fn document_open_authorized(
+        &self,
+        request: OpenDocumentRequest,
+        dialog_approved: bool,
+    ) -> Result<DocumentSessionDto, CommandErrorDto> {
+        if !dialog_approved
+            && !self
+                .core
+                .is_authorized_reopen_path(&request.path)
+                .unwrap_or(false)
+        {
+            return Err(CommandErrorDto {
+                code: "permission_denied".to_owned(),
+                message: "Opening external files requires the native file picker dialog".to_owned(),
+            });
+        }
+        Ok(self.core.open_document(request)?)
+    }
+
     /// Handles `document_open`.
     pub fn document_open(
         &self,
         request: OpenDocumentRequest,
     ) -> Result<DocumentSessionDto, CommandErrorDto> {
-        Ok(self.core.open_document(request)?)
+        self.document_open_authorized(request, false)
     }
 
     /// Imports raw PDF bytes selected via file picker or drag-and-drop into the local library and opens a session.
@@ -244,7 +268,24 @@ impl DesktopCommandHandler {
     }
 
     /// Handles `settings_update`.
-    pub fn settings_update(&self, patch: SettingsPatchDto) -> Result<AppSettings, CommandErrorDto> {
+    pub fn settings_update(
+        &self,
+        mut patch: SettingsPatchDto,
+    ) -> Result<AppSettings, CommandErrorDto> {
+        #[cfg(not(any(test, debug_assertions)))]
+        {
+            if let Some(ref repo) = patch.github_release_repo
+                && repo.trim() != OFFICIAL_RELEASE_REPO
+            {
+                return Err(CommandErrorDto {
+                    code: "validation_error".to_owned(),
+                    message: "Release builds pin updates to the official repository".to_owned(),
+                });
+            }
+            patch.github_release_repo = Some(OFFICIAL_RELEASE_REPO.to_owned());
+        }
+        #[cfg(any(test, debug_assertions))]
+        let _ = &mut patch;
         Ok(self.core.update_settings(patch)?)
     }
 
@@ -304,7 +345,7 @@ impl DesktopCommandHandler {
         match cmd {
             "document_open" => {
                 let request: OpenDocumentRequest = parse_arg(&args, "request")?;
-                to_json_value(self.document_open(request)?)
+                to_json_value(self.document_open_authorized(request, false)?)
             }
             "document_open_sample" => to_json_value(self.document_open_sample()?),
             "document_sync_page_count" => {
@@ -407,10 +448,16 @@ impl DesktopCommandHandler {
                     .unwrap_or(false);
                 if args.get("fetchRemote").and_then(Value::as_bool) == Some(true)
                     && let Ok(settings) = self.settings_get()
-                    && let Ok(manifest) =
-                        crate::server::fetch_github_release_manifest(&settings.github_release_repo)
                 {
-                    let _ = self.app_stage_update_manifest(manifest);
+                    let release_repo = if cfg!(not(any(test, debug_assertions))) {
+                        OFFICIAL_RELEASE_REPO
+                    } else {
+                        settings.github_release_repo.as_str()
+                    };
+                    if let Ok(manifest) = crate::server::fetch_github_release_manifest(release_repo)
+                    {
+                        let _ = self.app_stage_update_manifest(manifest);
+                    }
                 }
                 to_json_value(self.app_check_for_updates(include_dismissed)?)
             }
@@ -422,10 +469,11 @@ impl DesktopCommandHandler {
                 let raw_json: String = parse_arg(&args, "rawJson")?;
                 to_json_value(self.app_stage_github_release(&raw_json)?)
             }
-            "app_install_update" => {
-                let version: String = parse_arg(&args, "version")?;
-                to_json_value(self.app_install_update(&version)?)
-            }
+            "app_install_update" => Err(CommandErrorDto {
+                code: "forbidden".to_owned(),
+                message: "Update installation must be invoked through the verified self-updater"
+                    .to_owned(),
+            }),
             "app_dismiss_update" => {
                 let version: String = parse_arg(&args, "version")?;
                 to_json_value(self.app_dismiss_update(&version)?)

@@ -811,4 +811,104 @@ mod tests {
             .is_none()
         );
     }
+
+    #[test]
+    fn round2_rpc_open_authorization_install_block_cross_site_get_and_svg_csp() {
+        let temp = tempfile::tempdir().unwrap();
+        let pdf_path = temp.path().join("External-Doc.pdf");
+        let pdf_bytes = build_synthetic_pdf_bytes("External Doc", &["Hello world"], None);
+        std::fs::write(&pdf_path, pdf_bytes).unwrap();
+        let pdf_path_str = pdf_path.to_string_lossy().into_owned();
+
+        let handler = DesktopCommandHandler::try_new_in_memory().unwrap();
+        let denied = handler
+            .dispatch_rpc(
+                "document_open",
+                json!({
+                    "request": {
+                        "path": pdf_path_str,
+                        "password": null
+                    }
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(denied.code, "permission_denied");
+
+        let authorized_session = handler
+            .document_open_authorized(
+                app_application::OpenDocumentRequest {
+                    path: pdf_path_str.clone(),
+                    password: None,
+                },
+                true,
+            )
+            .unwrap();
+        handler
+            .dispatch_rpc(
+                "document_close",
+                json!({ "documentId": authorized_session.descriptor.id.as_str() }),
+            )
+            .unwrap();
+
+        let reopened = handler
+            .dispatch_rpc(
+                "document_open",
+                json!({
+                    "request": {
+                        "path": pdf_path_str,
+                        "password": null
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened["descriptor"]["id"],
+            json!(authorized_session.descriptor.id.as_str())
+        );
+
+        let install_err = handler
+            .dispatch_rpc("app_install_update", json!({ "version": "9.9.9" }))
+            .unwrap_err();
+        assert_eq!(install_err.code, "forbidden");
+
+        let ui_dir = temp.path().join("ui");
+        std::fs::create_dir_all(&ui_dir).unwrap();
+        std::fs::write(ui_dir.join("index.html"), b"<!doctype html>").unwrap();
+        std::fs::write(
+            ui_dir.join("logo.svg"),
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+        )
+        .unwrap();
+
+        let port = 52425_u16;
+        let token = generate_session_token();
+
+        let cross_site_get = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nSec-Fetch-Site: cross-site\r\n\r\n"
+        );
+        let mut cursor = Cursor::new(cross_site_get.into_bytes());
+        let cross_err = read_and_authorize_http_request(&mut cursor, port, &token).unwrap_err();
+        assert_eq!(cross_err.status, "403 Forbidden");
+
+        let missing_png =
+            format!("GET /missing-icon.png HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        let mut cursor = Cursor::new(missing_png.into_bytes());
+        let parsed_png = read_and_authorize_http_request(&mut cursor, port, &token)
+            .unwrap()
+            .unwrap();
+        let png_resp =
+            route_http_request(parsed_png, &ui_dir, &handler, |_, _| r#"{"status":"noop"}"#);
+        assert_eq!(png_resp.status, "404 Not Found");
+
+        let svg_get = format!("GET /logo.svg HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        let mut cursor = Cursor::new(svg_get.into_bytes());
+        let parsed_svg = read_and_authorize_http_request(&mut cursor, port, &token)
+            .unwrap()
+            .unwrap();
+        let svg_resp =
+            route_http_request(parsed_svg, &ui_dir, &handler, |_, _| r#"{"status":"noop"}"#);
+        assert_eq!(svg_resp.status, "200 OK");
+        assert_eq!(svg_resp.content_type, "image/svg+xml");
+        assert!(svg_resp.include_csp);
+    }
 }

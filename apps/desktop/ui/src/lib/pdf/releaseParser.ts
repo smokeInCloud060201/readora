@@ -39,7 +39,7 @@ export function isAllowedGithubHttpsUrl(
   rawUrl: string | null | undefined,
 ): boolean {
   const trimmed = (rawUrl ?? "").trim();
-  if (!trimmed.startsWith("https://")) {
+  if (!trimmed.startsWith("https://") || trimmed.includes("\\")) {
     return false;
   }
   try {
@@ -48,8 +48,33 @@ export function isAllowedGithubHttpsUrl(
       parsed.protocol === "https:" &&
       parsed.username === "" &&
       parsed.password === "" &&
+      (parsed.port === "" || parsed.port === "443") &&
       ALLOWED_GITHUB_HOSTS.has(parsed.hostname.toLowerCase())
     );
+  } catch {
+    return false;
+  }
+}
+
+export function isAllowedGithubHttpsUrlForRepo(
+  rawUrl: string | null | undefined,
+  repoSlug: string,
+): boolean {
+  if (!isAllowedGithubHttpsUrl(rawUrl) || !isValidGithubRepoSlug(repoSlug)) {
+    return false;
+  }
+  try {
+    const parsed = new URL((rawUrl ?? "").trim());
+    const host = parsed.hostname.toLowerCase();
+    const pathLower = parsed.pathname.toLowerCase();
+    const slugLower = repoSlug.trim().toLowerCase();
+    if (host === "github.com") {
+      return pathLower.startsWith(`/${slugLower}/releases/`);
+    }
+    if (host === "api.github.com") {
+      return pathLower.startsWith(`/repos/${slugLower}/`);
+    }
+    return true;
   } catch {
     return false;
   }
@@ -95,9 +120,22 @@ interface GithubReleasePayload {
   assets?: GithubReleaseAssetPayload[];
 }
 
+const SEMVER_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/;
+const SIDECAR_EXTENSIONS = [
+  ".sha256",
+  ".sig",
+  ".asc",
+  ".json",
+  ".jsonl",
+  ".sbom",
+  ".txt",
+  ".blockmap",
+];
+
 export function parseGithubReleasePayload(
   rawJson: string,
   targetOs = "macos",
+  targetArch = "aarch64",
 ): ReleaseManifestDto {
   const rawParsed: unknown = JSON.parse(rawJson);
   if (!rawParsed || typeof rawParsed !== "object" || Array.isArray(rawParsed)) {
@@ -112,8 +150,8 @@ export function parseGithubReleasePayload(
 
   const rawTag = (parsed.tag_name ?? "").trim();
   const version = rawTag.replace(/^[vV]/, "").trim();
-  if (!version) {
-    throw new Error("GitHub release payload is missing tag_name");
+  if (!version || !SEMVER_RE.test(version)) {
+    throw new Error("GitHub release payload has missing or invalid tag_name");
   }
 
   const title = parsed.name?.trim() || `Focus Reader ${version} is ready`;
@@ -134,13 +172,29 @@ export function parseGithubReleasePayload(
         ? [".appimage", ".deb", ".rpm", "linux"]
         : [".app.tar.gz", ".dmg", "macos", "darwin"];
 
+  const foreignArchTokens =
+    targetArch === "aarch64"
+      ? ["x86_64", "amd64", "x64", "win64"]
+      : targetArch === "x86_64"
+        ? ["aarch64", "arm64"]
+        : [];
+
   let selectedSize = 0;
   let selectedUrl: string | null = null;
   let selectedSha256 = "";
 
   if (Array.isArray(parsed.assets)) {
     for (const asset of parsed.assets) {
-      const nameLower = (asset.name ?? "").toLowerCase();
+      const nameLower = (asset.name ?? "").toLowerCase().trim();
+      if (!nameLower) {
+        continue;
+      }
+      if (SIDECAR_EXTENSIONS.some((ext) => nameLower.endsWith(ext))) {
+        continue;
+      }
+      if (foreignArchTokens.some((tok) => nameLower.includes(tok))) {
+        continue;
+      }
       const matchesOs = osTokens.some((tok) => nameLower.includes(tok));
       if (!matchesOs) {
         continue;

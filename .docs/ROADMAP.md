@@ -705,7 +705,7 @@ integration                                     `pdfium-adapter` (`chromium/8165
 
 4 --- Productivity      Complete                Multi-page search, SQLite
 features                                        bookmarks & annotations
-                                                (`0001`–`0004` migrations)
+                                                (`0001`–`0005` migrations)
 
 5 --- Advanced          Complete                Form/signature inspection,
 capabilities                                    atomic annotation export,

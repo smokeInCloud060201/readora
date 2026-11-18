@@ -68,6 +68,49 @@ interface PreparedPrintPage {
 const SCROLL_NAV_DEBOUNCE_MS = 100;
 const MAX_PRINT_CACHE_ENTRIES = 64;
 
+function toCachedPrintUrl(dataUrl: string): string {
+  if (
+    dataUrl.startsWith("data:image/") &&
+    dataUrl.length > 256 &&
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function" &&
+    typeof URL.revokeObjectURL === "function" &&
+    typeof Blob === "function" &&
+    typeof atob === "function"
+  ) {
+    const commaIdx = dataUrl.indexOf(",");
+    if (commaIdx > 0) {
+      const meta = dataUrl.slice(5, commaIdx);
+      const payload = dataUrl.slice(commaIdx + 1);
+      if (meta.endsWith(";base64")) {
+        try {
+          const mime = meta.slice(0, -7) || "image/png";
+          const binary = atob(payload);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          return URL.createObjectURL(new Blob([bytes], { type: mime }));
+        } catch {
+          return dataUrl;
+        }
+      }
+    }
+  }
+  return dataUrl;
+}
+
+function revokeObjectUrlIfBlob(url: string | undefined): void {
+  if (
+    url &&
+    url.startsWith("blob:") &&
+    typeof URL !== "undefined" &&
+    typeof URL.revokeObjectURL === "function"
+  ) {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function isCommandError(err: unknown): err is CommandErrorDto {
   if (typeof err !== "object" || err === null) {
     return false;
@@ -183,6 +226,7 @@ export const App: React.FC = () => {
   const searchRequestGenRef = useRef<number>(0);
   const openRequestSeqRef = useRef<number>(0);
   const renderSeqRef = useRef<number>(0);
+  const navSeqRef = useRef<number>(0);
   const scrollNavTimerRef = useRef<number | null>(null);
   const scrollNavSeqRef = useRef<number>(0);
   const effectiveZoomRef = useRef<number>(1.0);
@@ -289,17 +333,25 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const clearPrintCache = useCallback(() => {
+    for (const url of printCacheRef.current.values()) {
+      revokeObjectUrlIfBlob(url);
+    }
+    printCacheRef.current.clear();
+  }, []);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       clearPendingPrintCleanup();
+      clearPrintCache();
       if (scrollNavTimerRef.current !== null) {
         window.clearTimeout(scrollNavTimerRef.current);
         scrollNavTimerRef.current = null;
       }
     };
-  }, [clearPendingPrintCleanup]);
+  }, [clearPendingPrintCleanup, clearPrintCache]);
 
   useEffect(() => {
     if (
@@ -431,6 +483,7 @@ export const App: React.FC = () => {
     ) => {
       cancelPendingScrollNav();
       const openSeq = ++openRequestSeqRef.current;
+      navSeqRef.current += 1;
       searchRequestGenRef.current += 1;
       printJobSeqRef.current += 1;
       clearPendingPrintCleanup();
@@ -451,6 +504,7 @@ export const App: React.FC = () => {
         if (prevDocId && prevDocId !== opened.descriptor.id) {
           void readoraApi.closeDocument(prevDocId).catch(() => {});
         }
+        renderSeqRef.current += 1;
         sessionRef.current = opened;
         effectiveZoomRef.current = opened.view_state.zoom;
         setEffectiveZoom(opened.view_state.zoom);
@@ -463,7 +517,7 @@ export const App: React.FC = () => {
         setSearchHits([]);
         setActiveSearchHitIndex(0);
         setPrintPages(null);
-        printCacheRef.current.clear();
+        clearPrintCache();
         await loadVisiblePageAndPrefetch(
           opened.descriptor.id,
           opened.view_state,
@@ -480,7 +534,9 @@ export const App: React.FC = () => {
         setRecentDocs(recents);
         setAnnotations(loadedAnnotations);
       } catch (err) {
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          return;
+        }
         if (silentStartup) {
           try {
             const refreshedRecents = await readoraApi.listRecentDocuments(20);
@@ -516,6 +572,7 @@ export const App: React.FC = () => {
     [
       cancelPendingScrollNav,
       clearPendingPrintCleanup,
+      clearPrintCache,
       closeAllModals,
       loadVisiblePageAndPrefetch,
     ],
@@ -536,10 +593,14 @@ export const App: React.FC = () => {
         setSettings(loadedSettings);
 
         if (loadedSettings.auto_check_updates !== false) {
-          const status = await readoraApi.checkForUpdates(false);
-          if (isMountedRef.current) {
-            setUpdateStatus(status);
-          }
+          void readoraApi
+            .checkForUpdates(false)
+            .then((status) => {
+              if (isMountedRef.current) {
+                setUpdateStatus(status);
+              }
+            })
+            .catch(() => {});
         } else {
           setUpdateStatus(null);
         }
@@ -567,6 +628,7 @@ export const App: React.FC = () => {
     async (file: File, password: string | null = null) => {
       cancelPendingScrollNav();
       const openSeq = ++openRequestSeqRef.current;
+      navSeqRef.current += 1;
       searchRequestGenRef.current += 1;
       printJobSeqRef.current += 1;
       clearPendingPrintCleanup();
@@ -581,6 +643,7 @@ export const App: React.FC = () => {
         if (prevDocId && prevDocId !== opened.descriptor.id) {
           void readoraApi.closeDocument(prevDocId).catch(() => {});
         }
+        renderSeqRef.current += 1;
         sessionRef.current = opened;
         effectiveZoomRef.current = opened.view_state.zoom;
         setEffectiveZoom(opened.view_state.zoom);
@@ -593,7 +656,7 @@ export const App: React.FC = () => {
         setSearchHits([]);
         setActiveSearchHitIndex(0);
         setPrintPages(null);
-        printCacheRef.current.clear();
+        clearPrintCache();
         await loadVisiblePageAndPrefetch(
           opened.descriptor.id,
           opened.view_state,
@@ -610,7 +673,9 @@ export const App: React.FC = () => {
         setRecentDocs(recents);
         setAnnotations(loadedAnnotations);
       } catch (err) {
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || openSeq !== openRequestSeqRef.current) {
+          return;
+        }
         if (isCommandError(err)) {
           const fallbackPath = `/documents/${file.name}`;
           if (err.code === "password_required") {
@@ -636,40 +701,51 @@ export const App: React.FC = () => {
     [
       cancelPendingScrollNav,
       clearPendingPrintCleanup,
+      clearPrintCache,
       closeAllModals,
       loadVisiblePageAndPrefetch,
     ],
   );
 
   const handleCloseDocument = useCallback(async () => {
-    if (!session) return;
+    const activeDocId = sessionRef.current?.descriptor.id;
+    if (!activeDocId) return;
     cancelPendingScrollNav();
     openRequestSeqRef.current += 1;
+    navSeqRef.current += 1;
     searchRequestGenRef.current += 1;
     printJobSeqRef.current += 1;
     clearPendingPrintCleanup();
     renderSeqRef.current += 1;
     setIsRendering(false);
-    await readoraApi.closeDocument(session.descriptor.id);
-    if (!isMountedRef.current) return;
-    sessionRef.current = null;
-    setSession(null);
-    effectiveZoomRef.current = 1.0;
-    setEffectiveZoom(1.0);
-    setRenderedState(null);
-    setShowHighlightPopover(false);
-    setIsSearchOpen(false);
-    setPageText("");
-    setSearchHits([]);
-    setActiveSearchHitIndex(0);
-    setAnnotations([]);
-    setPrintPages(null);
-    printCacheRef.current.clear();
-    const recents = await readoraApi.listRecentDocuments(20);
-    if (isMountedRef.current) {
-      setRecentDocs(recents);
+    try {
+      await readoraApi.closeDocument(activeDocId);
+      if (!isMountedRef.current) return;
+      sessionRef.current = null;
+      setSession(null);
+      effectiveZoomRef.current = 1.0;
+      setEffectiveZoom(1.0);
+      setRenderedState(null);
+      setShowHighlightPopover(false);
+      setIsSearchOpen(false);
+      setPageText("");
+      setSearchHits([]);
+      setActiveSearchHitIndex(0);
+      setAnnotations([]);
+      setPrintPages(null);
+      clearPrintCache();
+      const recents = await readoraApi.listRecentDocuments(20);
+      if (isMountedRef.current) {
+        setRecentDocs(recents);
+      }
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Failed to close document",
+        );
+      }
     }
-  }, [cancelPendingScrollNav, clearPendingPrintCleanup, session]);
+  }, [cancelPendingScrollNav, clearPendingPrintCleanup, clearPrintCache]);
 
   const handleShowLibrary = useCallback(() => {
     setLibraryCollection("all");
@@ -701,6 +777,9 @@ export const App: React.FC = () => {
   const dispatchNavigation = useCallback(
     async (action: NavigationActionDto) => {
       if (!session) return;
+      const targetDocId = session.descriptor.id;
+      const prevZoom = session.view_state.zoom;
+      const navSeq = ++navSeqRef.current;
       cancelPendingScrollNav();
       if (
         action.kind === "set_zoom" ||
@@ -711,28 +790,37 @@ export const App: React.FC = () => {
         action.kind === "rotate_counter_clockwise" ||
         action.kind === "set_render_mode"
       ) {
-        void readoraApi.cancelRenders(session.descriptor.id);
+        void readoraApi.cancelRenders(targetDocId);
       }
       try {
-        const updatedView = await readoraApi.navigate(
-          session.descriptor.id,
-          action,
-        );
+        const updatedView = await readoraApi.navigate(targetDocId, action);
+        if (
+          !isMountedRef.current ||
+          navSeq !== navSeqRef.current ||
+          sessionRef.current?.descriptor.id !== targetDocId
+        ) {
+          return;
+        }
         let targetScale = effectiveZoomRef.current;
         if (updatedView.fit_mode === "manual") {
           targetScale = updatedView.zoom;
           effectiveZoomRef.current = updatedView.zoom;
           setEffectiveZoom(updatedView.zoom);
-        } else if (
-          action.kind === "set_fit_mode" &&
-          Math.abs(effectiveZoomRef.current - session.view_state.zoom) < 0.005
-        ) {
-          targetScale = updatedView.zoom;
-          effectiveZoomRef.current = updatedView.zoom;
-          setEffectiveZoom(updatedView.zoom);
+        } else if (action.kind === "set_fit_mode") {
+          const containerWidth =
+            document.querySelector<HTMLElement>(".document-canvas-viewport")
+              ?.clientWidth ?? 0;
+          if (
+            containerWidth === 0 ||
+            Math.abs(effectiveZoomRef.current - prevZoom) < 0.005
+          ) {
+            targetScale = updatedView.zoom;
+            effectiveZoomRef.current = updatedView.zoom;
+            setEffectiveZoom(updatedView.zoom);
+          }
         }
         setSession((prev) =>
-          prev && prev.descriptor.id === session.descriptor.id
+          prev && prev.descriptor.id === targetDocId
             ? { ...prev, view_state: updatedView }
             : prev,
         );
@@ -744,12 +832,19 @@ export const App: React.FC = () => {
           setProgrammaticScrollTrigger((prev) => prev + 1);
         }
         await loadVisiblePageAndPrefetch(
-          session.descriptor.id,
+          targetDocId,
           updatedView,
           settings.prefetch_window,
           targetScale,
         );
       } catch (err) {
+        if (
+          !isMountedRef.current ||
+          navSeq !== navSeqRef.current ||
+          sessionRef.current?.descriptor.id !== targetDocId
+        ) {
+          return;
+        }
         setErrorBanner(
           isCommandError(err) ? err.message : "Navigation update failed",
         );
@@ -1052,37 +1147,61 @@ export const App: React.FC = () => {
       setActiveSearchHitIndex(0);
       return;
     }
-    const hits = await readoraApi.searchDocument({
-      document_id: targetDocId,
-      query,
-      case_sensitive: caseSensitive,
-      max_hits: 100,
-    });
-    if (
-      !isMountedRef.current ||
-      requestGen !== searchRequestGenRef.current ||
-      sessionRef.current?.descriptor.id !== targetDocId
-    ) {
-      return;
+    try {
+      const hits = await readoraApi.searchDocument({
+        document_id: targetDocId,
+        query,
+        case_sensitive: caseSensitive,
+        max_hits: 100,
+      });
+      if (
+        !isMountedRef.current ||
+        requestGen !== searchRequestGenRef.current ||
+        sessionRef.current?.descriptor.id !== targetDocId
+      ) {
+        return;
+      }
+      setSearchHits(hits);
+      setActiveSearchHitIndex(0);
+      setStatusMessage(`Found ${hits.length} match(es)`);
+    } catch (err) {
+      if (
+        !isMountedRef.current ||
+        requestGen !== searchRequestGenRef.current ||
+        sessionRef.current?.descriptor.id !== targetDocId
+      ) {
+        return;
+      }
+      setErrorBanner(
+        isCommandError(err) ? err.message : "Failed to search document",
+      );
     }
-    setSearchHits(hits);
-    setActiveSearchHitIndex(0);
-    setStatusMessage(`Found ${hits.length} match(es)`);
   };
 
   const handleSavePreferences = async (patch: SettingsPatchDto) => {
-    const updated = await readoraApi.updateSettings(patch);
-    setSettings(updated);
-    if (patch.auto_check_updates === false) {
-      setUpdateStatus((prev) =>
-        prev ? { ...prev, update_available: false } : null,
-      );
-    } else if (patch.auto_check_updates === true) {
-      const status = await readoraApi.checkForUpdates(false);
-      setUpdateStatus(status);
+    try {
+      const updated = await readoraApi.updateSettings(patch);
+      if (!isMountedRef.current) return;
+      setSettings(updated);
+      if (patch.auto_check_updates === false) {
+        setUpdateStatus((prev) =>
+          prev ? { ...prev, update_available: false } : null,
+        );
+      } else if (patch.auto_check_updates === true) {
+        const status = await readoraApi.checkForUpdates(false);
+        if (isMountedRef.current) {
+          setUpdateStatus(status);
+        }
+      }
+      setShowPreferences(false);
+      setStatusMessage("Preferences saved");
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Failed to save preferences",
+        );
+      }
     }
-    setShowPreferences(false);
-    setStatusMessage("Preferences saved");
   };
 
   const handleCheckForUpdates = async () => {
@@ -1134,38 +1253,49 @@ export const App: React.FC = () => {
   const handleCleanupAppData = async () => {
     cancelPendingScrollNav();
     openRequestSeqRef.current += 1;
+    navSeqRef.current += 1;
     searchRequestGenRef.current += 1;
     printJobSeqRef.current += 1;
     clearPendingPrintCleanup();
     renderSeqRef.current += 1;
     setIsRendering(false);
-    const report = await readoraApi.cleanupApplicationData();
-    const freshSettings = await readoraApi.getSettings();
-    const freshUpdateStatus =
-      freshSettings.auto_check_updates !== false
-        ? await readoraApi.checkForUpdates(false)
-        : null;
-    if (!isMountedRef.current) return;
-    sessionRef.current = null;
-    setSession(null);
-    effectiveZoomRef.current = 1.0;
-    setEffectiveZoom(1.0);
-    setRenderedState(null);
-    setShowHighlightPopover(false);
-    setIsSearchOpen(false);
-    setPageText("");
-    setSearchHits([]);
-    setActiveSearchHitIndex(0);
-    setAnnotations([]);
-    setRecentDocs([]);
-    setPrintPages(null);
-    printCacheRef.current.clear();
-    setSettings(freshSettings);
-    setUpdateStatus(freshUpdateStatus);
-    setShowPreferences(false);
-    setStatusMessage(
-      `Cleaned up Readora database (${report.removed_database_files} files) and cache (${report.removed_cache_entries} entries) — PDF files on disk untouched`,
-    );
+    try {
+      const report = await readoraApi.cleanupApplicationData();
+      const freshSettings = await readoraApi.getSettings();
+      const freshUpdateStatus =
+        freshSettings.auto_check_updates !== false
+          ? await readoraApi.checkForUpdates(false)
+          : null;
+      if (!isMountedRef.current) return;
+      sessionRef.current = null;
+      setSession(null);
+      effectiveZoomRef.current = 1.0;
+      setEffectiveZoom(1.0);
+      setRenderedState(null);
+      setShowHighlightPopover(false);
+      setIsSearchOpen(false);
+      setPageText("");
+      setSearchHits([]);
+      setActiveSearchHitIndex(0);
+      setAnnotations([]);
+      setRecentDocs([]);
+      setPrintPages(null);
+      clearPrintCache();
+      setSettings(freshSettings);
+      setUpdateStatus(freshUpdateStatus);
+      setShowPreferences(false);
+      setStatusMessage(
+        `Cleaned up Readora database (${report.removed_database_files} files) and cache (${report.removed_cache_entries} entries) — PDF files on disk untouched`,
+      );
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err)
+            ? err.message
+            : "Failed to clean up application data",
+        );
+      }
+    }
   };
 
   const handleExecutePrint = useCallback(
@@ -1218,11 +1348,13 @@ export const App: React.FC = () => {
           if (printCacheRef.current.size >= MAX_PRINT_CACHE_ENTRIES) {
             const oldestKey = printCacheRef.current.keys().next().value;
             if (oldestKey) {
+              revokeObjectUrlIfBlob(printCacheRef.current.get(oldestKey));
               printCacheRef.current.delete(oldestKey);
             }
           }
-          printCacheRef.current.set(cacheKey, rendered.data_url);
-          prepared.push({ pageIndex, dataUrl: rendered.data_url });
+          const cachedPrintUrl = toCachedPrintUrl(rendered.data_url);
+          printCacheRef.current.set(cacheKey, cachedPrintUrl);
+          prepared.push({ pageIndex, dataUrl: cachedPrintUrl });
         }
 
         if (
@@ -1333,8 +1465,18 @@ export const App: React.FC = () => {
 
   const handleToggleTheme = async () => {
     const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
-    const updated = await readoraApi.updateSettings({ theme: nextTheme });
-    setSettings(updated);
+    try {
+      const updated = await readoraApi.updateSettings({ theme: nextTheme });
+      if (isMountedRef.current) {
+        setSettings(updated);
+      }
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Failed to switch theme",
+        );
+      }
+    }
   };
 
   const handleCopyText = async () => {
@@ -1356,42 +1498,69 @@ export const App: React.FC = () => {
     documentId: string,
     isFavorite: boolean,
   ) => {
-    await readoraApi.setFavoriteDocument(documentId, isFavorite);
-    const recents = await readoraApi.listRecentDocuments(20);
-    setRecentDocs(recents);
-    setStatusMessage(
-      isFavorite ? "Added document to favorites" : "Removed from favorites",
-    );
+    try {
+      await readoraApi.setFavoriteDocument(documentId, isFavorite);
+      const recents = await readoraApi.listRecentDocuments(20);
+      if (!isMountedRef.current) return;
+      setRecentDocs(recents);
+      setStatusMessage(
+        isFavorite ? "Added document to favorites" : "Removed from favorites",
+      );
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err)
+            ? err.message
+            : "Failed to update favorite status",
+        );
+      }
+    }
   };
 
   const handleSetDocumentArchived = async (
     documentId: string,
     isArchived: boolean,
   ) => {
-    await readoraApi.setDocumentArchived(documentId, isArchived);
-    if (isArchived && session?.descriptor.id === documentId) {
-      cancelPendingScrollNav();
-      openRequestSeqRef.current += 1;
-      searchRequestGenRef.current += 1;
-      printJobSeqRef.current += 1;
-      clearPendingPrintCleanup();
-      renderSeqRef.current += 1;
-      await readoraApi.closeDocument(documentId);
+    try {
+      await readoraApi.setDocumentArchived(documentId, isArchived);
+      if (isArchived && sessionRef.current?.descriptor.id === documentId) {
+        cancelPendingScrollNav();
+        openRequestSeqRef.current += 1;
+        navSeqRef.current += 1;
+        searchRequestGenRef.current += 1;
+        printJobSeqRef.current += 1;
+        clearPendingPrintCleanup();
+        renderSeqRef.current += 1;
+        setIsRendering(false);
+        await readoraApi.closeDocument(documentId);
+        if (!isMountedRef.current) return;
+        sessionRef.current = null;
+        setSession(null);
+        effectiveZoomRef.current = 1.0;
+        setEffectiveZoom(1.0);
+        setRenderedState(null);
+        setShowHighlightPopover(false);
+        setIsSearchOpen(false);
+        setPageText("");
+        setSearchHits([]);
+        setActiveSearchHitIndex(0);
+        setAnnotations([]);
+        setPrintPages(null);
+        clearPrintCache();
+      }
+      const recents = await readoraApi.listRecentDocuments(20);
       if (!isMountedRef.current) return;
-      sessionRef.current = null;
-      setSession(null);
-      effectiveZoomRef.current = 1.0;
-      setEffectiveZoom(1.0);
-      setRenderedState(null);
-      setIsSearchOpen(false);
-      setPageText("");
-      setPrintPages(null);
+      setRecentDocs(recents);
+      setStatusMessage(
+        isArchived ? "Moved document to archive" : "Restored document to library",
+      );
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err) ? err.message : "Failed to update archive state",
+        );
+      }
     }
-    const recents = await readoraApi.listRecentDocuments(20);
-    setRecentDocs(recents);
-    setStatusMessage(
-      isArchived ? "Moved document to archive" : "Restored document to library",
-    );
   };
 
   const handleDeleteRecentDocument = async (documentId: string) => {
@@ -1406,10 +1575,44 @@ export const App: React.FC = () => {
         return;
       }
     }
-    await readoraApi.deleteRecentDocument(documentId);
-    const recents = await readoraApi.listRecentDocuments(20);
-    setRecentDocs(recents);
-    setStatusMessage("Removed document from library");
+    try {
+      if (sessionRef.current?.descriptor.id === documentId) {
+        cancelPendingScrollNav();
+        openRequestSeqRef.current += 1;
+        navSeqRef.current += 1;
+        searchRequestGenRef.current += 1;
+        printJobSeqRef.current += 1;
+        clearPendingPrintCleanup();
+        renderSeqRef.current += 1;
+        setIsRendering(false);
+        sessionRef.current = null;
+        setSession(null);
+        effectiveZoomRef.current = 1.0;
+        setEffectiveZoom(1.0);
+        setRenderedState(null);
+        setShowHighlightPopover(false);
+        setIsSearchOpen(false);
+        setPageText("");
+        setSearchHits([]);
+        setActiveSearchHitIndex(0);
+        setAnnotations([]);
+        setPrintPages(null);
+        clearPrintCache();
+      }
+      await readoraApi.deleteRecentDocument(documentId);
+      const recents = await readoraApi.listRecentDocuments(20);
+      if (!isMountedRef.current) return;
+      setRecentDocs(recents);
+      setStatusMessage("Removed document from library");
+    } catch (err) {
+      if (isMountedRef.current) {
+        setErrorBanner(
+          isCommandError(err)
+            ? err.message
+            : "Failed to remove document from library",
+        );
+      }
+    }
   };
 
   const handleExportAnnotations = async (includeAnnotations: boolean) => {
@@ -1502,6 +1705,7 @@ export const App: React.FC = () => {
     session &&
     renderedState &&
     renderedState.result.document_id === session.descriptor.id &&
+    renderedState.result.page_index === session.view_state.current_page &&
     Math.abs(renderedState.zoom - effectiveZoom) < 0.02 &&
     renderedState.rotation === session.view_state.rotation &&
     renderedState.renderMode === effectiveRenderMode
@@ -1798,10 +2002,9 @@ export const App: React.FC = () => {
             errorMessage={passwordError}
             onSubmitPassword={(pw) => {
               if (pendingPasswordFile) {
-                void handleOpenFile(pendingPasswordFile, pw);
-              } else {
-                void handleOpenPath(pendingPasswordPath, pw);
+                return handleOpenFile(pendingPasswordFile, pw);
               }
+              return handleOpenPath(pendingPasswordPath, pw);
             }}
             onCancel={() => {
               setPendingPasswordPath(null);

@@ -1,7 +1,7 @@
 //! Use case for mutating reader view state, advancing render cancellation generation,
 //! and persisting updated reading position in recent documents.
 
-use app_domain::{PageIndex, RecentDocument, Rotation, ViewState, ZoomLevel};
+use app_domain::{AppSettings, PageIndex, RecentDocument, Rotation, ViewState, ZoomLevel};
 
 use crate::dto::NavigationAction;
 use crate::error::ApplicationError;
@@ -79,15 +79,24 @@ pub fn build_recent_snapshot_for_navigation(
     now_ms: i64,
 ) -> Result<RecentDocument, ApplicationError> {
     let mut recent = RecentDocument::from_view_state(canonical_path, display_name, updated, now_ms);
-    let settings = settings_repo.load().ok();
-    if let Some(ref s) = settings
-        && !s.remember_page_position
-    {
+    let (effective_settings, remember_position) = match settings_repo.load() {
+        Ok(loaded) => {
+            let remember = loaded.remember_page_position;
+            (loaded, remember)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "failed to load persisted settings during recent persistence; failing closed for remember_page_position: {err}"
+            );
+            (AppSettings::default(), false)
+        }
+    };
+    if !remember_position {
         recent.last_page = PageIndex::FIRST;
-        recent.last_zoom = s.default_zoom;
+        recent.last_zoom = effective_settings.default_zoom;
         recent.last_rotation = Rotation::Deg0;
-        recent.last_fit_mode = Some(s.default_fit_mode);
-        recent.last_layout_mode = Some(s.default_layout);
+        recent.last_fit_mode = Some(effective_settings.default_fit_mode);
+        recent.last_layout_mode = Some(effective_settings.default_layout);
     }
     if let Some(prev) = recent_repo.get(&updated.document_id)? {
         recent.is_favorite = prev.is_favorite;

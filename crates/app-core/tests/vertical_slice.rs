@@ -328,3 +328,58 @@ fn vertical_slice_persists_fit_layout_favorites_beyond_limit_and_syncs_page_coun
         "favorite document must remain visible beyond standard recent limit"
     );
 }
+
+#[test]
+fn round2_authorized_reopen_reset_positions_and_cleanup_reseed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let pdf_path = temp_dir.path().join("Reopen-Guard.pdf");
+    let pdf_bytes = build_synthetic_pdf_bytes(
+        "Reopen Guard",
+        &["One", "Two", "Three", "Four", "Five"],
+        None,
+    );
+    std::fs::write(&pdf_path, pdf_bytes).unwrap();
+    let pdf_path_str = pdf_path.to_string_lossy().into_owned();
+
+    let core = AppCore::new_in_memory().unwrap();
+    assert!(!core.is_authorized_reopen_path(&pdf_path_str).unwrap());
+
+    let opened = core
+        .open_document(OpenDocumentRequest {
+            path: pdf_path_str.clone(),
+            password: None,
+        })
+        .unwrap();
+    let doc_id = opened.descriptor.id.as_str().to_owned();
+    assert!(core.is_authorized_reopen_path(&pdf_path_str).unwrap());
+
+    let jumped = core
+        .navigate(&doc_id, NavigationAction::GoToPage(3))
+        .unwrap();
+    assert_eq!(jumped.current_page.zero_based(), 3);
+    core.close_document(&doc_id).unwrap();
+
+    core.update_settings(SettingsPatchDto {
+        remember_page_position: Some(false),
+        ..SettingsPatchDto::default()
+    })
+    .unwrap();
+    let recents = core.list_recent_documents(10).unwrap();
+    let rec = recents
+        .iter()
+        .find(|r| r.document_id.as_str() == doc_id)
+        .unwrap();
+    assert_eq!(rec.last_page.zero_based(), 0);
+
+    let reopened = core
+        .open_document(OpenDocumentRequest {
+            path: pdf_path_str,
+            password: None,
+        })
+        .unwrap();
+    assert_eq!(reopened.view_state.current_page.zero_based(), 0);
+
+    core.cleanup_application_data().unwrap();
+    assert!(core.get_document_session(&doc_id).is_err());
+    assert!(core.get_settings().unwrap().remember_page_position);
+}

@@ -5,7 +5,7 @@ export const ZOOM_PRESETS: readonly number[] = [
 ];
 
 export const SAMPLE_PAGES: readonly string[] = [
-  "Page 1: Welcome to Readora — Local-first Rust + Tauri 2 PDF Reader.",
+  "Page 1: Welcome to Readora — Local-first Rust + Native WebView PDF Reader.",
   "Page 2: Hexagonal Architecture — Domain, Application, and Replaceable Ports.",
   "Page 3: Memory-Bounded LRU Render Cache and Stale Request Cancellation.",
   "Page 4: SQLite Persistence for Recent Documents, Bookmarks, and Preferences.",

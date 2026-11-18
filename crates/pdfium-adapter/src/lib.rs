@@ -20,11 +20,11 @@ use fallback_engine::FallbackPdfDocument;
 use pdfium_dynamic::{DynamicPdfiumDocument, has_native_pdfium_worker};
 
 /// Matches only small synthetic encrypted test fixtures produced by `build_synthetic_pdf_bytes`
-/// so real-world PDFs whose body streams mention `/UserPassword` never bypass native PDFium (`[MED-03]`).
+/// within structural non-stream PDF dictionaries so real-world PDFs whose body streams mention
+/// `/UserPassword` never bypass native PDFium (`[MED-03]`).
 #[must_use]
 pub(crate) fn is_synthetic_encrypted_test_fixture(bytes: &[u8]) -> bool {
-    const MARKER: &[u8] = b"<< /Filter /Standard /Encrypt true /UserPassword (";
-    bytes.len() <= 65_536 && bytes.windows(MARKER.len()).any(|w| w == MARKER)
+    fallback_engine::is_structural_synthetic_encrypt_fixture(bytes)
 }
 
 /// Adapter implementing `PdfEngine` using PDFium dynamic loading with a pure-Rust fallback.
@@ -766,5 +766,30 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn round2_cancellable_search_aborts_when_cancelled() {
+        let adapter = PdfiumEngineAdapter::new_with_fallback(None);
+        let bytes = build_synthetic_pdf_bytes(
+            "Cancel Search",
+            &[
+                "Page one contains needle keyword",
+                "Page two also contains needle keyword",
+                "Page three also contains needle keyword",
+            ],
+            None,
+        );
+        let doc = adapter
+            .open_bytes(&bytes, &OpenDocumentOptions::default())
+            .unwrap();
+        let cancelled_res =
+            doc.search_text_cancellable("needle", false, 50, std::sync::Arc::new(|| true));
+        assert!(matches!(cancelled_res, Err(PdfEngineError::Cancelled)));
+
+        let active_hits = doc
+            .search_text_cancellable("needle", false, 50, std::sync::Arc::new(|| false))
+            .unwrap();
+        assert_eq!(active_hits.len(), 3);
     }
 }

@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { type DocumentSessionDto, type FitMode } from "../../types/ipc";
 import { type SidebarTab } from "./ReaderToolbar";
 
@@ -69,32 +69,39 @@ function shouldSkipWidgetShortcut(
   return false;
 }
 
-export function useGlobalReaderShortcuts({
-  session,
-  hasOpenModal,
-  setActiveSidebar,
-  onToggleSearch,
-  onOpenImportDialog,
-  onOpenPrintDialog,
-  onOpenShareDialog,
-  onToggleNotesPanel,
-  onNextPage,
-  onPrevPage,
-  onZoomIn,
-  onZoomOut,
-  onSetZoom,
-  onSetFitMode,
-  onRotateCw,
-  onRotateCcw,
-  onCloseDocument,
-  onShowLibrary,
-  onOpenPreferences,
-  onOpenDocumentDetails,
-  onToggleHighlightOptions,
-  onFocusCommentComposer,
-}: GlobalReaderShortcutsParams): void {
+export function useGlobalReaderShortcuts(
+  params: GlobalReaderShortcutsParams,
+): void {
+  const paramsRef = useRef<GlobalReaderShortcutsParams>(params);
+  paramsRef.current = params;
+
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      const {
+        session,
+        hasOpenModal,
+        setActiveSidebar,
+        onToggleSearch,
+        onOpenImportDialog,
+        onOpenPrintDialog,
+        onOpenShareDialog,
+        onToggleNotesPanel,
+        onNextPage,
+        onPrevPage,
+        onZoomIn,
+        onZoomOut,
+        onSetZoom,
+        onSetFitMode,
+        onRotateCw,
+        onRotateCcw,
+        onCloseDocument,
+        onShowLibrary,
+        onOpenPreferences,
+        onOpenDocumentDetails,
+        onToggleHighlightOptions,
+        onFocusCommentComposer,
+      } = paramsRef.current;
+
       if (hasOpenModal) {
         return;
       }
@@ -298,28 +305,5 @@ export function useGlobalReaderShortcuts({
     return () => {
       window.removeEventListener("keydown", handleGlobalKeyDown);
     };
-  }, [
-    hasOpenModal,
-    onCloseDocument,
-    onFocusCommentComposer,
-    onNextPage,
-    onOpenDocumentDetails,
-    onOpenImportDialog,
-    onOpenPreferences,
-    onOpenPrintDialog,
-    onOpenShareDialog,
-    onPrevPage,
-    onRotateCcw,
-    onRotateCw,
-    onSetFitMode,
-    onSetZoom,
-    onShowLibrary,
-    onToggleHighlightOptions,
-    onToggleNotesPanel,
-    onToggleSearch,
-    onZoomIn,
-    onZoomOut,
-    session,
-    setActiveSidebar,
-  ]);
+  }, []);
 }

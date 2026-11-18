@@ -14,9 +14,9 @@ pub use model::annotation::{Annotation, AnnotationId, AnnotationKind, MAX_ANNOTA
 pub use model::bookmark::{Bookmark, BookmarkId, MAX_BOOKMARK_LABEL_LEN};
 pub use model::document::{
     DocumentDescriptor, DocumentMetadata, FormSupportStatus, OutlineNode, SearchBoundingBox,
-    SearchHit, SignaturePresenceStatus, is_windows_reserved_device_name, sanitize_display_name,
-    sanitize_export_stem, sanitize_metadata_title, sanitize_optional_metadata_field,
-    sanitize_outline_tree,
+    SearchHit, SignaturePresenceStatus, has_unsafe_os_path_or_ads, is_windows_reserved_device_name,
+    sanitize_display_name, sanitize_export_stem, sanitize_metadata_title,
+    sanitize_optional_metadata_field, sanitize_outline_tree,
 };
 pub use model::recent_document::RecentDocument;
 pub use model::settings::{

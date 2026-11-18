@@ -163,7 +163,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  picomatch@4.0.7: 01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d
+  picomatch@4.0.7: fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144
 
 importers:
 
@@ -2608,9 +2608,9 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
-  fdir@6.5.0(picomatch@4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d)):
+  fdir@6.5.0(picomatch@4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144)):
     optionalDependencies:
-      picomatch: 4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d)
+      picomatch: 4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144)
 
   file-entry-cache@8.0.0:
     dependencies:
@@ -2816,7 +2816,7 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  picomatch@4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d): {}
+  picomatch@4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144): {}
 
   postcss@8.5.33:
     dependencies:
@@ -2930,8 +2930,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d))
-      picomatch: 4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144))
+      picomatch: 4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144)
 
   tinyrainbow@3.2.0: {}
 
@@ -2984,8 +2984,8 @@ snapshots:
   vite@6.4.6:
     dependencies:
       esbuild: 0.25.12
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d))
-      picomatch: 4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144))
+      picomatch: 4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144)
       postcss: 8.5.33
       rollup: 4.68.3
       tinyglobby: 0.2.17
@@ -3006,7 +3006,7 @@ snapshots:
       magic-string: 0.30.21
       obug: 2.2.1
       pathe: 2.0.3
-      picomatch: 4.0.7(patch_hash=01509f0737633dc21ffaf72e8d5a1dc6fab10194c447f55182523e1ab1b4a95d)
+      picomatch: 4.0.7(patch_hash=fb91352dea5858e9e509c5dfdc94c2c727daec2c867415a15928e958ecf17144)
       std-env: 4.3.0
       tinybench: 2.9.0
       tinyexec: 1.3.1

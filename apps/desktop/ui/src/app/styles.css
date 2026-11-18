@@ -44,12 +44,12 @@
   --bg-button-active: #3b4734;
   --text-primary: #e2e3dd;
   --text-secondary: #c0c3ba;
-  --text-muted: #a8aba2;
+  --text-muted: #b2b5ac;
   --text-button-active: #c4d5b0;
   --border-color: #3b3e37;
-  --accent-sage: #60764b;
-  --accent-sage-hover: #718a59;
-  --accent-indicator: #82976a;
+  --accent-sage: #4c6139;
+  --accent-sage-hover: #5c7546;
+  --accent-indicator: #8ea574;
 }
 
 * {

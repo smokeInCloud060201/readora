@@ -4,7 +4,7 @@ import { useModalDialog } from "../../shared/hooks/useModalDialog";
 interface OpenPasswordDialogProps {
   pendingPath: string;
   errorMessage: string | null;
-  onSubmitPassword: (password: string) => void;
+  onSubmitPassword: (password: string) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -15,22 +15,41 @@ export const OpenPasswordDialog: React.FC<OpenPasswordDialogProps> = ({
   onCancel,
 }) => {
   const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  const mountedRef = useRef(true);
   const { dialogRef, handleBackdropMouseDown } = useModalDialog(onCancel, {
     initialFocusSelector: 'input[type="password"]',
   });
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      setPassword("");
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsSubmitting(false);
     if (errorMessage) {
       passwordInputRef.current?.focus();
       passwordInputRef.current?.select();
     }
-  }, [errorMessage]);
+  }, [errorMessage, pendingPath]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length > 0) {
-      onSubmitPassword(password);
+    if (isSubmitting || password.length === 0) {
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await Promise.resolve(onSubmitPassword(password));
+    } finally {
+      if (mountedRef.current) {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -63,6 +82,7 @@ export const OpenPasswordDialog: React.FC<OpenPasswordDialogProps> = ({
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Document password..."
             aria-label="Document password"
+            disabled={isSubmitting}
             autoFocus
             className="focus-input full-width"
           />
@@ -71,11 +91,16 @@ export const OpenPasswordDialog: React.FC<OpenPasswordDialogProps> = ({
               type="button"
               className="focus-btn secondary"
               onClick={onCancel}
+              disabled={isSubmitting}
             >
               Cancel
             </button>
-            <button type="submit" className="focus-btn primary">
-              Unlock PDF
+            <button
+              type="submit"
+              className="focus-btn primary"
+              disabled={isSubmitting || password.length === 0}
+            >
+              {isSubmitting ? "Unlocking..." : "Unlock PDF"}
             </button>
           </div>
         </form>

@@ -123,12 +123,22 @@ pub fn resolve_trusted_ui_dist_dir_with_fhs(
     if let Some(exe) = exe_path
         && let Some(exe_dir) = exe.parent()
     {
-        let candidates = [
-            exe_dir.join("../Resources/ui"),
-            exe_dir.join("ui"),
-            exe_dir.join("../lib/readora/ui"),
-            exe_dir.join("../share/readora/ui"),
-        ];
+        let mut candidates = Vec::new();
+        if exe_dir.ends_with("Contents/MacOS") {
+            candidates.push(exe_dir.join("../Resources/ui"));
+        }
+        if cfg!(target_os = "windows")
+            || exe
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        {
+            candidates.push(exe_dir.join("ui"));
+        }
+        if exe_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+            candidates.push(exe_dir.join("../lib/readora/ui"));
+            candidates.push(exe_dir.join("../share/readora/ui"));
+        }
         for candidate in candidates {
             if !candidate.is_symlink() && candidate.join("index.html").is_file() {
                 return Some(candidate);
@@ -305,15 +315,20 @@ fn select_platform_installer_asset(
     target_os: &str,
     target_arch: &str,
 ) -> Option<SelectedReleaseAsset> {
-    let os_tokens: &[&str] = match target_os {
-        "macos" => &[".dmg", ".app.tar.gz", "macos", "darwin"],
-        "windows" => &[".msi", ".exe", "windows", "win64"],
-        "linux" => &[".appimage", ".deb", ".rpm", "linux"],
+    let os_extensions: &[&str] = match target_os {
+        "macos" => &[".app.tar.gz", ".dmg", ".pkg"],
+        "windows" => &[".msi", ".exe"],
+        "linux" => &[".deb", ".appimage", ".rpm"],
         _ => &[".dmg", ".msi", ".appimage"],
     };
     let arch_tokens: &[&str] = match target_arch {
         "aarch64" | "arm64" => &["aarch64", "arm64", "universal"],
         "x86_64" | "x64" | "amd64" => &["x86_64", "x64", "amd64", "win64", "universal"],
+        _ => &[],
+    };
+    let foreign_arch_tokens: &[&str] = match target_arch {
+        "aarch64" | "arm64" => &["x86_64", "x64", "amd64", "win64", "win32", "i386", "i686"],
+        "x86_64" | "x64" | "amd64" => &["aarch64", "arm64", "armv7", "armhf"],
         _ => &[],
     };
 
@@ -324,14 +339,30 @@ fn select_platform_installer_asset(
         let Some(exact_name) = asset.get("name").and_then(Value::as_str) else {
             continue;
         };
-        let lower_name = exact_name.to_ascii_lowercase();
-        if lower_name.ends_with(".json")
+        let lower_name = exact_name.trim().to_ascii_lowercase();
+        if lower_name.is_empty()
+            || lower_name.ends_with(".json")
+            || lower_name.ends_with(".sig")
             || lower_name.ends_with(".sha256")
+            || lower_name.ends_with(".sha512")
+            || lower_name.ends_with(".asc")
+            || lower_name.ends_with(".blockmap")
+            || lower_name.ends_with(".txt")
+            || lower_name.ends_with(".yml")
+            || lower_name.ends_with(".yaml")
+            || lower_name.ends_with(".md")
             || lower_name.starts_with("release-manifest")
         {
             continue;
         }
-        if !os_tokens.iter().any(|tok| lower_name.contains(tok)) {
+        if !os_extensions.iter().any(|ext| lower_name.ends_with(ext)) {
+            continue;
+        }
+        if !lower_name.contains("universal")
+            && foreign_arch_tokens
+                .iter()
+                .any(|tok| lower_name.contains(tok))
+        {
             continue;
         }
         let Some(download_url) = asset
@@ -433,13 +464,11 @@ fn fetch_github_https_bounded(
 
     let temp_out = tempfile::NamedTempFile::new()
         .map_err(|err| format!("failed to allocate temporary download buffer: {err}"))?;
-    let curl_bin = if cfg!(target_os = "macos") {
-        PathBuf::from("/usr/bin/curl")
-    } else if cfg!(target_os = "windows") {
+    let curl_bin = if cfg!(target_os = "windows") {
         let sys_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
         PathBuf::from(sys_root).join("System32").join("curl.exe")
     } else {
-        PathBuf::from("curl")
+        PathBuf::from("/usr/bin/curl")
     };
 
     let max_size_str = max_bytes.to_string();
@@ -667,6 +696,11 @@ pub fn execute_annotation_export_rpc(
     // filesystem destination paths. When saving to disk is requested, always allocate a
     // non-clobbering path inside the resolved user Downloads / fallback exports directory.
     if save_to_downloads {
+        static EXPORT_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _export_guard = EXPORT_WRITE_LOCK.lock().map_err(|_| CommandErrorDto {
+            code: "platform_error".to_owned(),
+            message: "Markdown export lock poisoned".to_owned(),
+        })?;
         let preview = handler.annotation_export(&document_id, include_annotations, None)?;
         let export_dir = resolve_export_target_dir(downloads_dir_override)?;
         let target_path = select_non_clobbering_markdown_path(&export_dir, &preview.file_name)?;
@@ -834,12 +868,7 @@ pub fn build_init_script(bound_port: u16, session_token: &str) -> String {
     )
 }
 
-fn wipe_string(secret: &mut String) {
-    if secret.is_empty() && secret.capacity() == 0 {
-        return;
-    }
-    let taken = std::mem::take(secret);
-    let mut bytes = taken.into_bytes();
+fn wipe_bytes(bytes: &mut Vec<u8>) {
     let cap = bytes.capacity();
     if cap > 0 {
         bytes.resize(cap, 0_u8);
@@ -847,6 +876,15 @@ fn wipe_string(secret: &mut String) {
         let _ = std::hint::black_box(bytes.as_mut_slice());
         bytes.clear();
     }
+}
+
+fn wipe_string(secret: &mut String) {
+    if secret.is_empty() && secret.capacity() == 0 {
+        return;
+    }
+    let taken = std::mem::take(secret);
+    let mut bytes = taken.into_bytes();
+    wipe_bytes(&mut bytes);
 }
 
 /// Parsed HTTP request metadata and body.
@@ -880,6 +918,7 @@ impl Drop for ParsedHttpRequest {
                 wipe_string(v);
             }
         }
+        wipe_bytes(&mut self.body);
     }
 }
 
@@ -1102,7 +1141,7 @@ pub fn read_and_authorize_http_request<R: Read>(
         }
     };
 
-    let header_owned = match std::str::from_utf8(&header_buf[..header_end]) {
+    let mut header_owned = match std::str::from_utf8(&header_buf[..header_end]) {
         Ok(s) => s.to_owned(),
         Err(_) => {
             header_buf.fill(0_u8);
@@ -1112,127 +1151,129 @@ pub fn read_and_authorize_http_request<R: Read>(
             ));
         }
     };
-    let mut lines = header_owned.split("\r\n");
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let (Some(raw_method), Some(raw_target), Some(_http_version)) =
-        (parts.next(), parts.next(), parts.next())
-    else {
-        return Err(HttpResponse::json(
-            "400 Bad Request",
-            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
-        ));
-    };
-    if parts.next().is_some() {
-        return Err(HttpResponse::json(
-            "400 Bad Request",
-            &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
-        ));
-    }
-    let method = raw_method.to_ascii_uppercase();
-    let target = raw_target.to_owned();
-
-    let mut headers = Vec::new();
-    let mut content_length = 0_usize;
-    let mut seen_host = false;
-    let mut seen_origin = false;
-    let mut seen_sec_fetch_site = false;
-    let mut seen_token = false;
-    let mut seen_filename = false;
-    let mut seen_password = false;
-    let mut seen_content_length = false;
-
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let Some((k, v)) = line.split_once(':') else {
-            header_buf.fill(0_u8);
+    type ParsedHttpHead = (String, String, Vec<(String, String)>, usize);
+    let parsed_head = (|| -> Result<ParsedHttpHead, HttpResponse> {
+        let mut lines = header_owned.split("\r\n");
+        let request_line = lines.next().unwrap_or("");
+        let mut parts = request_line.split_whitespace();
+        let (Some(raw_method), Some(raw_target), Some(_http_version)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
             return Err(HttpResponse::json(
                 "400 Bad Request",
-                &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP header line" } }),
+                &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
             ));
         };
-        let key = k.trim().to_ascii_lowercase();
-        let val = v.trim().to_owned();
+        if parts.next().is_some() {
+            return Err(HttpResponse::json(
+                "400 Bad Request",
+                &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP request line" } }),
+            ));
+        }
+        let method = raw_method.to_ascii_uppercase();
+        let target = raw_target.to_owned();
 
-        match key.as_str() {
-            "transfer-encoding" => {
-                header_buf.fill(0_u8);
+        let mut headers = Vec::new();
+        let mut content_length = 0_usize;
+        let mut seen_host = false;
+        let mut seen_origin = false;
+        let mut seen_sec_fetch_site = false;
+        let mut seen_token = false;
+        let mut seen_filename = false;
+        let mut seen_password = false;
+        let mut seen_content_length = false;
+
+        for line in lines {
+            if line.is_empty() {
+                continue;
+            }
+            let Some((k, v)) = line.split_once(':') else {
                 return Err(HttpResponse::json(
-                    "501 Not Implemented",
-                    &json!({ "ok": false, "error": { "code": "unsupported_transfer_encoding", "message": "Transfer-Encoding is not supported" } }),
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": { "code": "bad_request", "message": "Malformed HTTP header line" } }),
                 ));
-            }
-            "host" => {
-                if seen_host {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_host = true;
-            }
-            "origin" => {
-                if seen_origin {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_origin = true;
-            }
-            "sec-fetch-site" => {
-                if seen_sec_fetch_site {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_sec_fetch_site = true;
-            }
-            "x-readora-token" => {
-                if seen_token {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_token = true;
-            }
-            "x-readora-filename" => {
-                if seen_filename {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_filename = true;
-            }
-            "x-readora-password" => {
-                if seen_password {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_password = true;
-            }
-            "content-length" => {
-                if seen_content_length {
-                    header_buf.fill(0_u8);
-                    return Err(duplicate_header_error());
-                }
-                seen_content_length = true;
-                if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
-                    header_buf.fill(0_u8);
+            };
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim().to_owned();
+
+            match key.as_str() {
+                "transfer-encoding" => {
                     return Err(HttpResponse::json(
-                        "400 Bad Request",
-                        &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
+                        "501 Not Implemented",
+                        &json!({ "ok": false, "error": { "code": "unsupported_transfer_encoding", "message": "Transfer-Encoding is not supported" } }),
                     ));
                 }
-                let Ok(parsed) = val.parse::<usize>() else {
-                    header_buf.fill(0_u8);
-                    return Err(HttpResponse::json(
-                        "400 Bad Request",
-                        &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
-                    ));
-                };
-                content_length = parsed;
+                "host" => {
+                    if seen_host {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_host = true;
+                }
+                "origin" => {
+                    if seen_origin {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_origin = true;
+                }
+                "sec-fetch-site" => {
+                    if seen_sec_fetch_site {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_sec_fetch_site = true;
+                }
+                "x-readora-token" => {
+                    if seen_token {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_token = true;
+                }
+                "x-readora-filename" => {
+                    if seen_filename {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_filename = true;
+                }
+                "x-readora-password" => {
+                    if seen_password {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_password = true;
+                }
+                "content-length" => {
+                    if seen_content_length {
+                        return Err(duplicate_header_error());
+                    }
+                    seen_content_length = true;
+                    if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(HttpResponse::json(
+                            "400 Bad Request",
+                            &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
+                        ));
+                    }
+                    let Ok(parsed) = val.parse::<usize>() else {
+                        return Err(HttpResponse::json(
+                            "400 Bad Request",
+                            &json!({ "ok": false, "error": { "code": "invalid_content_length", "message": "Malformed Content-Length header" } }),
+                        ));
+                    };
+                    content_length = parsed;
+                }
+                _ => {}
             }
-            _ => {}
+
+            headers.push((key, val));
         }
 
-        headers.push((key, val));
-    }
+        Ok((method, target, headers, content_length))
+    })();
+    wipe_string(&mut header_owned);
+    let (method, target, headers, content_length) = match parsed_head {
+        Ok(vals) => vals,
+        Err(err_resp) => {
+            header_buf.fill(0_u8);
+            return Err(err_resp);
+        }
+    };
 
     let path_only = target.split('?').next().unwrap_or("/");
     let is_api_route = path_only.starts_with("/__readora_");
@@ -1241,12 +1282,25 @@ pub fn read_and_authorize_http_request<R: Read>(
             header_buf.fill(0_u8);
             return Err(err_resp);
         }
-    } else if !is_allowed_host(&headers, bound_port) {
-        header_buf.fill(0_u8);
-        return Err(HttpResponse::json(
-            "403 Forbidden",
-            &json!({ "ok": false, "error": { "code": "forbidden_host", "message": "Invalid Host header" } }),
-        ));
+    } else {
+        if !is_allowed_host(&headers, bound_port) {
+            header_buf.fill(0_u8);
+            return Err(HttpResponse::json(
+                "403 Forbidden",
+                &json!({ "ok": false, "error": { "code": "forbidden_host", "message": "Invalid Host header" } }),
+            ));
+        }
+        if headers
+            .iter()
+            .find(|(k, _)| k == "sec-fetch-site")
+            .is_some_and(|(_, v)| v.trim().eq_ignore_ascii_case("cross-site"))
+        {
+            header_buf.fill(0_u8);
+            return Err(HttpResponse::json(
+                "403 Forbidden",
+                &json!({ "ok": false, "error": { "code": "forbidden_fetch_site", "message": "Cross-site static asset request denied" } }),
+            ));
+        }
     }
 
     let max_body = if path_only == "/__readora_import" {
@@ -1361,7 +1415,7 @@ where
     match path_only {
         "/__readora_rpc" => {
             let parsed: Result<RpcRequestEnvelope, _> = serde_json::from_slice(&req.body);
-            let Ok(envelope) = parsed else {
+            let Ok(mut envelope) = parsed else {
                 return error_response(
                     "400 Bad Request",
                     CommandErrorDto {
@@ -1379,7 +1433,15 @@ where
                         })
                     })
             } else {
-                handler.dispatch_rpc(&envelope.cmd, envelope.args)
+                let res = handler.dispatch_rpc(&envelope.cmd, envelope.args.clone());
+                if let Some(Value::String(pw)) = envelope
+                    .args
+                    .get_mut("request")
+                    .and_then(|r| r.get_mut("password"))
+                {
+                    wipe_string(pw);
+                }
+                res
             };
             match rpc_result {
                 Ok(data) => HttpResponse::json("200 OK", &json!({ "ok": true, "data": data })),
@@ -1454,10 +1516,42 @@ fn error_response(status: &'static str, err: CommandErrorDto) -> HttpResponse {
 fn serve_static_ui_asset(ui_root: &Path, raw_path: &str, head_only: bool) -> HttpResponse {
     let rel_path = sanitize_relative_path(raw_path);
     let full_path = ui_root.join(&rel_path);
+    let is_explicit_asset_request = rel_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "js" | "mjs"
+                    | "css"
+                    | "svg"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "webp"
+                    | "json"
+                    | "ico"
+                    | "woff"
+                    | "woff2"
+                    | "wasm"
+                    | "map"
+            )
+        });
     let candidate = if std::fs::symlink_metadata(&full_path)
         .is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
     {
         full_path
+    } else if is_explicit_asset_request {
+        return HttpResponse {
+            status: "404 Not Found",
+            content_type: "text/plain; charset=utf-8",
+            include_csp: true,
+            body: if head_only {
+                Vec::new()
+            } else {
+                b"404 Not Found".to_vec()
+            },
+        };
     } else {
         ui_root.join("index.html")
     };
@@ -1492,10 +1586,10 @@ fn serve_static_ui_asset(ui_root: &Path, raw_path: &str, head_only: bool) -> Htt
     match std::fs::read(&resolved_path) {
         Ok(body) => {
             let mime = content_type_for_path(&resolved_path);
-            // Attach strict CSP on HTML documents AND JavaScript/module scripts so Web Workers
-            // (`pdf.worker.mjs`, etc.) inherit the same strict policy (`[R2-LOW-04]`).
-            let include_csp =
-                mime.starts_with("text/html") || mime.starts_with("application/javascript");
+            // Attach strict CSP on HTML documents, JavaScript/module scripts (Web Workers), AND SVG images.
+            let include_csp = mime.starts_with("text/html")
+                || mime.starts_with("application/javascript")
+                || mime == "image/svg+xml";
             HttpResponse {
                 status: "200 OK",
                 content_type: mime,
@@ -1558,7 +1652,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
     }
 }
 
-/// Percent-decodes an ASCII URI component into a UTF-8 string.
+/// Percent-decodes an ASCII URI component into a UTF-8 string, wiping temporary buffers.
 #[must_use]
 pub fn percent_decode_utf8(input: &str) -> String {
     let bytes = input.as_bytes();
@@ -1576,7 +1670,15 @@ pub fn percent_decode_utf8(input: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    match String::from_utf8(out) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            let mut raw = err.into_bytes();
+            let lossy = String::from_utf8_lossy(&raw).into_owned();
+            wipe_bytes(&mut raw);
+            lossy
+        }
+    }
 }
 
 const fn hex_val(b: u8) -> Option<u8> {

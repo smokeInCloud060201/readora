@@ -33,15 +33,7 @@ import {
   readFileToUint8Array,
   savePdfBytesToIndexedDb,
 } from "../pdf/indexedDbStore";
-import {
-  destroyParsedPdf,
-  extractPdfJsPageLayout,
-  parsePdfWithPdfJs,
-  purgeDocumentRenderCache,
-  renderPdfJsPageToDataUrl,
-  searchPdfJsDocument,
-  type ParsedPdfJsDocument,
-} from "../pdf/pdfCanvasRenderer";
+import type { ParsedPdfJsDocument } from "../pdf/pdfCanvasRenderer";
 import {
   compareSemver,
   DEFAULT_APP_VERSION,
@@ -60,6 +52,23 @@ import {
   type PageTextLayout,
 } from "../pdf/textSearch";
 
+type PdfCanvasRendererModule = typeof import("../pdf/pdfCanvasRenderer");
+let canvasRendererModule: PdfCanvasRendererModule | null = null;
+let canvasRendererPromise: Promise<PdfCanvasRendererModule> | null = null;
+
+async function loadCanvasRenderer(): Promise<PdfCanvasRendererModule> {
+  if (canvasRendererModule) {
+    return canvasRendererModule;
+  }
+  if (!canvasRendererPromise) {
+    canvasRendererPromise = import("../pdf/pdfCanvasRenderer").then((mod) => {
+      canvasRendererModule = mod;
+      return mod;
+    });
+  }
+  return canvasRendererPromise;
+}
+
 const LIBRARY_STATE_STORAGE_KEY = "readora.library.state.v1";
 
 interface PersistedLibraryState {
@@ -74,10 +83,68 @@ interface StoredPdfRecord {
   filePath: string;
   fileName: string;
   fileSizeBytes: number;
+  bytesHash: string | null;
+  isEncrypted: boolean;
+  syntheticPassword: string | null;
   bytes: Uint8Array | null;
   parsedPdf: ParsedPdfJsDocument | null;
   pageTexts: Map<number, string>;
   pageLayouts: Map<number, PageTextLayout>;
+}
+
+function fnv1aHex(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function hashBytesSample(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5 ^ bytes.byteLength;
+  const step = Math.max(1, Math.floor(bytes.byteLength / 4096));
+  for (let i = 0; i < bytes.byteLength; i += step) {
+    hash ^= bytes[i] ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${bytes.byteLength.toString(16)}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function purgeCacheEntriesForDoc(
+  renderCache: Map<string, string>,
+  documentId: string,
+): void {
+  const prefix = `${documentId}:`;
+  for (const key of Array.from(renderCache.keys())) {
+    if (key.startsWith(prefix)) {
+      renderCache.delete(key);
+    }
+  }
+}
+
+function evictCacheMapToBudget(
+  renderCache: Map<string, string>,
+  maxCacheBytes: number,
+): void {
+  let currentBytes = 0;
+  for (const val of renderCache.values()) {
+    currentBytes += val.length * 2;
+  }
+  while (
+    renderCache.size >= 48 ||
+    (maxCacheBytes > 0 && renderCache.size > 0 && currentBytes > maxCacheBytes)
+  ) {
+    const oldestKey = renderCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    const oldestVal = renderCache.get(oldestKey);
+    renderCache.delete(oldestKey);
+    if (oldestVal) {
+      currentBytes = Math.max(0, currentBytes - oldestVal.length * 2);
+    }
+  }
 }
 
 function inspectSyntheticEncryption(bytes: Uint8Array | null): {
@@ -87,13 +154,17 @@ function inspectSyntheticEncryption(bytes: Uint8Array | null): {
   if (!bytes || bytes.byteLength === 0) {
     return { isEncrypted: false, expectedPassword: null };
   }
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(
-    bytes.subarray(0, Math.min(bytes.byteLength, 8192)),
+  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(
+    bytes.subarray(0, Math.min(bytes.byteLength, 16384)),
   );
-  if (!text.includes("/Encrypt")) {
+  const structuralText = decoded.replace(
+    /stream[\r\n][\s\S]*?endstream/g,
+    " ",
+  );
+  if (!/\/Encrypt(?:\s+(?:true|\d+\s+\d+\s+R)|[\s<])/.test(structuralText)) {
     return { isEncrypted: false, expectedPassword: null };
   }
-  const match = /\/UserPassword\s*\(([^)]*)\)/.exec(text);
+  const match = /\/UserPassword\s*\(([^)]*)\)/.exec(structuralText);
   return {
     isEncrypted: true,
     expectedPassword: match?.[1] ?? null,
@@ -227,6 +298,42 @@ export class BrowserFallbackBridge {
     );
   }
 
+  private deriveFallbackDocId(
+    cleanPath: string,
+    fileName: string,
+    bytes: Uint8Array | null,
+  ): string {
+    const rawSlug = fileName.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    const hasAlnum = /[a-z0-9]/i.test(fileName);
+    const baseSlug = hasAlnum ? rawSlug : "document";
+    const simpleId = `doc-${baseSlug}`;
+    const incomingHash = bytes ? hashBytesSample(bytes) : null;
+    const isPrintableAscii = /^[\x20-\x7E]+$/.test(fileName);
+
+    if (cleanPath === fileName && isPrintableAscii && hasAlnum) {
+      const existingById = this.storedPdfsByDocId.get(simpleId);
+      const existingRecent = this.recents.find((r) => r.document_id === simpleId);
+      const pathConflict =
+        (existingById && existingById.filePath !== cleanPath) ||
+        (existingRecent && existingRecent.file_path !== cleanPath);
+      const hashConflict =
+        Boolean(
+          existingById &&
+            incomingHash &&
+            existingById.bytesHash &&
+            existingById.bytesHash !== incomingHash,
+        );
+      if (!pathConflict && !hashConflict) {
+        return simpleId;
+      }
+    }
+
+    const suffix = fnv1aHex(
+      `${cleanPath}\0${fileName}\0${incomingHash ?? ""}`,
+    );
+    return `doc-${baseSlug}-${suffix}`;
+  }
+
   async openDocument(
     request: OpenDocumentRequestDto,
   ): Promise<DocumentSessionDto> {
@@ -252,7 +359,8 @@ export class BrowserFallbackBridge {
       recent?.display_name || parts[parts.length - 1] || "Document.pdf";
     const docId =
       recent?.document_id ||
-      `doc-${fileName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+      existingRecord?.docId ||
+      this.deriveFallbackDocId(cleanPath, fileName, null);
 
     const byDocRecord = this.storedPdfsByDocId.get(docId);
     if (byDocRecord && byDocRecord.bytes) {
@@ -279,7 +387,7 @@ export class BrowserFallbackBridge {
     return this.openFromBytesOrSynthetic(
       cleanPath,
       fileName,
-      28_672,
+      byDocRecord?.fileSizeBytes ?? existingRecord?.fileSizeBytes ?? 28_672,
       null,
       request.password,
     );
@@ -292,7 +400,15 @@ export class BrowserFallbackBridge {
     bytes: Uint8Array | null,
     password: string | null,
   ): Promise<DocumentSessionDto> {
-    const docId = `doc-${fileName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+    const existingByPath = this.storedPdfsByPath.get(cleanPath);
+    const docId =
+      existingByPath &&
+      (!bytes ||
+        !existingByPath.bytesHash ||
+        existingByPath.bytesHash === hashBytesSample(bytes))
+        ? existingByPath.docId
+        : this.deriveFallbackDocId(cleanPath, fileName, bytes);
+    const prevRecord = this.storedPdfsByDocId.get(docId);
     const existingRecent = this.recents.find((r) => r.document_id === docId);
 
     let parsedPdf: ParsedPdfJsDocument | null = null;
@@ -312,23 +428,35 @@ export class BrowserFallbackBridge {
     let outline: OutlineNodeDto[] = [];
     const pageTexts = new Map<number, string>();
     const pageLayouts = new Map<number, PageTextLayout>();
+    let detectedEncrypted = prevRecord?.isEncrypted ?? false;
+    let detectedSyntheticPassword = prevRecord?.syntheticPassword ?? null;
 
     if (bytes && bytes.byteLength > 0 && hasUsableCanvas2D()) {
-      parsedPdf = await parsePdfWithPdfJs(fileName, bytes, password);
+      const renderer = await loadCanvasRenderer();
+      parsedPdf = await renderer.parsePdfWithPdfJs(fileName, bytes, password);
       pageCount = parsedPdf.pageCount;
       metadata = parsedPdf.metadata;
       outline = parsedPdf.outline;
+      detectedEncrypted = metadata.is_encrypted;
+      if (metadata.is_encrypted && password !== null) {
+        detectedSyntheticPassword = password;
+      }
     } else {
       // Headless synthetic mode (e.g. Vitest jsdom): inspect PDF /Encrypt dictionary in bytes
       const enc = inspectSyntheticEncryption(bytes);
-      if (enc.isEncrypted) {
+      if (enc.isEncrypted || (bytes === null && prevRecord?.isEncrypted)) {
+        detectedEncrypted = true;
+        const expectedPw =
+          enc.expectedPassword ??
+          prevRecord?.syntheticPassword ??
+          "readora-open";
+        detectedSyntheticPassword = expectedPw;
         if (!password) {
           throw this.makeError(
             "password_required",
             "Document is password-protected",
           );
         }
-        const expectedPw = enc.expectedPassword ?? "readora-open";
         if (password !== expectedPw) {
           throw this.makeError(
             "incorrect_password",
@@ -349,16 +477,21 @@ export class BrowserFallbackBridge {
       }));
     }
 
-    const prevRecord = this.storedPdfsByDocId.get(docId);
     if (prevRecord?.parsedPdf && prevRecord.parsedPdf !== parsedPdf) {
-      destroyParsedPdf(prevRecord.parsedPdf);
+      canvasRendererModule?.destroyParsedPdf(prevRecord.parsedPdf);
     }
 
+    const bytesHash = bytes
+      ? hashBytesSample(bytes)
+      : (prevRecord?.bytesHash ?? null);
     const record: StoredPdfRecord = {
       docId,
       filePath: cleanPath,
       fileName,
       fileSizeBytes,
+      bytesHash,
+      isEncrypted: detectedEncrypted,
+      syntheticPassword: detectedSyntheticPassword,
       bytes,
       parsedPdf,
       pageTexts,
@@ -512,7 +645,8 @@ export class BrowserFallbackBridge {
     const session = this.sessions.get(command.document_id);
 
     if (record?.parsedPdf) {
-      const rendered = await renderPdfJsPageToDataUrl(
+      const renderer = await loadCanvasRenderer();
+      const rendered = await renderer.renderPdfJsPageToDataUrl(
         record.parsedPdf,
         command,
         this.renderCache,
@@ -566,14 +700,15 @@ export class BrowserFallbackBridge {
   ): Promise<string> {
     const record = this.storedPdfsByDocId.get(documentId);
     if (record) {
-      if (record.parsedPdf) {
-        const cached = record.parsedPdf.pageTexts.get(pageIndex);
-        if (cached !== undefined) {
-          return cached;
+        if (record.parsedPdf) {
+          const cached = record.parsedPdf.pageTexts.get(pageIndex);
+          if (cached !== undefined) {
+            return cached;
+          }
+          const renderer = await loadCanvasRenderer();
+          await renderer.extractPdfJsPageLayout(record.parsedPdf, pageIndex);
+          return record.parsedPdf.pageTexts.get(pageIndex) ?? "";
         }
-        await extractPdfJsPageLayout(record.parsedPdf, pageIndex);
-        return record.parsedPdf.pageTexts.get(pageIndex) ?? "";
-      }
       const cached = record.pageTexts.get(pageIndex);
       if (cached !== undefined) {
         return cached;
@@ -590,7 +725,8 @@ export class BrowserFallbackBridge {
     }
     const record = this.storedPdfsByDocId.get(request.document_id);
     if (record?.parsedPdf) {
-      return searchPdfJsDocument(
+      const renderer = await loadCanvasRenderer();
+      return renderer.searchPdfJsDocument(
         record.parsedPdf,
         request,
         () => searchGen !== this.searchGeneration,
@@ -801,10 +937,10 @@ export class BrowserFallbackBridge {
     this.searchGeneration += 1;
     const record = this.storedPdfsByDocId.get(documentId);
     if (record?.parsedPdf) {
-      destroyParsedPdf(record.parsedPdf);
+      canvasRendererModule?.destroyParsedPdf(record.parsedPdf);
       record.parsedPdf = null;
     }
-    purgeDocumentRenderCache(this.renderCache, documentId);
+    purgeCacheEntriesForDoc(this.renderCache, documentId);
     const existing = this.recents.find((r) => r.document_id === documentId);
     if (existing) {
       this.storedPdfsByPath.delete(existing.file_path);
@@ -821,11 +957,16 @@ export class BrowserFallbackBridge {
   closeDocument(documentId: string): void {
     this.searchGeneration += 1;
     const record = this.storedPdfsByDocId.get(documentId);
-    if (record?.parsedPdf) {
-      destroyParsedPdf(record.parsedPdf);
-      record.parsedPdf = null;
+    if (record) {
+      if (record.parsedPdf) {
+        canvasRendererModule?.destroyParsedPdf(record.parsedPdf);
+        record.parsedPdf = null;
+      }
+      record.bytes = null;
+      record.pageTexts.clear();
+      record.pageLayouts.clear();
     }
-    purgeDocumentRenderCache(this.renderCache, documentId);
+    purgeCacheEntriesForDoc(this.renderCache, documentId);
     this.sessions.delete(documentId);
   }
 
@@ -855,6 +996,10 @@ export class BrowserFallbackBridge {
     }
     if (patch.render_cache_budget_bytes !== undefined) {
       this.settings.render_cache_budget_bytes = patch.render_cache_budget_bytes;
+      evictCacheMapToBudget(
+        this.renderCache,
+        this.settings.render_cache_budget_bytes,
+      );
     }
     if (patch.prefetch_window !== undefined) {
       this.settings.prefetch_window = patch.prefetch_window;
@@ -864,6 +1009,9 @@ export class BrowserFallbackBridge {
     }
     if (patch.remember_page_position !== undefined) {
       this.settings.remember_page_position = patch.remember_page_position;
+      if (patch.remember_page_position === false) {
+        this.recents = this.recents.map((rec) => ({ ...rec, last_page: 0 }));
+      }
     }
     if (patch.confirm_before_delete !== undefined) {
       this.settings.confirm_before_delete = patch.confirm_before_delete;
@@ -1160,7 +1308,7 @@ export class BrowserFallbackBridge {
       this.storedPdfsByDocId.size +
       this.sessions.size;
     for (const record of this.storedPdfsByDocId.values()) {
-      destroyParsedPdf(record.parsedPdf);
+      canvasRendererModule?.destroyParsedPdf(record.parsedPdf);
     }
     this.sessions.clear();
     this.storedPdfsByDocId.clear();

@@ -219,9 +219,10 @@ pub fn apply_render_mode_rgba(rgba: &mut [u8], mode: RenderMode) {
 
 /// Encodes an RGBA8 buffer of `width x height` pixels into a valid PNG byte vector.
 pub fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, PdfEngineError> {
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
         return Err(PdfEngineError::Internal(format!(
-            "PNG dimensions must be non-zero, got {width}x{height}"
+            "PNG dimensions must be in 1..={} range, got {width}x{height}",
+            i32::MAX
         )));
     }
 

@@ -79,7 +79,7 @@ function computePageDisplayMetrics(
     // Preserves 608px + 72px = 680px at 100% and 760px + 72px = 832px at 125% when containerWidth === 0 in jsdom
     displayWidthPx = Math.max(180, Math.round(basePageWidth * zoom));
   }
-  const displayHeightPx = Math.max(180, Math.round(displayWidthPx * aspect));
+  const displayHeightPx = Math.max(48, Math.round(displayWidthPx * aspect));
   return {
     displayWidthPx,
     displayHeightPx,
@@ -147,6 +147,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const rotationDeg = rotationToDegrees(viewState.rotation);
   const viewportRef = useRef<HTMLElement | null>(null);
   const pageSheetRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const pageSpacerRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const scrollAnimationFrameRef = useRef<number | null>(null);
   const isProgrammaticScrollRef = useRef<boolean>(false);
   const initializedDocScrollRef = useRef<string | null>(null);
@@ -161,6 +162,9 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   const viewGenerationRef = useRef<number | null>(viewState.generation ?? null);
   viewGenerationRef.current = viewState.generation ?? null;
   const measuredRectsRef = useRef<
+    Record<number, { top: number; height: number }>
+  >({});
+  const spacerFallbackRectsRef = useRef<
     Record<number, { top: number; height: number }>
   >({});
   const [pageTurnDirection, setPageTurnDirection] = useState<
@@ -295,6 +299,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
 
   useEffect(() => {
     measuredRectsRef.current = {};
+    spacerFallbackRectsRef.current = {};
   }, [
     containerSize.height,
     containerSize.width,
@@ -441,7 +446,9 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     const initialRafId = requestAnimationFrame(() => {
       const el = viewportRef.current;
       if (el) {
-        const targetSheet = pageSheetRefs.current[targetPage];
+        const targetSheet =
+          pageSheetRefs.current[targetPage] ??
+          pageSpacerRefs.current[targetPage];
         const targetTop =
           targetSheet && targetSheet.offsetTop > 0
             ? Math.max(0, targetSheet.offsetTop - 24)
@@ -489,7 +496,9 @@ export const PageViewport: React.FC<PageViewportProps> = ({
   useEffect(() => {
     if (!isContinuous || programmaticScrollTrigger === 0) return;
     const container = viewportRef.current;
-    const targetSheet = pageSheetRefs.current[viewState.current_page];
+    const targetSheet =
+      pageSheetRefs.current[viewState.current_page] ??
+      pageSpacerRefs.current[viewState.current_page];
     if (!container || !targetSheet) return;
 
     const targetTop =
@@ -554,7 +563,17 @@ export const PageViewport: React.FC<PageViewportProps> = ({
         measuredRectsRef.current[idx] = rect;
         return rect;
       }
-      return measuredRectsRef.current[idx] ?? null;
+      const cachedMeasured = measuredRectsRef.current[idx];
+      if (cachedMeasured) {
+        return cachedMeasured;
+      }
+      const spacerEl = pageSpacerRefs.current[idx];
+      if (spacerEl && spacerEl.offsetHeight > 0) {
+        const rect = { top: spacerEl.offsetTop, height: spacerEl.offsetHeight };
+        spacerFallbackRectsRef.current[idx] = rect;
+        return rect;
+      }
+      return spacerFallbackRectsRef.current[idx] ?? null;
     };
 
     const focusY = el.scrollTop + el.clientHeight * 0.38;
@@ -647,7 +666,9 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     }
   };
 
-  const handleViewportWheel = (e: React.WheelEvent<HTMLElement>) => {
+  const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
+
+  const handleViewportWheel = (e: WheelEvent) => {
     const now = Date.now();
 
     if (e.ctrlKey || e.metaKey) {
@@ -724,6 +745,20 @@ export const PageViewport: React.FC<PageViewportProps> = ({
     }
   };
 
+  wheelHandlerRef.current = handleViewportWheel;
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const listener = (event: WheelEvent) => {
+      wheelHandlerRef.current(event);
+    };
+    el.addEventListener("wheel", listener, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", listener);
+    };
+  }, []);
+
   const pageAnnotations = annotations.filter(
     (ann) => ann.page_index === viewState.current_page,
   );
@@ -756,7 +791,6 @@ export const PageViewport: React.FC<PageViewportProps> = ({
       }`}
       aria-label="Document Page Viewport"
       onScroll={handleViewportScroll}
-      onWheel={handleViewportWheel}
     >
       <div className="continuous-pages-stack">
         {pagesToRender.map((pageIdx) => {
@@ -770,7 +804,7 @@ export const PageViewport: React.FC<PageViewportProps> = ({
               <div
                 key={`spacer-${viewState.document_id}-${pageIdx}`}
                 ref={(node) => {
-                  pageSheetRefs.current[pageIdx] = node;
+                  pageSpacerRefs.current[pageIdx] = node;
                 }}
                 data-page-index={pageIdx}
                 data-testid={`pdf-page-spacer-${pageIdx + 1}`}
@@ -787,7 +821,8 @@ export const PageViewport: React.FC<PageViewportProps> = ({
           const matchingCurrentRendered =
             isCurrentPage &&
             renderedPage &&
-            renderedPage.document_id === viewState.document_id
+            renderedPage.document_id === viewState.document_id &&
+            renderedPage.page_index === pageIdx
               ? renderedPage
               : null;
           const pageBitmap =

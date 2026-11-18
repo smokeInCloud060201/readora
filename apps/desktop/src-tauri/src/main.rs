@@ -3,9 +3,16 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::fs::{File, OpenOptions};
 use std::net::{TcpListener, TcpStream};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,10 +20,11 @@ use std::time::Duration;
 use app_core::AppCore;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use platform::NativePlatformAdapter;
+use readora_desktop_lib::commands::OFFICIAL_RELEASE_REPO;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use readora_desktop_lib::server::verify_downloaded_asset_staged;
 use readora_desktop_lib::server::{
-    build_init_script, generate_session_token, is_allowed_navigation_url,
+    MAX_HEADER_DURATION, build_init_script, generate_session_token, is_allowed_navigation_url,
     read_and_authorize_http_request, resolve_trusted_ui_dist_dir, route_http_request,
 };
 use readora_desktop_lib::{DesktopCommandHandler, init_tracing};
@@ -29,8 +37,101 @@ use wry::WebViewBuilder;
 const HTTP_WORKER_COUNT: usize = 8;
 const HTTP_QUEUE_CAPACITY: usize = 64;
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(15);
-const OFFICIAL_RELEASE_REPO: &str = "smokeInCloud060201/readora";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const MAX_SELF_UPDATE_BYTES: &str = "268435456"; // 256 MiB
+static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static BACKUP_SEQ: AtomicU64 = AtomicU64::new(1);
+
+struct UpdateInProgressGuard;
+
+impl Drop for UpdateInProgressGuard {
+    fn drop(&mut self) {
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn copy_staged_installer_exclusively(
+    src_path: &Path,
+    downloads_dir: &Path,
+    file_name: &str,
+) -> Option<PathBuf> {
+    let dl_meta = std::fs::symlink_metadata(downloads_dir).ok()?;
+    if !dl_meta.is_dir() || dl_meta.file_type().is_symlink() {
+        return None;
+    }
+    let clean_name = Path::new(file_name).file_name()?.to_str()?;
+    let mut src_file = File::open(src_path).ok()?;
+
+    let (stem, ext) = match clean_name.rsplit_once('.') {
+        Some((s, e)) => (s, Some(e)),
+        None => (clean_name, None),
+    };
+
+    for attempt in 1..=99_u16 {
+        let candidate_name = if attempt == 1 {
+            clean_name.to_owned()
+        } else if let Some(ext) = ext {
+            format!("{stem}-{attempt}.{ext}")
+        } else {
+            format!("{stem}-{attempt}")
+        };
+        let dest_path = downloads_dir.join(candidate_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest_path)
+        {
+            Ok(mut dest_file) => {
+                if std::io::copy(&mut src_file, &mut dest_file).is_ok()
+                    && dest_file.sync_all().is_ok()
+                {
+                    return Some(dest_path);
+                }
+                drop(dest_file);
+                let _ = std::fs::remove_file(&dest_path);
+                return None;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn verify_bundle_no_escaping_symlinks(bundle_root: &Path) -> bool {
+    let Ok(canon_bundle) = std::fs::canonicalize(bundle_root) else {
+        return false;
+    };
+    fn walk(dir: &Path, canon_bundle: &Path, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                return false;
+            };
+            if meta.file_type().is_symlink() {
+                let Ok(target_canon) = std::fs::canonicalize(&path) else {
+                    return false;
+                };
+                if !target_canon.starts_with(canon_bundle) {
+                    return false;
+                }
+            } else if meta.is_dir() && !walk(&path, canon_bundle, depth + 1) {
+                return false;
+            }
+        }
+        true
+    }
+    walk(bundle_root, &canon_bundle, 0)
+}
 
 #[cfg(target_os = "windows")]
 fn resolve_windows_tool(tool_name: &str, in_system32: bool) -> PathBuf {
@@ -122,6 +223,14 @@ fn perform_native_self_update(
     raw_version: &str,
     proxy: &EventLoopProxy<DesktopUserEvent>,
 ) -> &'static str {
+    if UPDATE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return r#"{"status":"already_in_progress"}"#;
+    }
+    let _in_progress_guard = UpdateInProgressGuard;
+
     let version = raw_version.trim().trim_start_matches(['v', 'V']);
     if !is_safe_semver(version) {
         return r#"{"status":"invalid_parameters"}"#;
@@ -225,37 +334,13 @@ fn perform_native_self_update(
                             .unwrap_or(false);
 
                         let extracted_app = staging_dir.join("Readora.app");
-                        if untar_ok && extracted_app.is_dir() && !extracted_app.is_symlink() {
-                            // Verify code signature BEFORE clearing quarantine (`[CRIT-03]`)
-                            // and enforce TeamIdentifier continuity when signed.
-                            let verified_sig = match inspect_current_bundle_team_id() {
-                                Some(team_id) => {
-                                    let req = format!(
-                                        "identifier \"com.readora.desktop\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\""
-                                    );
-                                    Command::new("/usr/bin/codesign")
-                                        .args(["--verify", "--deep", "--strict", "-R"])
-                                        .arg(&req)
-                                        .arg(&extracted_app)
-                                        .status()
-                                        .map(|s| s.success())
-                                        .unwrap_or(false)
-                                }
-                                None => Command::new("/usr/bin/codesign")
-                                    .args(["--verify", "--deep", "--strict"])
-                                    .arg(&extracted_app)
-                                    .status()
-                                    .map(|s| s.success())
-                                    .unwrap_or(false),
-                            };
-                            if !verified_sig {
-                                return r#"{"status":"signature_verification_failed"}"#;
-                            }
-                            let _ = Command::new("/usr/bin/xattr")
-                                .args(["-cr"])
-                                .arg(&extracted_app)
-                                .status();
-
+                        if untar_ok
+                            && extracted_app.is_dir()
+                            && !extracted_app.is_symlink()
+                            && verify_bundle_no_escaping_symlinks(&extracted_app)
+                        {
+                            // Fail closed: require BOTH an active installed `.app` bundle (never overwrite
+                            // `/Applications/Readora.app` from debug/standalone binaries) AND a verified Apple Team ID.
                             let current_bundle = std::env::current_exe().ok().and_then(|exe| {
                                 let contents_dir = exe.parent()?.parent()?;
                                 let app_dir = contents_dir.parent()?;
@@ -267,14 +352,40 @@ fn perform_native_self_update(
                                     None
                                 }
                             });
-                            let target_app = current_bundle
-                                .unwrap_or_else(|| PathBuf::from("/Applications/Readora.app"));
+                            let (Some(target_app), Some(team_id)) =
+                                (current_bundle, inspect_current_bundle_team_id())
+                            else {
+                                return r#"{"status":"signature_verification_failed"}"#;
+                            };
+
+                            // Verify code signature BEFORE clearing quarantine (`[CRIT-03]`)
+                            let req = format!(
+                                "identifier \"com.readora.desktop\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\""
+                            );
+                            let verified_sig = Command::new("/usr/bin/codesign")
+                                .args(["--verify", "--deep", "--strict", "-R"])
+                                .arg(&req)
+                                .arg(&extracted_app)
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+                            if !verified_sig {
+                                return r#"{"status":"signature_verification_failed"}"#;
+                            }
+                            let _ = Command::new("/usr/bin/xattr")
+                                .args(["-crs"])
+                                .arg(&extracted_app)
+                                .status();
+
                             let target_parent = target_app
                                 .parent()
                                 .map_or_else(|| PathBuf::from("/Applications"), Path::to_path_buf);
+                            let seq = BACKUP_SEQ.fetch_add(1, Ordering::Relaxed);
                             let backup_app = target_parent
-                                .join(format!(".Readora.app.backup-{}", std::process::id()));
-                            if backup_app.exists() {
+                                .join(format!(".Readora.app.backup-{}-{seq}", std::process::id()));
+                            if let Ok(m) = std::fs::symlink_metadata(&backup_app)
+                                && !m.file_type().is_symlink()
+                            {
                                 let _ = std::fs::remove_dir_all(&backup_app);
                             }
 
@@ -303,7 +414,10 @@ fn perform_native_self_update(
                                         .unwrap_or(false);
 
                                 if moved {
-                                    if had_existing {
+                                    if had_existing
+                                        && std::fs::symlink_metadata(&backup_app)
+                                            .is_ok_and(|m| !m.file_type().is_symlink())
+                                    {
                                         let _ = std::fs::remove_dir_all(&backup_app);
                                     }
                                     drop(stage_temp);
@@ -380,16 +494,15 @@ fn perform_native_self_update(
                         }
                         if let Ok(home) = std::env::var("HOME") {
                             let downloads_dir = PathBuf::from(home).join("Downloads");
-                            if std::fs::create_dir_all(&downloads_dir).is_ok() {
-                                let dmg_dest = downloads_dir
-                                    .join(format!("Readora_{version}_{arch_label}.dmg"));
-                                let placed = std::fs::rename(&staged_dmg, &dmg_dest).is_ok()
-                                    || std::fs::copy(&staged_dmg, &dmg_dest).is_ok();
-                                if placed {
-                                    drop(stage_temp);
-                                    let _ = Command::new("/usr/bin/open").arg(&dmg_dest).spawn();
-                                    return r#"{"status":"downloaded_installer"}"#;
-                                }
+                            let dmg_name = format!("Readora_{version}_{arch_label}.dmg");
+                            if let Some(dmg_dest) = copy_staged_installer_exclusively(
+                                &staged_dmg,
+                                &downloads_dir,
+                                &dmg_name,
+                            ) {
+                                drop(stage_temp);
+                                let _ = Command::new("/usr/bin/open").arg(&dmg_dest).spawn();
+                                return r#"{"status":"downloaded_installer"}"#;
                             }
                         }
                     }
@@ -455,17 +568,17 @@ fn perform_native_self_update(
                 }
                 if let Ok(user_profile) = std::env::var("USERPROFILE") {
                     let downloads_dir = PathBuf::from(user_profile).join("Downloads");
-                    if std::fs::create_dir_all(&downloads_dir).is_ok() {
-                        let dest_zip = downloads_dir.join(&zip_name);
-                        let placed = std::fs::rename(&temp_zip, &dest_zip).is_ok()
-                            || std::fs::copy(&temp_zip, &dest_zip).is_ok();
-                        if placed {
-                            drop(stage_temp);
+                    if let Some(dest_zip) =
+                        copy_staged_installer_exclusively(&temp_zip, &downloads_dir, &zip_name)
+                    {
+                        drop(stage_temp);
+                        let dest_str = dest_zip.to_string_lossy();
+                        if !dest_str.contains('"') && !dest_str.chars().any(char::is_control) {
                             let _ = Command::new(&explorer_exe)
-                                .arg(format!("/select,{}", dest_zip.display()))
+                                .raw_arg(format!("/select,\"{dest_str}\""))
                                 .spawn();
-                            return r#"{"status":"downloaded_installer"}"#;
                         }
+                        return r#"{"status":"downloaded_installer"}"#;
                     }
                 }
             }
@@ -479,7 +592,7 @@ fn perform_native_self_update(
     {
         let _ = proxy;
         let release_url = format!("https://github.com/{repo}/releases/tag/v{version}");
-        let _ = Command::new("xdg-open").arg(&release_url).spawn();
+        let _ = Command::new("/usr/bin/xdg-open").arg(&release_url).spawn();
         r#"{"status":"opened_release"}"#
     }
 }
@@ -492,7 +605,7 @@ fn handle_http_connection(
     handler: &DesktopCommandHandler,
     proxy: &EventLoopProxy<DesktopUserEvent>,
 ) {
-    let _ = stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT));
+    let _ = stream.set_read_timeout(Some(MAX_HEADER_DURATION));
     let _ = stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT));
 
     match read_and_authorize_http_request(&mut stream, bound_port, expected_token) {

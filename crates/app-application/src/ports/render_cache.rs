@@ -42,6 +42,9 @@ pub trait RenderCachePort: Send + Sync {
     /// Removes all cached pages belonging to `document_id`.
     fn invalidate_document(&self, document_id: &DocumentId);
 
+    /// Removes all cached pages across every document.
+    fn clear(&self);
+
     /// Updates the maximum byte budget and evicts entries if necessary.
     fn set_budget_bytes(&self, budget_bytes: usize);
 

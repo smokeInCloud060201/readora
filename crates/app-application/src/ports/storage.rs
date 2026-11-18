@@ -39,6 +39,15 @@ pub trait RecentDocumentRepository: Send + Sync {
 
     /// Removes a recent document entry by ID.
     fn remove(&self, document_id: &DocumentId) -> Result<(), ApplicationError>;
+
+    /// Resets persisted per-document reading positions (`last_page`, zoom, rotation, fit, layout)
+    /// back to `default_settings` when `remember_page_position` is disabled.
+    fn reset_reading_positions(
+        &self,
+        _default_settings: &AppSettings,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
 }
 
 /// Port for persisting and querying user bookmarks.

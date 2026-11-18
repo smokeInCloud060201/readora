@@ -1505,4 +1505,163 @@ describe("Round-2 Frontend UX, Virtualization, RPC, HiDPI, Print, & Security Reg
       consoleErrSpy.mockRestore();
     }
   });
+
+  it("[R2-DEEP-AUDIT] enforces hardened PDF.js v6.5 flags, destroys failed loadingTasks, avoids fallback docId collisions, releases closed buffers, filters release sidecars/arch, and gates two-step cleanup on confirm_before_delete", async () => {
+    // 1. Hardened PDF.js v6.5 flags
+    const initParams = buildPdfJsDocumentInitParams(
+      new Uint8Array([37, 80, 68, 70]),
+      "pw",
+    );
+    expect(initParams.isEvalSupported).toBe(false);
+    expect(initParams.enableXfa).toBe(false);
+    expect(initParams.disableAutoFetch).toBe(true);
+    expect(initParams.disableStream).toBe(true);
+    expect(initParams.isOffscreenCanvasSupported).toBe(false);
+    expect(initParams.useWasm).toBe(false);
+    expect(initParams.maxImageSize).toBe(16_777_216);
+    expect(initParams.canvasMaxAreaInBytes).toBe(67_108_864);
+
+    // 2. parsePdfWithPdfJs invokes loadingTask.destroy() when loadingTask.promise rejects
+    const destroyMock = vi.fn().mockResolvedValue(undefined);
+    const failingLoader = (() =>
+      ({
+        promise: Promise.reject(new Error("corrupt pdf")),
+        destroy: destroyMock,
+      }) as unknown as ReturnType<
+        typeof pdfjsLib.getDocument
+      >) as typeof pdfjsLib.getDocument;
+    await expect(
+      pdfCanvasRenderer.parsePdfWithPdfJs(
+        "Corrupt.pdf",
+        new Uint8Array([37, 80, 68, 70]),
+        null,
+        failingLoader,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_pdf" });
+    expect(destroyMock).toHaveBeenCalledTimes(1);
+
+    // 3. FallbackBridge avoids non-ASCII docId collisions, preserves ASCII docId, and keeps closed encrypted reopen guard
+    const asciiSession = await readoraApi.openDocumentFile(
+      createTestPdfFile("SavedNative.pdf"),
+    );
+    expect(asciiSession.descriptor.id).toBe("doc-savednative-pdf");
+    await readoraApi.closeDocument(asciiSession.descriptor.id);
+
+    const cjkA = await readoraApi.openDocumentFile(
+      createTestPdfFile("中文A.pdf"),
+    );
+    const cjkB = await readoraApi.openDocumentFile(
+      createTestPdfFile("中文B.pdf"),
+    );
+    expect(cjkA.descriptor.id).not.toBe(cjkB.descriptor.id);
+    await readoraApi.closeDocument(cjkA.descriptor.id);
+    await readoraApi.closeDocument(cjkB.descriptor.id);
+
+    const encFile = new File(
+      [
+        "%PDF-1.7\n1 0 obj\n<< /Filter /Standard /Encrypt true /UserPassword (secret) >>\nendobj\n%%EOF",
+      ],
+      "Locked-Close.pdf",
+      { type: "application/pdf" },
+    );
+    const openedEnc = await readoraApi.openDocumentFile(encFile, "secret");
+    expect(openedEnc.descriptor.metadata.is_encrypted).toBe(true);
+    await readoraApi.closeDocument(openedEnc.descriptor.id);
+    await expect(
+      readoraApi.openDocument({ path: "Locked-Close.pdf", password: null }),
+    ).rejects.toMatchObject({ code: "password_required" });
+
+    // 4. parseGithubReleasePayload skips .sha256/.sig sidecars and foreign-arch assets
+    const macSha = "e".repeat(64);
+    const manifest = parseGithubReleasePayload(
+      JSON.stringify({
+        tag_name: "v2.5.0",
+        assets: [
+          {
+            name: "Readora_2.5.0_macos-aarch64.dmg.sha256",
+            size: 128,
+            browser_download_url:
+              "https://github.com/smokeInCloud060201/readora/releases/download/v2.5.0/Readora_2.5.0_macos-aarch64.dmg.sha256",
+          },
+          {
+            name: "Readora_2.5.0_macos-x86_64.dmg",
+            size: 12_000_000,
+            digest: `sha256:${"f".repeat(64)}`,
+            browser_download_url:
+              "https://github.com/smokeInCloud060201/readora/releases/download/v2.5.0/Readora_2.5.0_macos-x86_64.dmg",
+          },
+          {
+            name: "Readora_2.5.0_macos-aarch64.dmg",
+            size: 11_000_000,
+            digest: `sha256:${macSha}`,
+            browser_download_url:
+              "https://github.com/smokeInCloud060201/readora/releases/download/v2.5.0/Readora_2.5.0_macos-aarch64.dmg",
+          },
+        ],
+      }),
+      "macos",
+      "aarch64",
+    );
+    expect(manifest.download_url).toBe(
+      "https://github.com/smokeInCloud060201/readora/releases/download/v2.5.0/Readora_2.5.0_macos-aarch64.dmg",
+    );
+    expect(manifest.sha256).toBe(macSha);
+
+    // 5. PreferencesDialog gates two-step cleanup confirmation on confirm_before_delete
+    const onCleanup = vi.fn();
+    const { rerender: rerenderPrefs, unmount: unmountPrefs } = render(
+      <PreferencesDialog
+        settings={{
+          theme: "light",
+          default_layout: "continuous",
+          default_fit_mode: "fit_width",
+          default_zoom: 1.0,
+          render_cache_budget_bytes: 64 * 1024 * 1024,
+          prefetch_window: 1,
+          confirm_before_delete: true,
+        }}
+        initialSection="general"
+        onSave={vi.fn()}
+        onCleanupAppData={onCleanup}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Clean up application data and cache",
+      }),
+    );
+    expect(onCleanup).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Confirm clean up application data",
+      }),
+    );
+    expect(onCleanup).toHaveBeenCalledTimes(1);
+
+    rerenderPrefs(
+      <PreferencesDialog
+        settings={{
+          theme: "light",
+          default_layout: "continuous",
+          default_fit_mode: "fit_width",
+          default_zoom: 1.0,
+          render_cache_budget_bytes: 64 * 1024 * 1024,
+          prefetch_window: 1,
+          confirm_before_delete: false,
+        }}
+        initialSection="general"
+        onSave={vi.fn()}
+        onCleanupAppData={onCleanup}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Clean up application data and cache",
+      }),
+    );
+    expect(onCleanup).toHaveBeenCalledTimes(2);
+    unmountPrefs();
+  });
 });

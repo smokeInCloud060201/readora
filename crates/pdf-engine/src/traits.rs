@@ -53,7 +53,7 @@ pub trait PdfDocument: Send + Sync {
         query: &str,
         case_sensitive: bool,
         max_hits: usize,
-        is_cancelled: &(dyn Fn() -> bool + Sync),
+        is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Vec<SearchHit>, PdfEngineError> {
         if is_cancelled() {
             return Err(PdfEngineError::Cancelled);

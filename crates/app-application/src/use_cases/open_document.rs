@@ -6,7 +6,9 @@ use app_domain::{
     AppSettings, DocumentDescriptor, FitMode, PageIndex, RecentDocument, ViewState,
     sanitize_outline_tree,
 };
-use pdf_engine::{DEFAULT_MAX_PDF_FILE_SIZE_BYTES, OpenDocumentOptions, PdfDocument, PdfEngine};
+use pdf_engine::{
+    DEFAULT_MAX_PDF_FILE_SIZE_BYTES, OpenDocumentOptions, PdfDocument, PdfEngine, PdfEngineKind,
+};
 
 use crate::dto::{DocumentSessionDto, OpenDocumentRequest};
 use crate::error::ApplicationError;
@@ -44,32 +46,44 @@ pub fn execute_open_document(
     let document = pdf_engine.open_path(Path::new(&file_info.canonical_path), &open_opts)?;
     let engine_info = document.info().clone();
 
+    let (settings, remember_page_position) = match settings_repo.load() {
+        Ok(loaded) => {
+            let remember = loaded.remember_page_position;
+            (loaded, remember)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "failed to load persisted settings during open_document; falling back to defaults with remember_page_position=false: {err}"
+            );
+            (AppSettings::default(), false)
+        }
+    };
+
+    // Restore last reading position, zoom, fit mode, layout mode, and rotation if previously opened and enabled in settings.
+    let previous = recent_repo.get(&file_info.document_id)?;
+    let restored_page_count = if pdf_engine.kind() == PdfEngineKind::PureRustFallback {
+        previous.as_ref().map_or(engine_info.page_count, |prev| {
+            engine_info.page_count.max(prev.page_count)
+        })
+    } else {
+        engine_info.page_count
+    };
+
     let descriptor = DocumentDescriptor::new(
         file_info.document_id.clone(),
         file_info.display_name.clone(),
         file_info.file_size_bytes,
-        engine_info.page_count,
+        restored_page_count,
         engine_info.metadata,
     )?;
 
-    let settings = match settings_repo.load() {
-        Ok(loaded) => loaded,
-        Err(err) => {
-            tracing::warn!(
-                "failed to load persisted settings during open_document; falling back to defaults: {err}"
-            );
-            AppSettings::default()
-        }
-    };
     let mut view_state = ViewState::new(file_info.document_id.clone(), descriptor.page_count)?;
     view_state.layout_mode = settings.default_layout;
     view_state.fit_mode = settings.default_fit_mode;
     view_state.zoom = settings.default_zoom;
 
-    // Restore last reading position, zoom, fit mode, layout mode, and rotation if previously opened and enabled in settings.
-    let previous = recent_repo.get(&file_info.document_id)?;
     if let Some(ref prev) = previous
-        && settings.remember_page_position
+        && remember_page_position
     {
         let clamped_page = prev
             .last_page

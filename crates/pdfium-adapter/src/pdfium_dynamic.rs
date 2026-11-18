@@ -5,14 +5,17 @@
 //! worker-owned `PdfDocument<'static>` handle (`100%` safe Rust, zero `unsafe`).
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 
 use app_domain::{
-    DocumentMetadata, OutlineNode, PageDimensions, PageIndex, Rotation, SearchBoundingBox,
-    SearchHit, sanitize_display_name,
+    DocumentMetadata, FormSupportStatus, OutlineNode, PageDimensions, PageIndex, Rotation,
+    SearchBoundingBox, SearchHit, SignaturePresenceStatus, sanitize_display_name,
 };
 use bytes::Bytes;
 use pdf_engine::{
@@ -39,6 +42,7 @@ const MAX_CUSTOM_WORKERS: usize = 8;
 #[derive(Debug, Clone)]
 enum ResolvedPdfiumSource {
     LibraryFile(PathBuf),
+    #[cfg(any(debug_assertions, test))]
     SystemLibrary,
 }
 
@@ -120,7 +124,7 @@ static PDFIUM_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 #[must_use]
 pub(crate) fn candidate_bundle_library_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if cfg!(target_os = "macos") || exe_dir.ends_with("Contents/MacOS") {
+    if exe_dir.ends_with("Contents/MacOS") {
         dirs.push(exe_dir.join("../Frameworks"));
         dirs.push(exe_dir.join("../Frameworks/pdfium"));
         dirs.push(exe_dir.join("../Resources"));
@@ -129,14 +133,17 @@ pub(crate) fn candidate_bundle_library_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         dirs.push(exe_dir.join("pdfium"));
+        #[cfg(any(debug_assertions, test))]
         dirs.push(exe_dir.to_path_buf());
     }
     #[cfg(target_os = "linux")]
     {
-        dirs.push(exe_dir.join("../lib/readora"));
+        if exe_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+            dirs.push(exe_dir.join("../lib/readora"));
+            dirs.push(exe_dir.join("../share/readora/pdfium"));
+        }
         dirs.push(PathBuf::from("/usr/lib/readora"));
         dirs.push(PathBuf::from("/usr/share/readora/pdfium"));
-        dirs.push(exe_dir.join("../share/readora/pdfium"));
         dirs.push(exe_dir.join("pdfium"));
     }
     #[cfg(all(target_os = "macos", any(debug_assertions, test)))]
@@ -148,14 +155,23 @@ pub(crate) fn candidate_bundle_library_dirs(exe_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn try_bind_in_dir(dir: &Path) -> Option<(PathBuf, Box<dyn PdfiumLibraryBindings>)> {
-    if !dir.exists() {
+    let dir_meta = fs::symlink_metadata(dir).ok()?;
+    if dir_meta.file_type().is_symlink() {
         return None;
     }
-    let lib_path = if dir.is_dir() {
+    let lib_path = if dir_meta.is_dir() {
         Pdfium::pdfium_platform_library_name_at_path(dir)
     } else {
         dir.to_path_buf()
     };
+    let lib_meta = fs::symlink_metadata(&lib_path).ok()?;
+    if !lib_meta.is_file() || lib_meta.file_type().is_symlink() {
+        return None;
+    }
+    #[cfg(unix)]
+    if (lib_meta.permissions().mode() & 0o002) != 0 {
+        return None;
+    }
     Pdfium::bind_to_library(&lib_path)
         .ok()
         .map(|bindings| (lib_path, bindings))
@@ -351,6 +367,7 @@ pub fn has_native_pdfium_worker(custom_dir: Option<&Path>) -> bool {
 pub fn resolve_pdfium_library_path(custom_dir: Option<&Path>) -> Option<PathBuf> {
     match get_or_init_worker(custom_dir)?.resolved_source {
         ResolvedPdfiumSource::LibraryFile(path) => Some(path),
+        #[cfg(any(debug_assertions, test))]
         ResolvedPdfiumSource::SystemLibrary => None,
     }
 }
@@ -378,16 +395,34 @@ fn worker_open_document(
     let effective_pw = password.as_deref().filter(|pw| !pw.is_empty());
     let had_pw = effective_pw.is_some();
 
-    let (form_support, form_field_count, signature_status, signature_field_count) =
-        inspect_advanced_pdf_capabilities_bytes(&bytes);
     let header_slice_len = bytes.len().min(1024);
     let header_bytes = bytes[..header_slice_len].to_vec();
     let encrypted_in_bytes = has_encrypt_dict_bytes(&bytes);
+    // Never inspect unauthenticated encrypted ciphertext streams prior to password decryption.
+    let raw_caps = if !encrypted_in_bytes {
+        Some(inspect_advanced_pdf_capabilities_bytes(&bytes))
+    } else {
+        None
+    };
 
     let load_res = pdfium.load_pdf_from_byte_vec(bytes, effective_pw);
     zeroize_optional_password(password.take());
 
     let doc = load_res.map_err(|err| map_pdfium_error(err, had_pw))?;
+    let (form_support, form_field_count, signature_status, signature_field_count) = raw_caps
+        .unwrap_or_else(|| {
+            let detected_form = if doc.form().is_some() {
+                FormSupportStatus::AcroFormReadOnly
+            } else {
+                FormSupportStatus::None
+            };
+            (
+                detected_form,
+                u32::from(detected_form != FormSupportStatus::None),
+                SignaturePresenceStatus::NoSignatures,
+                0,
+            )
+        });
     let page_count = u32::from(doc.pages().len());
     if page_count == 0 {
         return Err(PdfEngineError::InvalidPdfFormat(
@@ -509,8 +544,58 @@ fn worker_extract_page_text(
     Ok(text.all())
 }
 
+/// Converts PDF point coordinates `rect = (left, top, right, bottom)` relative to a page's origin box
+/// `origin_box = (box_left, box_bottom, box_right, box_top)` into a top-left normalized [`SearchBoundingBox`].
+#[must_use]
+pub(crate) fn normalize_pdf_rect_with_origin(
+    rect: (f32, f32, f32, f32),
+    origin_box: (f32, f32, f32, f32),
+) -> Option<SearchBoundingBox> {
+    let (left, top, right, bottom) = rect;
+    let (box_left, box_bottom, box_right, box_top) = origin_box;
+    if !left.is_finite()
+        || !top.is_finite()
+        || !right.is_finite()
+        || !bottom.is_finite()
+        || !box_left.is_finite()
+        || !box_bottom.is_finite()
+        || !box_right.is_finite()
+        || !box_top.is_finite()
+    {
+        return None;
+    }
+
+    let box_min_x = box_left.min(box_right);
+    let box_max_x = box_left.max(box_right);
+    let box_min_y = box_bottom.min(box_top);
+    let box_max_y = box_bottom.max(box_top);
+    let page_width_pt = box_max_x - box_min_x;
+    let page_height_pt = box_max_y - box_min_y;
+    if page_width_pt <= 0.0 || page_height_pt <= 0.0 {
+        return None;
+    }
+
+    let rect_min_x = left.min(right);
+    let rect_max_x = left.max(right);
+    let rect_min_y = bottom.min(top);
+    let rect_max_y = bottom.max(top);
+
+    let x_ratio = ((rect_min_x - box_min_x) / page_width_pt).clamp(0.0, 1.0);
+    let y_ratio = ((box_max_y - rect_max_y) / page_height_pt).clamp(0.0, 1.0);
+    let width_ratio = ((rect_max_x - rect_min_x) / page_width_pt).clamp(0.005, 1.0);
+    let height_ratio = ((rect_max_y - rect_min_y) / page_height_pt).clamp(0.005, 1.0);
+
+    Some(SearchBoundingBox {
+        x_ratio,
+        y_ratio,
+        width_ratio,
+        height_ratio,
+    })
+}
+
 /// Converts PDF bottom-left `(left, top, right, bottom)` point coordinates into a top-left
 /// normalized [`SearchBoundingBox`] against `(page_width_pt, page_height_pt)`.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn normalize_pdf_rect_to_search_box(
     left: f32,
@@ -520,29 +605,10 @@ pub(crate) fn normalize_pdf_rect_to_search_box(
     page_width_pt: f32,
     page_height_pt: f32,
 ) -> Option<SearchBoundingBox> {
-    if !page_width_pt.is_finite()
-        || !page_height_pt.is_finite()
-        || page_width_pt <= 0.0
-        || page_height_pt <= 0.0
-        || !left.is_finite()
-        || !top.is_finite()
-        || !right.is_finite()
-        || !bottom.is_finite()
-    {
-        return None;
-    }
-
-    let x_ratio = (left / page_width_pt).clamp(0.0, 1.0);
-    let y_ratio = ((page_height_pt - top) / page_height_pt).clamp(0.0, 1.0);
-    let width_ratio = ((right - left) / page_width_pt).clamp(0.005, 1.0);
-    let height_ratio = ((top - bottom).abs() / page_height_pt).clamp(0.005, 1.0);
-
-    Some(SearchBoundingBox {
-        x_ratio,
-        y_ratio,
-        width_ratio,
-        height_ratio,
-    })
+    normalize_pdf_rect_with_origin(
+        (left, top, right, bottom),
+        (0.0, 0.0, page_width_pt, page_height_pt),
+    )
 }
 
 #[must_use]
@@ -608,72 +674,88 @@ fn worker_search_text(
 
         let page_w = page.width().value;
         let page_h = page.height().value;
+        let boundaries = page.boundaries();
+        let (box_left, box_bottom, box_right, box_top) = boundaries
+            .crop()
+            .or_else(|_| boundaries.media())
+            .map(|b| {
+                (
+                    b.bounds.left().value,
+                    b.bounds.bottom().value,
+                    b.bounds.right().value,
+                    b.bounds.top().value,
+                )
+            })
+            .unwrap_or((0.0, 0.0, page_w, page_h));
         let page_text = text_obj.all();
         let page_idx = PageIndex::new(idx);
         let mut page_hits =
             search_page_text_hits(&page_text, page_idx, query, case_sensitive, remaining);
 
         if let Ok(search) = text_obj.search(query, &search_opts) {
-            if !page_hits.is_empty() {
-                for (hit, segments) in page_hits
-                    .iter_mut()
-                    .zip(search.iter(PdfSearchDirection::SearchForward))
-                {
-                    let mut boxes = Vec::new();
-                    for seg in segments.iter() {
-                        let rect = seg.bounds();
-                        if let Some(norm) = normalize_pdf_rect_to_search_box(
-                            rect.left().value,
-                            rect.top().value,
-                            rect.right().value,
-                            rect.bottom().value,
-                            page_w,
-                            page_h,
-                        ) {
-                            boxes.push(norm);
-                        }
-                    }
-                    hit.bounding_box = union_search_bounding_boxes(&boxes);
-                    hit.bounding_boxes = boxes;
+            let mut pdfium_matches: Vec<(Vec<SearchBoundingBox>, String)> = Vec::new();
+            for segments in search
+                .iter(PdfSearchDirection::SearchForward)
+                .take(remaining)
+            {
+                if cancel_check.is_some_and(|f| f()) {
+                    return Err(PdfEngineError::Cancelled);
                 }
-            } else {
-                for (match_idx, segments) in search
-                    .iter(PdfSearchDirection::SearchForward)
-                    .take(remaining)
-                    .enumerate()
-                {
-                    let mut boxes = Vec::new();
-                    let mut seg_texts = Vec::new();
-                    for seg in segments.iter() {
-                        let rect = seg.bounds();
-                        if let Some(norm) = normalize_pdf_rect_to_search_box(
+                let mut boxes = Vec::new();
+                let mut seg_texts = Vec::new();
+                for seg in segments.iter() {
+                    let rect = seg.bounds();
+                    if let Some(norm) = normalize_pdf_rect_with_origin(
+                        (
                             rect.left().value,
                             rect.top().value,
                             rect.right().value,
                             rect.bottom().value,
-                            page_w,
-                            page_h,
-                        ) {
-                            boxes.push(norm);
-                        }
-                        let t = seg.text();
-                        if !t.trim().is_empty() {
-                            seg_texts.push(t.trim().to_owned());
+                        ),
+                        (box_left, box_bottom, box_right, box_top),
+                    ) {
+                        boxes.push(norm);
+                    }
+                    let t = seg.text();
+                    if !t.trim().is_empty() {
+                        seg_texts.push(t.trim().to_owned());
+                    }
+                }
+                let snippet = if seg_texts.is_empty() {
+                    query.to_owned()
+                } else {
+                    seg_texts.join(" ")
+                };
+                pdfium_matches.push((boxes, snippet));
+            }
+
+            if !pdfium_matches.is_empty() {
+                if page_hits.len() == pdfium_matches.len() {
+                    for (hit, (boxes, _)) in page_hits.iter_mut().zip(pdfium_matches) {
+                        hit.bounding_box = union_search_bounding_boxes(&boxes);
+                        hit.bounding_boxes = boxes;
+                    }
+                } else {
+                    let mut attached_hits = Vec::with_capacity(pdfium_matches.len());
+                    for (match_idx, (boxes, fallback_snippet)) in
+                        pdfium_matches.into_iter().enumerate()
+                    {
+                        if let Some(mut hit) = page_hits.get(match_idx).cloned() {
+                            hit.bounding_box = union_search_bounding_boxes(&boxes);
+                            hit.bounding_boxes = boxes;
+                            attached_hits.push(hit);
+                        } else {
+                            attached_hits.push(SearchHit {
+                                page_index: page_idx,
+                                match_index: u32::try_from(match_idx).unwrap_or(0),
+                                snippet: fallback_snippet,
+                                match_text: Some(query.to_owned()),
+                                bounding_box: union_search_bounding_boxes(&boxes),
+                                bounding_boxes: boxes,
+                            });
                         }
                     }
-                    let snippet = if seg_texts.is_empty() {
-                        query.to_owned()
-                    } else {
-                        seg_texts.join(" ")
-                    };
-                    hits.push(SearchHit {
-                        page_index: page_idx,
-                        match_index: u32::try_from(match_idx).unwrap_or(0),
-                        snippet,
-                        match_text: Some(query.to_owned()),
-                        bounding_box: union_search_bounding_boxes(&boxes),
-                        bounding_boxes: boxes,
-                    });
+                    page_hits = attached_hits;
                 }
             }
         }
@@ -1069,9 +1151,22 @@ impl EnginePdfDocument for DynamicPdfiumDocument {
         case_sensitive: bool,
         max_hits: usize,
     ) -> Result<Vec<SearchHit>, PdfEngineError> {
+        self.search_text_cancellable(query, case_sensitive, max_hits, Arc::new(|| false))
+    }
+
+    fn search_text_cancellable(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        max_hits: usize,
+        is_cancelled: CancelPredicate,
+    ) -> Result<Vec<SearchHit>, PdfEngineError> {
         let trimmed = query.trim();
         if trimmed.is_empty() || max_hits == 0 {
             return Ok(Vec::new());
+        }
+        if is_cancelled() {
+            return Err(PdfEngineError::Cancelled);
         }
 
         let (reply_tx, reply_rx) = sync_channel(1);
@@ -1082,16 +1177,20 @@ impl EnginePdfDocument for DynamicPdfiumDocument {
                 query: trimmed.to_owned(),
                 case_sensitive,
                 max_hits,
-                cancel_check: None,
+                cancel_check: Some(Arc::clone(&is_cancelled)),
                 reply: reply_tx,
             })
             .map_err(|_| {
                 PdfEngineError::Internal("PDFium worker channel disconnected".to_owned())
             })?;
 
-        reply_rx.recv().map_err(|_| {
+        let hits = reply_rx.recv().map_err(|_| {
             PdfEngineError::Internal("PDFium worker dropped search response".to_owned())
-        })?
+        })??;
+        if is_cancelled() {
+            return Err(PdfEngineError::Cancelled);
+        }
+        Ok(hits)
     }
 
     fn render_page(&self, request: &RenderPageRequest) -> Result<RenderedPage, PdfEngineError> {

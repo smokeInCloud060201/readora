@@ -1,5 +1,6 @@
 const PDF_IDB_NAME = "readora_pdf_store_v1";
 const PDF_IDB_STORE = "pdfs";
+const MAX_IDB_PDF_ENTRIES = 16;
 
 export function isJsdomEnvironment(): boolean {
   return (
@@ -55,6 +56,7 @@ function openPdfIndexedDb(): Promise<IDBDatabase | null> {
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -70,12 +72,31 @@ export async function savePdfBytesToIndexedDb(
   await new Promise<void>((resolve) => {
     try {
       const tx = db.transaction(PDF_IDB_STORE, "readwrite");
-      tx.objectStore(PDF_IDB_STORE).put(bytes.slice(), docId);
+      const store = tx.objectStore(PDF_IDB_STORE);
+      store.delete(docId);
+      store.put(bytes.slice(), docId);
+      if (typeof store.getAllKeys === "function") {
+        const keysReq = store.getAllKeys();
+        keysReq.onsuccess = () => {
+          const keys = keysReq.result ?? [];
+          const overflow = keys.length - MAX_IDB_PDF_ENTRIES;
+          for (let i = 0; i < overflow; i += 1) {
+            const staleKey = keys[i];
+            if (staleKey !== undefined && staleKey !== docId) {
+              store.delete(staleKey);
+            }
+          }
+        };
+      }
       tx.oncomplete = () => {
         db.close();
         resolve();
       };
       tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+      tx.onabort = () => {
         db.close();
         resolve();
       };
@@ -134,6 +155,10 @@ export async function deletePdfBytesFromIndexedDb(
         db.close();
         resolve();
       };
+      tx.onabort = () => {
+        db.close();
+        resolve();
+      };
     } catch {
       db.close();
       resolve();
@@ -153,6 +178,10 @@ export async function clearPdfIndexedDb(): Promise<void> {
         resolve();
       };
       tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+      tx.onabort = () => {
         db.close();
         resolve();
       };

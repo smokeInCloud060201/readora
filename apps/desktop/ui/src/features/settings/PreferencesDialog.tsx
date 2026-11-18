@@ -158,7 +158,12 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
     settings.github_release_repo ?? "smokeInCloud060201/readora",
   );
   const [repoError, setRepoError] = useState<string | null>(null);
+  const [confirmingCleanup, setConfirmingCleanup] = useState(false);
   const [shortcutFilter, setShortcutFilter] = useState("");
+
+  useEffect(() => {
+    setConfirmingCleanup(false);
+  }, [activeSection]);
 
   useEffect(() => {
     void readoraApi.getSystemDiagnostics().then(setDiagnostics);
@@ -464,14 +469,43 @@ export const PreferencesDialog: React.FC<PreferencesDialogProps> = ({
                       Your PDF files on disk are never deleted.
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className="focus-btn secondary danger-text"
-                    onClick={onCleanupAppData}
-                    aria-label="Clean up application data and cache"
-                  >
-                    Clean up app data
-                  </button>
+                  {confirmingCleanup ? (
+                    <div className="modal-actions">
+                      <button
+                        type="button"
+                        className="focus-btn secondary"
+                        onClick={() => setConfirmingCleanup(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="focus-btn secondary danger-text"
+                        onClick={() => {
+                          setConfirmingCleanup(false);
+                          onCleanupAppData();
+                        }}
+                        aria-label="Confirm clean up application data"
+                      >
+                        Confirm clean up
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="focus-btn secondary danger-text"
+                      onClick={() => {
+                        if (settings.confirm_before_delete) {
+                          setConfirmingCleanup(true);
+                        } else {
+                          onCleanupAppData();
+                        }
+                      }}
+                      aria-label="Clean up application data and cache"
+                    >
+                      Clean up app data
+                    </button>
+                  )}
                 </div>
               )}
             </div>

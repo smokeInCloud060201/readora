@@ -99,7 +99,12 @@ impl AnnotationRepository for SqliteStorage {
         while let Some(row) = rows.next().map_err(|e| {
             ApplicationError::Storage(format!("annotation row iteration failed: {e}"))
         })? {
-            annotations.push(map_annotation_row(row)?);
+            match map_annotation_row(row) {
+                Ok(ann) => annotations.push(ann),
+                Err(err) => {
+                    tracing::warn!("skipping corrupt annotation row: {err}");
+                }
+            }
         }
         Ok(annotations)
     }
@@ -123,9 +128,12 @@ fn map_annotation_row(row: &rusqlite::Row<'_>) -> Result<Annotation, Application
     let raw_doc_id: String = row
         .get(1)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let page_u32: u32 = row
+    let page_i64: i64 = row
         .get(2)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
+    let page_u32 = u32::try_from(page_i64).map_err(|_| {
+        ApplicationError::Storage("negative page_index in annotation row".to_owned())
+    })?;
     let raw_kind: String = row
         .get(3)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;

@@ -21,14 +21,14 @@ use app_application::{
     ThirdPartyNoticeDto, UpsertAnnotationCommand, UpsertBookmarkCommand, apply_navigation_action,
     build_recent_snapshot_for_navigation, execute_delete_annotation, execute_delete_bookmark,
     execute_export_annotations_bundle, execute_get_settings, execute_list_annotations,
-    execute_list_bookmarks, execute_open_document, execute_render_page_cancellable,
-    execute_search_document, execute_update_settings, execute_upsert_annotation,
-    execute_upsert_bookmark, is_allowed_github_download_url,
+    execute_list_bookmarks, execute_render_page_cancellable, execute_search_document_cancellable,
+    execute_update_settings, execute_upsert_annotation, execute_upsert_bookmark,
+    is_allowed_github_download_url_for_repo,
 };
 use app_domain::{
     Annotation, AppSettings, Bookmark, DEFAULT_CACHE_BUDGET_BYTES, DocumentDescriptor, DocumentId,
     OutlineNode, PageIndex, RecentDocument, SearchHit, SemVer, ViewState, compare_semver,
-    sanitize_export_stem, sanitize_outline_tree,
+    has_unsafe_os_path_or_ads, sanitize_export_stem, sanitize_outline_tree,
 };
 use app_infrastructure::{GenerationCancellationRegistry, MemoryRenderCache, encode_png_data_url};
 use pdf_engine::{OpenDocumentOptions, PdfDocument, PdfEngine, PdfEngineKind};
@@ -41,6 +41,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_ACTIVE_SESSIONS: usize = 16;
 static EPHEMERAL_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SESSION_ACCESS_SEQ: AtomicU64 = AtomicU64::new(1);
+static SEARCH_GENERATION_SEQ: AtomicU64 = AtomicU64::new(1);
 
 struct ActiveDocumentEntry {
     canonical_path: String,
@@ -70,6 +71,7 @@ pub struct AppCore {
     render_cache: Arc<MemoryRenderCache>,
     cancellation: Arc<GenerationCancellationRegistry>,
     sessions: RwLock<HashMap<DocumentId, Arc<ActiveDocumentEntry>>>,
+    search_generations: Arc<Mutex<HashMap<DocumentId, u64>>>,
     recent_persist_lock: Mutex<()>,
     data_dir: PathBuf,
     cache_dir: PathBuf,
@@ -80,10 +82,9 @@ pub struct AppCore {
 impl Drop for AppCore {
     fn drop(&mut self) {
         if self.is_ephemeral {
-            let _ = NativePlatformAdapter::cleanup_live_app_artifacts(
+            let _ = NativePlatformAdapter::cleanup_ephemeral_app_artifacts(
                 &self.data_dir,
                 &self.cache_dir,
-                false,
             );
             if let Some(ephemeral_root) = self.data_dir.parent() {
                 let _ = self
@@ -178,6 +179,7 @@ impl AppCore {
             render_cache: Arc::new(MemoryRenderCache::new(initial_budget)),
             cancellation: Arc::new(GenerationCancellationRegistry::new()),
             sessions: RwLock::new(HashMap::new()),
+            search_generations: Arc::new(Mutex::new(HashMap::new())),
             recent_persist_lock: Mutex::new(()),
             data_dir,
             cache_dir,
@@ -213,10 +215,16 @@ impl AppCore {
         bytes: &[u8],
         password: Option<String>,
     ) -> Result<DocumentSessionDto, ApplicationError> {
+        let max_size = OpenDocumentOptions::default().effective_max_file_size();
+        // Wrap `password` in `OpenDocumentOptions` immediately so any early validation return
+        // zeroizes the heap buffer via `OpenDocumentOptions::drop`.
+        let open_opts = OpenDocumentOptions {
+            password,
+            max_file_size_bytes: max_size,
+        };
         if bytes.is_empty() {
             return Err(ApplicationError::Platform("PDF file is empty".to_owned()));
         }
-        let max_size = OpenDocumentOptions::default().effective_max_file_size();
         if (bytes.len() as u64) > max_size {
             return Err(ApplicationError::FileTooLarge {
                 size_bytes: bytes.len() as u64,
@@ -226,11 +234,8 @@ impl AppCore {
 
         // Validate PDF structure & password in memory first so invalid uploads or wrong passwords
         // never write temporary files or interfere with an already-imported document.
-        let open_opts = OpenDocumentOptions {
-            password,
-            max_file_size_bytes: max_size,
-        };
         let document = self.pdf_engine.open_bytes(bytes, &open_opts)?;
+        drop(open_opts);
 
         let safe_file_name = sanitize_pdf_filename(file_name);
         let mut hasher = Sha256::new();
@@ -255,7 +260,8 @@ impl AppCore {
         self.register_opened_document(file_info, document)
     }
 
-    /// Reads the raw PDF bytes for a known open or persisted library document.
+    /// Reads the raw PDF bytes for a known open or persisted library document after verifying
+    /// non-symlink file status, matching document identity, and a valid `%PDF-` header.
     pub fn read_document_bytes(&self, document_id: &str) -> Result<Vec<u8>, ApplicationError> {
         let doc_id = DocumentId::new(document_id)?;
         let raw_path = if let Ok(entry) = self.lookup_session(&doc_id) {
@@ -267,11 +273,42 @@ impl AppCore {
         };
 
         let max_size = OpenDocumentOptions::default().effective_max_file_size();
-        let resolved = self
-            .platform
-            .resolve_and_validate_pdf_path(&raw_path, max_size)?;
         self.platform
-            .read_file_bytes(&resolved.canonical_path, max_size)
+            .read_verified_pdf_bytes(&raw_path, &doc_id, max_size)
+    }
+
+    /// Returns `true` only when `raw_path` refers to a currently open session, a persisted recent
+    /// document record in SQLite, or an app-owned file inside `library/pdfs` or `samples`.
+    /// Never reveals filesystem probing details on invalid/nonexistent paths.
+    pub fn is_authorized_reopen_path(&self, raw_path: &str) -> Result<bool, ApplicationError> {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() || has_unsafe_os_path_or_ads(trimmed) {
+            return Ok(false);
+        }
+        let max_size = OpenDocumentOptions::default().effective_max_file_size();
+        let Ok(resolved) = self
+            .platform
+            .resolve_and_validate_pdf_path(trimmed, max_size)
+        else {
+            return Ok(false);
+        };
+        if self
+            .sessions
+            .read()
+            .is_ok_and(|guard| guard.contains_key(&resolved.document_id))
+        {
+            return Ok(true);
+        }
+        if self.storage.get(&resolved.document_id)?.is_some() {
+            return Ok(true);
+        }
+        let samples_dir = self.data_dir.join("samples");
+        Ok(self
+            .platform
+            .is_path_within_dir(&resolved.canonical_path, &self.library_pdfs_dir)
+            || self
+                .platform
+                .is_path_within_dir(&resolved.canonical_path, &samples_dir))
     }
 
     /// Reads the currently staged release manifest on disk, if present.
@@ -287,20 +324,21 @@ impl AppCore {
         &self,
         request: OpenDocumentRequest,
     ) -> Result<DocumentSessionDto, ApplicationError> {
-        let opened = execute_open_document(
-            &request,
-            self.pdf_engine.as_ref(),
-            self.platform.as_ref(),
-            self.storage.as_ref(),
-            self.storage.as_ref(),
-            self.storage.as_ref(),
-        )?;
+        let max_size = OpenDocumentOptions::default().effective_max_file_size();
+        let file_info = self
+            .platform
+            .resolve_and_validate_pdf_path(&request.path, max_size)?;
+        let open_opts = OpenDocumentOptions {
+            password: request.password.clone(),
+            max_file_size_bytes: max_size,
+        };
+        let document = self
+            .pdf_engine
+            .open_path(Path::new(&file_info.canonical_path), &open_opts)?;
+        drop(open_opts);
+        drop(request);
 
-        self.insert_opened_session(
-            opened.file_info.canonical_path,
-            opened.session,
-            opened.document,
-        )
+        self.register_opened_document(file_info, document)
     }
 
     fn register_opened_document(
@@ -311,33 +349,60 @@ impl AppCore {
         use app_domain::FitMode;
 
         let engine_info = document.info().clone();
+        let raw_outline = match document.outline() {
+            Ok(nodes) => nodes,
+            Err(err) => {
+                tracing::debug!("failed to extract PDF outline; falling back to empty: {err}");
+                Vec::new()
+            }
+        };
+        let outline = sanitize_outline_tree(raw_outline);
+
+        let _persist_guard = self
+            .recent_persist_lock
+            .lock()
+            .map_err(|_| ApplicationError::Platform("recent persist lock poisoned".to_owned()))?;
+
+        let (settings, remember_page_position) = match SettingsRepository::load(
+            self.storage.as_ref(),
+        ) {
+            Ok(loaded) => {
+                let remember = loaded.remember_page_position;
+                (loaded, remember)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load persisted settings during register_opened_document; failing closed on remember_page_position: {err}"
+                );
+                (AppSettings::default(), false)
+            }
+        };
+
+        let previous =
+            RecentDocumentRepository::get(self.storage.as_ref(), &file_info.document_id)?;
+        let restored_page_count = if self.pdf_engine.kind() == PdfEngineKind::PureRustFallback {
+            previous.as_ref().map_or(engine_info.page_count, |prev| {
+                engine_info.page_count.max(prev.page_count)
+            })
+        } else {
+            engine_info.page_count
+        };
+
         let descriptor = DocumentDescriptor::new(
             file_info.document_id.clone(),
             file_info.display_name.clone(),
             file_info.file_size_bytes,
-            engine_info.page_count,
+            restored_page_count,
             engine_info.metadata,
         )?;
-
-        let settings = match SettingsRepository::load(self.storage.as_ref()) {
-            Ok(loaded) => loaded,
-            Err(err) => {
-                tracing::warn!(
-                    "failed to load persisted settings during register_opened_document; falling back to defaults: {err}"
-                );
-                AppSettings::default()
-            }
-        };
 
         let mut view_state = ViewState::new(file_info.document_id.clone(), descriptor.page_count)?;
         view_state.layout_mode = settings.default_layout;
         view_state.fit_mode = settings.default_fit_mode;
         view_state.zoom = settings.default_zoom;
 
-        let previous =
-            RecentDocumentRepository::get(self.storage.as_ref(), &file_info.document_id)?;
         if let Some(ref prev) = previous
-            && settings.remember_page_position
+            && remember_page_position
         {
             let clamped_page = prev
                 .last_page
@@ -371,14 +436,6 @@ impl AppCore {
         }
         RecentDocumentRepository::upsert(self.storage.as_ref(), &recent_entry)?;
 
-        let raw_outline = match document.outline() {
-            Ok(nodes) => nodes,
-            Err(err) => {
-                tracing::debug!("failed to extract PDF outline; falling back to empty: {err}");
-                Vec::new()
-            }
-        };
-        let outline = sanitize_outline_tree(raw_outline);
         let bookmarks =
             BookmarkRepository::list_for_document(self.storage.as_ref(), &file_info.document_id)?;
 
@@ -430,12 +487,19 @@ impl AppCore {
                     break;
                 }
             }
-            self.render_cache.invalidate_document(&doc_id);
             let assigned_gen = self.cancellation.next_generation(&doc_id);
+            self.render_cache.invalidate_document(&doc_id);
             guard.insert(doc_id, entry);
             assigned_gen
         };
 
+        if !evicted_ids.is_empty()
+            && let Ok(mut sg) = self.search_generations.lock()
+        {
+            for evict_id in &evicted_ids {
+                sg.remove(evict_id);
+            }
+        }
         for evict_id in &evicted_ids {
             self.cancellation.clear_document(evict_id);
             self.render_cache.invalidate_document(evict_id);
@@ -448,18 +512,21 @@ impl AppCore {
     /// Closes an open document session, invalidating its cached bitmaps and cancelling in-flight renders.
     pub fn close_document(&self, document_id: &str) -> Result<(), ApplicationError> {
         let doc_id = DocumentId::new(document_id)?;
-        let mut guard = self
-            .sessions
-            .write()
-            .map_err(|_| ApplicationError::Platform("session registry lock poisoned".to_owned()))?;
-        guard.remove(&doc_id);
-        drop(guard);
-        self.cancellation.clear_document(&doc_id);
+        {
+            let mut guard = self.sessions.write().map_err(|_| {
+                ApplicationError::Platform("session registry lock poisoned".to_owned())
+            })?;
+            guard.remove(&doc_id);
+            self.cancellation.clear_document(&doc_id);
+            if let Ok(mut sg) = self.search_generations.lock() {
+                sg.remove(&doc_id);
+            }
+        }
         self.render_cache.invalidate_document(&doc_id);
         Ok(())
     }
 
-    /// Synchronizes an upward `page_count` discovered by the WebView `pdfjs-dist` renderer
+    /// Synchronizes an authoritative `page_count` discovered by the WebView `pdfjs-dist` renderer
     /// when Rust is running in `PureRustFallback` mode, eliminating page-bounds split-brain (`[CRIT-01]`).
     pub fn sync_document_page_count(
         &self,
@@ -480,13 +547,15 @@ impl AppCore {
             return Ok(state);
         }
 
+        let mut changed_count = false;
         {
             let mut desc_guard = entry
                 .descriptor
                 .write()
                 .map_err(|_| ApplicationError::Platform("descriptor lock poisoned".to_owned()))?;
-            if clamped_reported > desc_guard.page_count {
+            if clamped_reported != desc_guard.page_count {
                 desc_guard.page_count = clamped_reported;
+                changed_count = true;
             }
         }
 
@@ -495,8 +564,16 @@ impl AppCore {
                 .view_state
                 .lock()
                 .map_err(|_| ApplicationError::Platform("view state lock poisoned".to_owned()))?;
-            if clamped_reported > state_guard.page_count {
+            if clamped_reported != state_guard.page_count {
                 state_guard.page_count = clamped_reported;
+                if state_guard.current_page.zero_based() >= clamped_reported {
+                    let _ =
+                        state_guard.go_to_page(PageIndex::new(clamped_reported.saturating_sub(1)));
+                }
+                changed_count = true;
+            }
+            if changed_count {
+                let _ = self.cancellation.next_generation(&doc_id);
             }
             state_guard.clone()
         };
@@ -510,21 +587,26 @@ impl AppCore {
             .read()
             .map(|g| g.contains_key(&doc_id))
             .unwrap_or(false);
-        if still_open
-            && let Ok(recent) = build_recent_snapshot_for_navigation(
+        if still_open {
+            let latest_state = entry
+                .view_state
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or(updated_state.clone());
+            if let Ok(recent) = build_recent_snapshot_for_navigation(
                 &entry.canonical_path,
                 &entry
                     .descriptor
                     .read()
                     .map(|d| d.file_name.clone())
                     .unwrap_or_else(|_| "Document.pdf".to_owned()),
-                &updated_state,
+                &latest_state,
                 self.storage.as_ref(),
                 self.storage.as_ref(),
                 self.platform.current_unix_ms(),
-            )
-        {
-            RecentDocumentRepository::upsert(self.storage.as_ref(), &recent)?;
+            ) {
+                RecentDocumentRepository::upsert(self.storage.as_ref(), &recent)?;
+            }
         }
 
         Ok(updated_state)
@@ -602,10 +684,17 @@ impl AppCore {
             .map(|g| g.contains_key(&doc_id))
             .unwrap_or(false);
         if still_open {
+            // Re-read the latest view_state inside `recent_persist_lock` so rapid concurrent
+            // navigation updates never persist out-of-order stale snapshots.
+            let latest_state = entry
+                .view_state
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| updated_state.clone());
             let recent = build_recent_snapshot_for_navigation(
                 &entry.canonical_path,
                 &display_name,
-                &updated_state,
+                &latest_state,
                 self.storage.as_ref(),
                 self.storage.as_ref(),
                 self.platform.current_unix_ms(),
@@ -622,14 +711,31 @@ impl AppCore {
         command: RenderPageCommand,
     ) -> Result<RenderedPageResultDto, ApplicationError> {
         let doc_id = DocumentId::new(&command.document_id)?;
-        // Short critical section: clone only the Arc<ActiveDocumentEntry>, then release RwLock.
-        let entry = self.lookup_session(&doc_id)?;
+        // Snapshot the Arc<ActiveDocumentEntry> AND effective generation together under the read
+        // lock so a concurrent close_document cannot race a `generation: None` render into cache.
+        let (entry, snapshot_gen) = {
+            let guard = self.sessions.read().map_err(|_| {
+                ApplicationError::Platform("session registry lock poisoned".to_owned())
+            })?;
+            let found = guard
+                .get(&doc_id)
+                .cloned()
+                .ok_or_else(|| ApplicationError::DocumentNotOpen(doc_id.as_str().to_owned()))?;
+            let effective_gen = command
+                .generation
+                .unwrap_or_else(|| self.cancellation.current_generation(&doc_id));
+            (found, effective_gen)
+        };
         entry.touch();
 
+        let effective_command = RenderPageCommand {
+            generation: Some(snapshot_gen),
+            ..command
+        };
         let cancellation_port: Arc<dyn RenderCancellationPort> =
             Arc::clone(&self.cancellation) as Arc<dyn RenderCancellationPort>;
         execute_render_page_cancellable(
-            &command,
+            &effective_command,
             entry.document.as_ref(),
             self.render_cache.as_ref(),
             cancellation_port,
@@ -651,7 +757,21 @@ impl AppCore {
         let doc_id = DocumentId::new(&request.document_id)?;
         let entry = self.lookup_session(&doc_id)?;
         entry.touch();
-        execute_search_document(&request, entry.document.as_ref())
+
+        let token = SEARCH_GENERATION_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+        if let Ok(mut sg) = self.search_generations.lock() {
+            sg.insert(doc_id.clone(), token);
+        }
+        let sg_ref = Arc::clone(&self.search_generations);
+        let cancel_doc_id = doc_id;
+        let is_cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+            sg_ref
+                .lock()
+                .ok()
+                .and_then(|g| g.get(&cancel_doc_id).copied())
+                != Some(token)
+        });
+        execute_search_document_cancellable(&request, entry.document.as_ref(), is_cancelled)
     }
 
     /// Extracts plain text for a specific page of an open document (for copy-text workflows).
@@ -742,6 +862,10 @@ impl AppCore {
         command: UpsertBookmarkCommand,
     ) -> Result<Bookmark, ApplicationError> {
         let doc_id = DocumentId::new(&command.document_id)?;
+        let _persist_guard = self
+            .recent_persist_lock
+            .lock()
+            .map_err(|_| ApplicationError::Platform("recent persist lock poisoned".to_owned()))?;
         let page_count = if let Ok(entry) = self.lookup_session(&doc_id) {
             entry.effective_page_count()
         } else if let Some(recent) = self.storage.get(&doc_id)? {
@@ -774,6 +898,10 @@ impl AppCore {
         command: UpsertAnnotationCommand,
     ) -> Result<Annotation, ApplicationError> {
         let doc_id = DocumentId::new(&command.document_id)?;
+        let _persist_guard = self
+            .recent_persist_lock
+            .lock()
+            .map_err(|_| ApplicationError::Platform("recent persist lock poisoned".to_owned()))?;
         let page_count = if let Ok(entry) = self.lookup_session(&doc_id) {
             entry.effective_page_count()
         } else if let Some(recent) = self.storage.get(&doc_id)? {
@@ -842,7 +970,16 @@ impl AppCore {
         &self,
         patch: SettingsPatchDto,
     ) -> Result<AppSettings, ApplicationError> {
-        execute_update_settings(patch, self.storage.as_ref(), self.render_cache.as_ref())
+        let _persist_guard = self
+            .recent_persist_lock
+            .lock()
+            .map_err(|_| ApplicationError::Platform("recent persist lock poisoned".to_owned()))?;
+        let updated =
+            execute_update_settings(patch, self.storage.as_ref(), self.render_cache.as_ref())?;
+        if !updated.remember_page_position {
+            RecentDocumentRepository::reset_reading_positions(self.storage.as_ref(), &updated)?;
+        }
+        Ok(updated)
     }
 
     /// Returns privacy-preserving support and packaging diagnostics (SBOM notices, schema version,
@@ -905,26 +1042,35 @@ impl AppCore {
     ///
     /// Never modifies or deletes user PDF documents or unrelated files on disk.
     pub fn cleanup_application_data(&self) -> Result<AppCleanupReportDto, ApplicationError> {
-        let open_ids: Vec<DocumentId> = {
-            let guard = self.sessions.read().map_err(|_| {
-                ApplicationError::Platform("session registry lock poisoned".to_owned())
-            })?;
-            guard.keys().cloned().collect()
-        };
-
-        for doc_id in &open_ids {
-            self.cancellation.clear_document(doc_id);
-            self.render_cache.invalidate_document(doc_id);
-        }
+        let _persist_guard = self
+            .recent_persist_lock
+            .lock()
+            .map_err(|_| ApplicationError::Platform("recent persist lock poisoned".to_owned()))?;
 
         {
             let mut guard = self.sessions.write().map_err(|_| {
                 ApplicationError::Platform("session registry lock poisoned".to_owned())
             })?;
+            for doc_id in guard.keys() {
+                self.cancellation.clear_document(doc_id);
+            }
+            if let Ok(mut sg) = self.search_generations.lock() {
+                sg.clear();
+            }
             guard.clear();
         }
 
+        self.render_cache.clear();
+        self.render_cache
+            .set_budget_bytes(DEFAULT_CACHE_BUDGET_BYTES);
         self.storage.reset_all_application_tables()?;
+
+        let default_settings = AppSettings {
+            installed_version: Some(APP_VERSION.to_owned()),
+            ..AppSettings::default()
+        };
+        SettingsRepository::save(self.storage.as_ref(), &default_settings)?;
+
         NativePlatformAdapter::cleanup_live_app_artifacts(
             &self.data_dir,
             &self.cache_dir,
@@ -981,7 +1127,7 @@ impl AppCore {
                     },
                     download_url: manifest
                         .download_url
-                        .filter(|u| is_allowed_github_download_url(u)),
+                        .filter(|u| is_allowed_github_download_url_for_repo(u, &github_repo)),
                     github_repo,
                     verified,
                     staged_for_restart: false,
@@ -1030,11 +1176,13 @@ impl AppCore {
             .trim()
             .to_owned();
         let _ = SemVer::parse(&normalized_manifest_ver)?;
+        let settings = self.get_settings()?;
         if let Some(ref url) = manifest.download_url
-            && !is_allowed_github_download_url(url)
+            && !is_allowed_github_download_url_for_repo(url, &settings.github_release_repo)
         {
             return Err(ApplicationError::Platform(
-                "release manifest download_url must be a valid https:// GitHub URL".to_owned(),
+                "release manifest download_url must match the configured GitHub release repository over https://"
+                    .to_owned(),
             ));
         }
 
@@ -1159,7 +1307,7 @@ impl AppCore {
         let bytes = build_synthetic_pdf_bytes(
             "Readora Desktop Architecture Guide",
             &[
-                "Page 1: Welcome to Readora — Local-first Rust + Tauri 2 PDF Reader.",
+                "Page 1: Welcome to Readora — Local-first Rust + Native WebView PDF Reader.",
                 "Page 2: Hexagonal Architecture — Domain, Application, and Replaceable Ports.",
                 "Page 3: Memory-Bounded LRU Render Cache and Stale Request Cancellation.",
                 "Page 4: SQLite Persistence for Recent Documents, Bookmarks, and Preferences.",

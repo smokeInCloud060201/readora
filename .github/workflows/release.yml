@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux packaging dependencies
         if: matrix.platform == 'ubuntu-latest'
@@ -37,16 +37,16 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm dpkg-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -106,9 +106,28 @@ jobs:
             RAW_TAG="v1.1.2"
           fi
           CLEAN_VERSION="${RAW_TAG#v}"
+          if [[ ! "${CLEAN_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+            echo "Invalid CLEAN_VERSION '${CLEAN_VERSION}'" >&2
+            exit 1
+          fi
           PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           REPO_SLUG="${GITHUB_REPOSITORY:-smokeInCloud060201/readora}"
           PDFIUM_TAG="chromium%2F8165"
+
+          verify_sha256() {
+            local file="$1"
+            local expected="$2"
+            local actual=""
+            if command -v sha256sum >/dev/null 2>&1; then
+              actual=$(sha256sum "${file}" | awk '{print $1}')
+            else
+              actual=$(shasum -a 256 "${file}" | awk '{print $1}')
+            fi
+            if [[ "${actual}" != "${expected}" ]]; then
+              echo "SHA-256 mismatch for ${file}: expected ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+          }
 
           mkdir -p release-artifacts
 
@@ -119,10 +138,13 @@ jobs:
             curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-mac-arm64.tgz"
             test -s "${RUNNER_TEMP}/pdfium-mac-arm64.tgz"
+            verify_sha256 "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" "112e74d717f3e0310273b70f3c8780e8a61ff11b34834124465c8305c841d350"
             tar -tzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" >/dev/null
             tar -xzf "${RUNNER_TEMP}/pdfium-mac-arm64.tgz" -C "${RUNNER_TEMP}"
             test -f "${RUNNER_TEMP}/lib/libpdfium.dylib"
+            test -f "${RUNNER_TEMP}/LICENSE"
             cp "${RUNNER_TEMP}/lib/libpdfium.dylib" "dist/Readora.app/Contents/Frameworks/libpdfium.dylib"
+            cp "${RUNNER_TEMP}/LICENSE" "${APP_DIR}/Resources/LICENSE-PDFIUM"
 
             cp target/release/readora-desktop "${APP_DIR}/MacOS/readora-desktop"
             chmod +x "${APP_DIR}/MacOS/readora-desktop"
@@ -243,15 +265,18 @@ jobs:
             curl -fSL --retry 3 -o "${RUNNER_TEMP}/pdfium-linux-x64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-linux-x64.tgz"
             test -s "${RUNNER_TEMP}/pdfium-linux-x64.tgz"
+            verify_sha256 "${RUNNER_TEMP}/pdfium-linux-x64.tgz" "ba7865e16c0271daab75256790be06c26272190afe6e2a70eae0bb39bb99089c"
             tar -tzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" >/dev/null
             tar -xzf "${RUNNER_TEMP}/pdfium-linux-x64.tgz" -C "${RUNNER_TEMP}"
             test -f "${RUNNER_TEMP}/lib/libpdfium.so"
+            test -f "${RUNNER_TEMP}/LICENSE"
             cp "${RUNNER_TEMP}/lib/libpdfium.so" "${DEB_ROOT}/usr/lib/readora/libpdfium.so"
 
             cp target/release/readora-desktop "${DEB_ROOT}/usr/bin/readora-desktop"
             chmod 0755 "${DEB_ROOT}/usr/bin/readora-desktop"
             cp -R apps/desktop/ui/dist/* "${DEB_ROOT}/usr/lib/readora/ui/"
             cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${DEB_ROOT}/usr/share/readora/"
+            cp "${RUNNER_TEMP}/LICENSE" "${DEB_ROOT}/usr/share/readora/LICENSE-PDFIUM"
             cp assets/icons/32x32.png "${DEB_ROOT}/usr/share/icons/hicolor/32x32/apps/readora.png"
             cp assets/icons/icon.png "${DEB_ROOT}/usr/share/icons/hicolor/512x512/apps/readora.png"
             cat > "${DEB_ROOT}/usr/share/applications/readora.desktop" <<DESKTOP
@@ -274,6 +299,7 @@ jobs:
           Priority: optional
           Architecture: amd64
           Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+          Recommends: curl, xdg-utils
           Maintainer: Readora Contributors
           Description: Local-first open-source desktop PDF reader for focused reading
           CONTROL
@@ -289,10 +315,13 @@ jobs:
             curl -fSL --retry 3 -o "${WIN_TMP}/pdfium-win-x64.tgz" \
               "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG}/pdfium-win-x64.tgz"
             test -s "${WIN_TMP}/pdfium-win-x64.tgz"
+            verify_sha256 "${WIN_TMP}/pdfium-win-x64.tgz" "ca7338ae7779b8b1b82f4580305c4d762d214f8df1d54b47647fe3cc75989ded"
             tar -tzf "${WIN_TMP}/pdfium-win-x64.tgz" >/dev/null
             tar -xzf "${WIN_TMP}/pdfium-win-x64.tgz" -C "${WIN_TMP}"
             test -f "${WIN_TMP}/bin/pdfium.dll"
+            test -f "${WIN_TMP}/LICENSE"
             cp "${WIN_TMP}/bin/pdfium.dll" "${WIN_STAGE}/pdfium/pdfium.dll"
+            cp "${WIN_TMP}/LICENSE" "${WIN_STAGE}/LICENSE-PDFIUM"
 
             cp target/release/readora-desktop.exe "${WIN_STAGE}/Readora.exe"
             if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
@@ -304,17 +333,15 @@ jobs:
             cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json "${WIN_STAGE}/"
             cp apps/desktop/src-tauri/installer/windows/nsis-hooks.nsh "${WIN_STAGE}/installer/"
             PRIMARY_ASSET="release-artifacts/Readora_${CLEAN_VERSION}_windows-x86_64-setup.zip"
-            powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist-windows/Readora/*' -DestinationPath '${PRIMARY_ASSET}' -Force"
+            PRIMARY_ASSET="${PRIMARY_ASSET}" powershell.exe -NoProfile -Command 'Compress-Archive -Path "dist-windows/Readora/*" -DestinationPath $env:PRIMARY_ASSET -Force'
           fi
 
           ASSET_BASENAME=$(basename "${PRIMARY_ASSET}")
           ASSET_SIZE=$(wc -c < "${PRIMARY_ASSET}" | tr -d '[:space:]')
           if command -v sha256sum >/dev/null 2>&1; then
             ASSET_SHA256=$(sha256sum "${PRIMARY_ASSET}" | awk '{print $1}')
-            sha256sum LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
           else
             ASSET_SHA256=$(shasum -a 256 "${PRIMARY_ASSET}" | awk '{print $1}')
-            shasum -a 256 LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json release-artifacts/* > "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
           fi
 
           cat > "release-artifacts/release-manifest-${ARTIFACT_LABEL}.json" <<EOF
@@ -330,6 +357,16 @@ jobs:
           }
           EOF
 
+          SHA_TMP="${RUNNER_TEMP}/release-manifests-${ARTIFACT_LABEL}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json > "${SHA_TMP}"
+            (cd release-artifacts && sha256sum -- * >> "${SHA_TMP}")
+          else
+            shasum -a 256 LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md sbom.cdx.json > "${SHA_TMP}"
+            (cd release-artifacts && shasum -a 256 -- * >> "${SHA_TMP}")
+          fi
+          mv "${SHA_TMP}" "release-artifacts/release-manifests-${ARTIFACT_LABEL}.sha256"
+
       - name: Cleanup temporary signing materials
         if: always()
         shell: bash
@@ -341,13 +378,13 @@ jobs:
           fi
 
       - name: Attest Cryptographic Build Provenance (Free GitHub Sigstore SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         continue-on-error: true
         with:
           subject-path: "release-artifacts/*"
 
       - name: Upload Installer Artifacts to Workflow Run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: readora-${{ matrix.artifact_label }}
           path: release-artifacts/*
@@ -355,7 +392,7 @@ jobs:
 
       - name: Publish Installers to GitHub Release Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: release-artifacts/*
           generate_release_notes: true

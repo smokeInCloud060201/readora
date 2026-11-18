@@ -218,7 +218,7 @@ impl SqliteStorage {
         tx.commit().map_err(|e| {
             ApplicationError::Storage(format!("failed to commit reset transaction: {e}"))
         })?;
-        if let Err(err) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") {
+        if let Err(err) = conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);") {
             tracing::warn!("SQLite checkpoint/VACUUM after reset returned non-fatal error: {err}");
         }
         Ok(())
@@ -491,6 +491,139 @@ mod tests {
         assert_eq!(doc_a_anns[0].note_text, "Edited note");
         assert!(
             AnnotationRepository::list_for_document(&storage, &doc_b)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn round2_storage_library_dedup_zero_limit_reset_positions_and_corrupt_row_skipping() {
+        let storage = SqliteStorage::open_in_memory().unwrap();
+
+        let doc_normal = DocumentId::new("doc-r2-normal").unwrap();
+        let doc_fav = DocumentId::new("doc-r2-fav").unwrap();
+        let doc_arch = DocumentId::new("doc-r2-arch").unwrap();
+
+        for (doc_id, path, name, page, ts) in [
+            (&doc_normal, "/tmp/normal.pdf", "normal.pdf", 4, 1_000),
+            (&doc_fav, "/tmp/fav.pdf", "fav.pdf", 6, 2_000),
+            (&doc_arch, "/tmp/arch.pdf", "arch.pdf", 9, 3_000),
+        ] {
+            let mut view = ViewState::new(doc_id.clone(), 20).unwrap();
+            view.go_to_page(PageIndex::new(page)).unwrap();
+            let recent = RecentDocument::from_view_state(path, name, &view, ts);
+            RecentDocumentRepository::upsert(&storage, &recent).unwrap();
+        }
+        storage.set_favorite(&doc_fav, true).unwrap();
+        storage.set_archived(&doc_arch, true).unwrap();
+
+        assert!(
+            RecentDocumentRepository::list(&storage, 0)
+                .unwrap()
+                .is_empty()
+        );
+        let zero_recent_library = RecentDocumentRepository::list_library(&storage, 0).unwrap();
+        assert_eq!(zero_recent_library.len(), 2);
+        assert!(
+            zero_recent_library
+                .iter()
+                .all(|item| item.document_id != doc_normal)
+        );
+
+        let library = RecentDocumentRepository::list_library(&storage, 10).unwrap();
+        assert_eq!(library.len(), 3);
+        let unique_ids: std::collections::HashSet<_> =
+            library.iter().map(|r| r.document_id.as_str()).collect();
+        assert_eq!(unique_ids.len(), 3);
+
+        RecentDocumentRepository::reset_reading_positions(&storage, &AppSettings::default())
+            .unwrap();
+        for item in RecentDocumentRepository::list_library(&storage, 10).unwrap() {
+            assert_eq!(item.last_page.zero_based(), 0);
+        }
+
+        // Valid bookmark + annotation alongside corrupt negative page_index rows
+        let valid_bm = Bookmark::new(
+            BookmarkId::new("bm-r2-valid").unwrap(),
+            doc_normal.clone(),
+            PageIndex::new(1),
+            "Valid Bookmark",
+            5_000,
+        )
+        .unwrap();
+        BookmarkRepository::upsert(&storage, &valid_bm).unwrap();
+
+        let valid_ann = Annotation::new(
+            AnnotationId::new("ann-r2-valid").unwrap(),
+            doc_normal.clone(),
+            PageIndex::new(2),
+            AnnotationKind::Highlight,
+            "#f3d96b",
+            "Valid Quote",
+            "Valid Note",
+            6_000,
+        )
+        .unwrap();
+        AnnotationRepository::upsert(&storage, &valid_ann).unwrap();
+
+        {
+            let conn = storage.lock_connection().unwrap();
+            conn.execute(
+                "INSERT INTO bookmarks (id, document_id, page_index, label, created_at_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    "bm-r2-corrupt",
+                    doc_normal.as_str(),
+                    -5_i64,
+                    "Bad",
+                    5_100_i64
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO annotations (
+                    id, document_id, page_index, kind, color_hex, quote_text, note_text, created_at_unix_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    "ann-r2-corrupt",
+                    doc_normal.as_str(),
+                    i64::MAX,
+                    "comment",
+                    "#9bc8e0",
+                    "",
+                    "Bad",
+                    6_100_i64
+                ],
+            )
+            .unwrap();
+        }
+
+        let bms = BookmarkRepository::list_for_document(&storage, &doc_normal).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].id.as_str(), "bm-r2-valid");
+
+        let anns = AnnotationRepository::list_for_document(&storage, &doc_normal).unwrap();
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].id.as_str(), "ann-r2-valid");
+
+        // File-backed reset_all_application_tables executes VACUUM; PRAGMA wal_checkpoint(TRUNCATE);
+        let temp = tempfile::tempdir().unwrap();
+        let disk_storage = SqliteStorage::open(&temp.path().join("readora.sqlite")).unwrap();
+        let mut disk_view = ViewState::new(doc_normal.clone(), 5).unwrap();
+        disk_view.go_to_page(PageIndex::new(2)).unwrap();
+        let disk_recent =
+            RecentDocument::from_view_state("/tmp/disk.pdf", "disk.pdf", &disk_view, 99);
+        RecentDocumentRepository::upsert(&disk_storage, &disk_recent).unwrap();
+        assert_eq!(
+            RecentDocumentRepository::list(&disk_storage, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        disk_storage.reset_all_application_tables().unwrap();
+        assert!(
+            RecentDocumentRepository::list(&disk_storage, 10)
                 .unwrap()
                 .is_empty()
         );

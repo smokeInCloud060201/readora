@@ -82,7 +82,12 @@ impl BookmarkRepository for SqliteStorage {
             .next()
             .map_err(|e| ApplicationError::Storage(format!("bookmark row iteration failed: {e}")))?
         {
-            bookmarks.push(map_bookmark_row(row)?);
+            match map_bookmark_row(row) {
+                Ok(bm) => bookmarks.push(bm),
+                Err(err) => {
+                    tracing::warn!("skipping corrupt bookmark row: {err}");
+                }
+            }
         }
         Ok(bookmarks)
     }
@@ -106,9 +111,11 @@ fn map_bookmark_row(row: &rusqlite::Row<'_>) -> Result<Bookmark, ApplicationErro
     let raw_doc_id: String = row
         .get(1)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
-    let page_u32: u32 = row
+    let page_i64: i64 = row
         .get(2)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;
+    let page_u32 = u32::try_from(page_i64)
+        .map_err(|_| ApplicationError::Storage("negative page_index in bookmark row".to_owned()))?;
     let label: String = row
         .get(3)
         .map_err(|e| ApplicationError::Storage(e.to_string()))?;

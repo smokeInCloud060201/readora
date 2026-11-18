@@ -21,34 +21,11 @@ import {
 } from "./textSearch";
 
 const MAX_OUTLINE_DEPTH = 16;
-const MAX_OUTLINE_NODES = 4096;
+const MAX_OUTLINE_NODES = 2048;
 const MAX_RENDER_CANVAS_DIM = 4096;
 
 function resolvePdfWorkerSrc(): string {
-  if (
-    typeof window === "undefined" ||
-    typeof Worker === "undefined" ||
-    typeof Blob === "undefined" ||
-    typeof URL === "undefined" ||
-    typeof URL.createObjectURL !== "function" ||
-    import.meta.env?.VITEST ||
-    import.meta.env?.MODE === "test" ||
-    pdfWorkerUrl.startsWith("blob:") ||
-    pdfWorkerUrl.startsWith("data:")
-  ) {
-    return pdfWorkerUrl;
-  }
-
-  try {
-    const absoluteWorkerUrl = new URL(pdfWorkerUrl, window.location.href).href;
-    const bootstrapSource = `import(${JSON.stringify(absoluteWorkerUrl)});`;
-    const blob = new Blob([bootstrapSource], {
-      type: "application/javascript",
-    });
-    return URL.createObjectURL(blob);
-  } catch {
-    return pdfWorkerUrl;
-  }
+  return pdfWorkerUrl;
 }
 
 if (typeof window !== "undefined" && pdfjsLib.GlobalWorkerOptions) {
@@ -338,6 +315,13 @@ export type HardenedPdfJsInitParams = NonNullable<
   Parameters<typeof pdfjsLib.getDocument>[0]
 > & {
   isEvalSupported: false;
+  enableXfa: false;
+  disableAutoFetch: true;
+  disableStream: true;
+  isOffscreenCanvasSupported: false;
+  useWasm: false;
+  maxImageSize: number;
+  canvasMaxAreaInBytes: number;
 };
 
 export function buildPdfJsDocumentInitParams(
@@ -348,16 +332,25 @@ export function buildPdfJsDocumentInitParams(
     data: bytes.slice(),
     password: password ?? undefined,
     isEvalSupported: false,
-  };
+    enableXfa: false,
+    disableAutoFetch: true,
+    disableStream: true,
+    isOffscreenCanvasSupported: false,
+    useWasm: false,
+    maxImageSize: 16_777_216,
+    canvasMaxAreaInBytes: 67_108_864,
+  } as HardenedPdfJsInitParams;
 }
 
 export async function parsePdfWithPdfJs(
   fileName: string,
   bytes: Uint8Array,
   password: string | null,
+  createLoadingTask: typeof pdfjsLib.getDocument = pdfjsLib.getDocument,
 ): Promise<ParsedPdfJsDocument> {
+  let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null;
   try {
-    const loadingTask = pdfjsLib.getDocument(
+    loadingTask = createLoadingTask(
       buildPdfJsDocumentInitParams(bytes, password),
     );
     const pdfDoc = await loadingTask.promise;
@@ -402,7 +395,7 @@ export async function parsePdfWithPdfJs(
           info.PDFFormatVersion.trim().length > 0
             ? info.PDFFormatVersion.trim()
             : "1.7",
-        is_encrypted: Boolean(password),
+        is_encrypted: Boolean(password) || Boolean(info.IsEncrypted),
         form_support: info.IsXFAPresent
           ? "unsupported_xfa"
           : info.IsAcroFormPresent
@@ -437,6 +430,9 @@ export async function parsePdfWithPdfJs(
       pageLayouts: new Map<number, PageTextLayout>(),
     };
   } catch (err) {
+    if (loadingTask) {
+      void loadingTask.destroy().catch(() => {});
+    }
     const maybePwErr = err as { name?: string; code?: number };
     if (maybePwErr?.name === "PasswordException") {
       if (maybePwErr.code === 2) {
@@ -558,22 +554,49 @@ export async function extractPdfJsPageLayout(
         if (rawStr.trim().length > 0 && hasTransform) {
           const effectiveTx = tx ?? 48;
           const effectiveTy = ty ?? pageH - 124;
-          const x_ratio = Math.min(
-            0.98,
-            Math.max(0.01, effectiveTx / pageW),
-          );
-          const y_ratio = Math.min(
-            0.98,
-            Math.max(0.01, (pageH - effectiveTy - fontH * 0.92) / pageH),
-          );
-          const width_ratio = Math.min(
-            1 - x_ratio,
-            Math.max(0.012, itemW / pageW),
-          );
-          const height_ratio = Math.min(
-            1 - y_ratio,
-            Math.max(0.016, (fontH * 1.28) / pageH),
-          );
+          let x_ratio: number;
+          let y_ratio: number;
+          let width_ratio: number;
+          let height_ratio: number;
+          if (typeof viewport.convertToViewportPoint === "function") {
+            const p1 = viewport.convertToViewportPoint(
+              effectiveTx,
+              effectiveTy - fontH * 0.2,
+            );
+            const p2 = viewport.convertToViewportPoint(
+              effectiveTx + itemW,
+              effectiveTy + fontH * 0.92,
+            );
+            const vx1 = Number(p1[0]) || 0;
+            const vy1 = Number(p1[1]) || 0;
+            const vx2 = Number(p2[0]) || 0;
+            const vy2 = Number(p2[1]) || 0;
+            const minVx = Math.min(vx1, vx2);
+            const maxVx = Math.max(vx1, vx2);
+            const minVy = Math.min(vy1, vy2);
+            const maxVy = Math.max(vy1, vy2);
+            x_ratio = Math.min(0.98, Math.max(0.0, minVx / pageW));
+            y_ratio = Math.min(0.98, Math.max(0.0, minVy / pageH));
+            width_ratio = Math.min(
+              1 - x_ratio,
+              Math.max(0.012, (maxVx - minVx) / pageW),
+            );
+            height_ratio = Math.min(
+              1 - y_ratio,
+              Math.max(0.016, (maxVy - minVy) / pageH),
+            );
+          } else {
+            x_ratio = Math.min(0.98, Math.max(0.01, effectiveTx / pageW));
+            y_ratio = Math.min(
+              0.98,
+              Math.max(0.01, (pageH - effectiveTy - fontH * 0.92) / pageH),
+            );
+            width_ratio = Math.min(1 - x_ratio, Math.max(0.012, itemW / pageW));
+            height_ratio = Math.min(
+              1 - y_ratio,
+              Math.max(0.016, (fontH * 1.28) / pageH),
+            );
+          }
 
           spans.push({
             text: rawStr,
@@ -647,6 +670,13 @@ function evictRenderCache(
   }
 }
 
+export function evictRenderCacheToBudget(
+  renderCache: Map<string, string>,
+  maxCacheBytes: number,
+): void {
+  evictRenderCache(renderCache, 0, maxCacheBytes);
+}
+
 export async function renderPdfJsPageToDataUrl(
   parsed: ParsedPdfJsDocument,
   command: RenderPageCommandDto,
@@ -672,7 +702,7 @@ export async function renderPdfJsPageToDataUrl(
   const isLandscape = unscaledViewport.width > unscaledViewport.height;
   const baseDisplayWidth = isLandscape ? 760 : 608;
   const widthPx = Math.max(120, Math.round(baseDisplayWidth * command.scale));
-  const heightPx = Math.max(120, Math.round(widthPx * aspect));
+  const heightPx = Math.max(1, Math.round(widthPx * aspect));
 
   if (cachedUrl) {
     renderCache.delete(cacheKey);
